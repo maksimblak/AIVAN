@@ -3,34 +3,44 @@ from __future__ import annotations
 import re
 from typing import Iterable, Sequence
 
-from telegram.helpers import escape_markdown
-
 TG_MAX_LEN = 4096
-
 _url_re = re.compile(r"https?://\S+", re.IGNORECASE)
+
+_MD2_NEED_ESCAPE = re.compile(r'([_*\[\]()~`>#+\-=|{}.!])')
+
+
+def escape_md2(text: str) -> str:
+    """
+    Минималистичный экранировщик под Telegram MarkdownV2.
+    Экранируем спецсимволы из доки Telegram:
+    _ * [ ] ( ) ~ ` > # + - = | { } . !
+    и сначала удваиваем обратные слеши.
+    """
+    if not text:
+        return ""
+    text = text.replace("\\", "\\\\")
+    return _MD2_NEED_ESCAPE.sub(r"\\\1", text)
 
 
 def md2(text: str) -> str:
-    """Экранирует текст под Telegram MarkdownV2."""
-    return escape_markdown(text, version=2)
+    """Сахарная обёртка — используем в проекте везде вместо внешних хелперов."""
+    return escape_md2(text)
 
 
 def format_laws(laws: Iterable[str] | None) -> str:
     """
     Форматирует список норм/ссылок:
-    - Название/номер нормы даём моноширинно
-    - URL рендерим как обычный (кликабельный) текст после тире
+    - Текст нормы — моноширинный,
+    - URL — кликабельный (не прячем в моноширинный блок).
     Пример: • `ст. 10 ГК РФ` — https://.../article/10
     """
     if not laws:
         return "Нормы права не найдены."
-
     lines: list[str] = []
     for raw in laws:
         if not raw:
             continue
         raw = raw.strip()
-        # Если строка содержит URL — отделяем подпись и ссылку
         m = _url_re.search(raw)
         if m:
             url = m.group(0)
@@ -42,9 +52,6 @@ def format_laws(laws: Iterable[str] | None) -> str:
 
 
 def build_legal_reply(summary: str, details: str, laws: Sequence[str] | None) -> str:
-    """
-    Собирает красивый ответ в MarkdownV2 по требуемой структуре.
-    """
     return (
         f"⚖️ *{md2('ЮРИДИЧЕСКАЯ КОНСУЛЬТАЦИЯ')}*\n\n"
         f"📋 *{md2('Краткий ответ:')}*\n"
@@ -60,11 +67,7 @@ def build_legal_reply(summary: str, details: str, laws: Sequence[str] | None) ->
 
 def chunk_markdown_v2(text: str, limit: int = TG_MAX_LEN) -> list[str]:
     """
-    Аккуратно режем длинное сообщение для Telegram.
-    Правила:
-      1) Пытаемся резать по двойным переносам.
-      2) Если блок очень длинный — дорезаем по одиночным переносам.
-      3) В крайнем случае — просто по символам.
+    Режем длинный MarkdownV2-текст на части, стараясь попадать в переносы.
     """
     parts: list[str] = []
     for block in text.split("\n\n"):
@@ -74,8 +77,6 @@ def chunk_markdown_v2(text: str, limit: int = TG_MAX_LEN) -> list[str]:
         if len(block) <= limit:
             parts.append(block)
             continue
-
-        # Ищем ближайший перенос строки
         cur = block
         while len(cur) > limit:
             cut = cur.rfind("\n", 0, limit)
@@ -86,3 +87,6 @@ def chunk_markdown_v2(text: str, limit: int = TG_MAX_LEN) -> list[str]:
         if cur:
             parts.append(cur)
     return parts
+
+# back-compat alias (если где-то осталось старое имя)
+format_legal_response = build_legal_reply
