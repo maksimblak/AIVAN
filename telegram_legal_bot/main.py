@@ -7,23 +7,21 @@ import signal
 import sys
 from contextlib import suppress
 from typing import Sequence
+from urllib.parse import urlparse, urlunparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
-from aiohttp import BasicAuth
 
 # ── надёжные импорты (работает и как модуль, и как файл) ───────────────
 try:
-    # запуск как модуля: `poetry run python -m telegram_legal_bot.main`
     from .config import load_settings
     from .handlers.start import router as start_router
     from .handlers.legal_query import router as legal_router, setup_context
     from .services.openai_service import OpenAIService
 except ImportError:
-    # запуск как файла: `python telegram_legal_bot/main.py`
     from telegram_legal_bot.config import load_settings
     from telegram_legal_bot.handlers.start import router as start_router
     from telegram_legal_bot.handlers.legal_query import router as legal_router, setup_context
@@ -66,19 +64,34 @@ async def _set_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(commands)
 
 
+def _embed_basic_auth(url: str | None, user: str | None, pwd: str | None) -> str | None:
+    if not url:
+        return None
+    if not user:
+        return url
+    p = urlparse(url)
+    # если уже есть креды — оставляем
+    if "@" in (p.netloc or ""):
+        return url
+    host = p.hostname or ""
+    netloc = f"{user}:{pwd or ''}@{host}"
+    if p.port:
+        netloc += f":{p.port}"
+    return urlunparse((p.scheme, netloc, p.path or "", p.params or "", p.query or "", p.fragment or ""))
+
+
 async def main_async() -> None:
     settings = load_settings()
     _setup_logging(settings.log_level, settings.json_logs)
     logging.info("Запуск telegram_legal_bot (aiogram)…")
 
-    # ── прокси для Telegram (опционально, читается из .env через config)
-    proxy_url = getattr(settings, "telegram_proxy_url", None)
-    proxy_user = getattr(settings, "telegram_proxy_user", None)
-    proxy_pass = getattr(settings, "telegram_proxy_pass", None)
-    session = None
-    if proxy_url:
-        auth = BasicAuth(proxy_user, proxy_pass or "") if proxy_user else None
-        session = AiohttpSession(proxy=proxy_url, proxy_auth=auth)
+    # ── Telegram proxy (вшиваем креды прямо в URL; никаких proxy_auth) ──
+    proxy_url = _embed_basic_auth(
+        getattr(settings, "telegram_proxy_url", None),
+        getattr(settings, "telegram_proxy_user", None),
+        getattr(settings, "telegram_proxy_pass", None),
+    )
+    session = AiohttpSession(proxy=proxy_url) if proxy_url else None
 
     bot = Bot(
         token=settings.telegram_token,
@@ -110,7 +123,6 @@ async def main_async() -> None:
         loop.add_signal_handler(signal.SIGINT, _stop)
         loop.add_signal_handler(signal.SIGTERM, _stop)
     except NotImplementedError:
-        # Windows fallback
         signal.signal(signal.SIGINT, lambda *_: _stop())
         signal.signal(signal.SIGTERM, lambda *_: _stop())
 
