@@ -8,6 +8,7 @@ import sys
 from typing import Sequence
 
 from telegram import BotCommand, Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     AIORateLimiter,
     Application,
@@ -15,7 +16,6 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-from telegram.constants import ParseMode
 
 from config import load_settings
 from handlers.legal_query import build_legal_message_handler
@@ -46,16 +46,12 @@ def _setup_logging(level: str, json_logs: bool) -> None:
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(getattr(logging, level, logging.INFO))
-    if json_logs:
-        handler.setFormatter(JsonFormatter())
-    else:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+    handler.setFormatter(JsonFormatter() if json_logs else logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
     root.addHandler(handler)
 
 
-# -------------------------- Error handler --------------------------------
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.exception("Unhandled error: %s", context.error)
     try:
@@ -67,7 +63,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         pass
 
 
-# -------------------------- post_init: команды ---------------------------
 async def _set_bot_commands(app: Application) -> None:
     commands: Sequence[BotCommand] = [
         BotCommand("start", "Начать работу"),
@@ -76,8 +71,7 @@ async def _set_bot_commands(app: Application) -> None:
     await app.bot.set_my_commands(commands)
 
 
-# ------------------------------- main -----------------------------------
-def main() -> None:
+async def main_async() -> None:
     settings = load_settings()
     _setup_logging(settings.log_level, settings.json_logs)
     logging.info("Запуск telegram_legal_bot…")
@@ -87,8 +81,7 @@ def main() -> None:
     application: Application = (
         ApplicationBuilder()
         .token(settings.telegram_token)
-        .rate_limiter(AIORateLimiter())  # не про наш лимитер — это телега-флуди
-        .post_init(_set_bot_commands)
+        .rate_limiter(AIORateLimiter())
         .build()
     )
 
@@ -96,41 +89,47 @@ def main() -> None:
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
 
-    # Юридические вопросы: все текстовые сообщения
+    # Юридические вопросы
     application.add_handler(build_legal_message_handler(settings, ai_service))
 
     # Глобальный обработчик ошибок
     application.add_error_handler(on_error)
 
-    # Грациозное завершение (SIGINT/SIGTERM)
-    loop = asyncio.get_event_loop()
+    # Установим команды
+    await _set_bot_commands(application)
 
+    # Грациозная остановка по сигналу
     stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
-    def _graceful_shutdown(*_: object) -> None:
+    def _stop(*_: object) -> None:
         logging.info("Получен сигнал остановки — завершаем…")
         stop_event.set()
 
-    for s in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(s, _graceful_shutdown)
-        except NotImplementedError:
-            # Windows
-            signal.signal(s, lambda *_: _graceful_shutdown())
+    try:
+        loop.add_signal_handler(signal.SIGINT, _stop)
+        loop.add_signal_handler(signal.SIGTERM, _stop)
+    except NotImplementedError:
+        # Windows: fallback
+        signal.signal(signal.SIGINT, lambda *_: _stop())
+        signal.signal(signal.SIGTERM, lambda *_: _stop())
 
-    async def runner() -> None:
-        async with application:
-            await application.start()
-            await application.updater.start_polling(
-                allowed_updates=("message",), drop_pending_updates=True
-            )
-            await stop_event.wait()
-            await application.updater.stop()
-            await application.stop()
+    # run_polling сам стартует/останавливает updater и сетку тасков
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(
+        allowed_updates=("message",), drop_pending_updates=True
+    )
 
-    loop.run_until_complete(runner())
-    logging.info("Остановлено. Пока 👋")
+    try:
+        await stop_event.wait()
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        logging.info("Остановлено. Пока 👋")
 
 
 if __name__ == "__main__":
-    main()
+    # никаких get_event_loop() — создаём и управляем лупом правильно
+    asyncio.run(main_async())

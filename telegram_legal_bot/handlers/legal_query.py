@@ -12,9 +12,9 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes, MessageHandler, filters
 from telegram.helpers import escape_markdown
 
-from config import Settings
-from services.openai_service import LegalAdvice, OpenAIService
-from utils.message_formatter import build_legal_reply, chunk_markdown_v2
+from telegram_legal_bot.config import Settings
+from telegram_legal_bot.services import OpenAIService, LegalAdvice
+from telegram_legal_bot.utils.message_formatter import build_legal_reply, chunk_markdown_v2
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ packages = [{ include = "telegram_legal_bot" }]
 python = "^3.12"
 
 # Библиотеки из кода
-python-telegram-bot = "^21.6"
+python-telegram-bot = {extras = ["rate-limiter"], version = "^22.4"}
 openai = ">=1.40.0"
 python-dotenv = "^1.0.1"
 redis = {version = "^5.0.6", optional = true}  # если вынесешь лимитер/историю в Redis

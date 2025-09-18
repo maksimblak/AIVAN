@@ -1,6 +1,6 @@
-"""Утилитарные функции и классы бота."""
+# Ничего не импортируем на инициализации пакета, чтобы избежать ранних ошибок.
+# При желании можно реэкспортнуть функции форматтера (они лёгкие).
 
-from telegram_legal_bot.utils.message_formatter import format_legal_response
-from telegram_legal_bot.utils.rate_limiter import RateLimiter
+from .message_formatter import build_legal_reply, chunk_markdown_v2, format_laws
 
-__all__ = ["RateLimiter", "format_legal_response"]
+__all__ = ["build_legal_reply", "chunk_markdown_v2", "format_laws"]
