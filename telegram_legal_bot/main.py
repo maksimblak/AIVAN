@@ -1,82 +1,135 @@
-"""Точка входа в приложение Telegram Legal Bot."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
-from typing import Any
+import sys
+from typing import Sequence
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-
-from telegram_legal_bot.config import Settings, load_settings
-from telegram_legal_bot.handlers.legal_query import LegalQueryHandler
-from telegram_legal_bot.handlers.start import help_command, start
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+from telegram import BotCommand, Update
+from telegram.ext import (
+    AIORateLimiter,
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
 )
-logger = logging.getLogger(__name__)
+from telegram.constants import ParseMode
+
+from config import load_settings
+from handlers.legal_query import build_legal_message_handler
+from handlers.start import cmd_help, cmd_start
+from services.openai_service import OpenAIService
 
 
-async def _error_handler(update: object, context: Any) -> None:
-    """Глобальный обработчик ошибок бота."""
+# ----------- Логирование (поддержка JSON-логов по флажку) -------------
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
+        data = {
+            "level": record.levelname,
+            "name": record.name,
+            "msg": record.getMessage(),
+            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+        }
+        if record.exc_info:
+            data["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(data, ensure_ascii=False)
 
-    logger.exception("Произошла ошибка при обработке update=%s", update)
+
+def _setup_logging(level: str, json_logs: bool) -> None:
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level, logging.INFO))
+
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(getattr(logging, level, logging.INFO))
+    if json_logs:
+        handler.setFormatter(JsonFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+    root.addHandler(handler)
 
 
-async def _run_application(settings: Settings) -> None:
-    """Запускает приложение и обрабатывает graceful shutdown."""
+# -------------------------- Error handler --------------------------------
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.exception("Unhandled error: %s", context.error)
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Случилась непредвиденная ошибка. Попробуйте позже."
+            )
+    except Exception:
+        pass
 
-    application = (
-        Application.builder()
-        .token(settings.bot.token)
-        .parse_mode("MarkdownV2")
-        .post_init(lambda app: logger.info("Бот инициализирован"))
+
+# -------------------------- post_init: команды ---------------------------
+async def _set_bot_commands(app: Application) -> None:
+    commands: Sequence[BotCommand] = [
+        BotCommand("start", "Начать работу"),
+        BotCommand("help", "Помощь"),
+    ]
+    await app.bot.set_my_commands(commands)
+
+
+# ------------------------------- main -----------------------------------
+def main() -> None:
+    settings = load_settings()
+    _setup_logging(settings.log_level, settings.json_logs)
+    logging.info("Запуск telegram_legal_bot…")
+
+    ai_service = OpenAIService(settings)
+
+    application: Application = (
+        ApplicationBuilder()
+        .token(settings.telegram_token)
+        .rate_limiter(AIORateLimiter())  # не про наш лимитер — это телега-флуди
+        .post_init(_set_bot_commands)
         .build()
     )
 
-    legal_query_handler = LegalQueryHandler(settings)
+    # Команды
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("help", cmd_help))
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, legal_query_handler.handle))
-    application.add_error_handler(_error_handler)
+    # Юридические вопросы: все текстовые сообщения
+    application.add_handler(build_legal_message_handler(settings, ai_service))
+
+    # Глобальный обработчик ошибок
+    application.add_error_handler(on_error)
+
+    # Грациозное завершение (SIGINT/SIGTERM)
+    loop = asyncio.get_event_loop()
 
     stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    def _graceful_shutdown(*_: object) -> None:
+        logging.info("Получен сигнал остановки — завершаем…")
+        stop_event.set()
+
+    for s in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, stop_event.set)
-        except NotImplementedError:  # pragma: no cover - Windows compatibility
-            signal.signal(sig, lambda *_: stop_event.set())
+            loop.add_signal_handler(s, _graceful_shutdown)
+        except NotImplementedError:
+            # Windows
+            signal.signal(s, lambda *_: _graceful_shutdown())
 
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    logger.info("LegalBot запущен и ожидает сообщения")
+    async def runner() -> None:
+        async with application:
+            await application.start()
+            await application.updater.start_polling(
+                allowed_updates=("message",), drop_pending_updates=True
+            )
+            await stop_event.wait()
+            await application.updater.stop()
+            await application.stop()
 
-    await stop_event.wait()
-
-    logger.info("Остановка бота...")
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
-    logger.info("Бот остановлен корректно")
-
-
-def main() -> None:
-    """Инициализирует настройки и запускает бота."""
-
-    try:
-        settings = load_settings()
-    except ValueError as exc:
-        logger.error("Не удалось загрузить настройки: %s", exc)
-        raise
-
-    asyncio.run(_run_application(settings))
+    loop.run_until_complete(runner())
+    logging.info("Остановлено. Пока 👋")
 
 
 if __name__ == "__main__":

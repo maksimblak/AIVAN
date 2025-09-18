@@ -7,13 +7,43 @@ readme = "README.md"
 packages = [{ include = "telegram_legal_bot" }]
 
 [tool.poetry.dependencies]
-python = "^3.11"
-python-telegram-bot = "^21.1"
-openai = "^1.30"
-python-dotenv = "^1.0"
+python = "^3.12"
+
+# Библиотеки из кода
+python-telegram-bot = "^21.6"
+openai = ">=1.40.0"
+python-dotenv = "^1.0.1"
+redis = {version = "^5.0.6", optional = true}  # если вынесешь лимитер/историю в Redis
+
+[tool.poetry.extras]
+prod = ["redis"]
 
 [tool.poetry.group.dev.dependencies]
+ruff = "^0.6.9"
+black = "^24.8.0"
+isort = "^5.13.2"
+mypy = "^1.10.0"
+types-redis = "^4.6.0.20240425"
+
+[tool.poetry.scripts]
+telegram-legal-bot = "telegram_legal_bot.main:main"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
+
+# --- стиль кода (по желанию, но удобно) ---
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+combine_as_imports = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+select = ["E","F","I","W","UP","N","B","PL"]
+ignore = ["E501"]
