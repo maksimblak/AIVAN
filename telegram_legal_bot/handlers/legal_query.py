@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import defaultdict, deque
@@ -9,6 +10,7 @@ from typing import Deque, Dict, Optional
 
 from aiogram import Router, types, F
 from aiogram.enums import ChatAction, ParseMode
+from aiogram.exceptions import TelegramBadRequest
 
 from telegram_legal_bot.config import Settings
 from telegram_legal_bot.services.openai_service import OpenAIService, LegalAdvice
@@ -31,6 +33,7 @@ class RateWindow:
         self.timestamps.append(now)
         return True
 
+
 _rate_map: Dict[int, RateWindow] = defaultdict(RateWindow)
 _history: Dict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=5))
 
@@ -38,11 +41,9 @@ _history: Dict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=5))
 _settings: Optional[Settings] = None
 _ai: Optional[OpenAIService] = None
 
+
 def setup_context(settings: Settings, ai: OpenAIService) -> None:
-    """
-    Инициализация зависимостей для хэндлеров.
-    Вызывается один раз из main.py перед стартом polling.
-    """
+    """Инициализация зависимостей для хэндлеров."""
     global _settings, _ai
     _settings = settings
     _ai = ai
@@ -53,6 +54,7 @@ def _looks_like_spam(text: str) -> bool:
     t = text.replace(" ", "")
     if len(t) > 20:
         from collections import Counter
+
         c = Counter(t)
         if c.most_common(1)[0][1] / len(t) > 0.6:
             return True
@@ -76,7 +78,7 @@ async def handle_legal_query(message: types.Message) -> None:
       - rate-limit
       - индикатор печати
       - запрос к GPT-5
-      - форматирование и отправка чанками
+      - форматирование и отправка чанками (с фоллбеком на plain text)
     """
     if _settings is None or _ai is None:
         logger.error("legal_query: setup_context не вызван до старта polling")
@@ -100,11 +102,10 @@ async def handle_legal_query(message: types.Message) -> None:
         return
 
     # индикатор "печатает..."
-    try:
+    with contextlib.suppress(Exception):
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    except Exception:
-        pass
 
+    # запрос к модели
     try:
         advice: LegalAdvice = await _ai.generate_legal_advice(
             user_question=text, short_history=list(_history[user_id])
@@ -117,14 +118,21 @@ async def handle_legal_query(message: types.Message) -> None:
         await message.answer("⚠️ Произошла ошибка при обработке. Попробуйте позже.")
         return
 
+    # форматирование + надёжная отправка
     reply = build_legal_reply(advice.summary, advice.details, advice.laws)
     for i, ch in enumerate(chunk_markdown_v2(reply)):
         prefix = "" if i == 0 else "…продолжение:\n\n"
-        await message.answer(
-            prefix + ch,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            disable_web_page_preview=True,
-        )
+        text_part = prefix + ch
+        try:
+            await message.answer(
+                text_part,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                disable_web_page_preview=True,
+            )
+        except TelegramBadRequest:
+            # ВАЖНО: переопределяем parse_mode, иначе сработает глобальный MARKDOWN_V2
+            plain = text_part.replace("\\", "").replace("*", "").replace("_", "")
+            await message.answer(plain, parse_mode=None, disable_web_page_preview=True)
 
     if advice.summary:
         _history[user_id].append(advice.summary)
