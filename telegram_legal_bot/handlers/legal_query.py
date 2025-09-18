@@ -10,14 +10,14 @@ from typing import Deque, Dict, Optional
 from aiogram import Router, types, F
 from aiogram.enums import ChatAction, ParseMode
 
-from telegram_legal_bot.config import Settings, load_settings
+from telegram_legal_bot.config import Settings
 from telegram_legal_bot.services.openai_service import OpenAIService, LegalAdvice
 from telegram_legal_bot.utils.message_formatter import build_legal_reply, chunk_markdown_v2
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-# --------- простейший per-user rate limit (in-memory, 1h окно) ----------
+# ───────── per-user rate limit (in-memory, 1h окно) ─────────
 @dataclass
 class RateWindow:
     timestamps: Deque[float] = field(default_factory=deque)
@@ -34,10 +34,19 @@ class RateWindow:
 _rate_map: Dict[int, RateWindow] = defaultdict(RateWindow)
 _history: Dict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=5))
 
-# DI контейнер-подобно: положим сервисы в "context" роутера
-def setup_context(router: Router, settings: Settings, ai: OpenAIService) -> None:
-    router.data["settings"] = settings
-    router.data["ai"] = ai
+# ───────── DI через module-level singletons ─────────
+_settings: Optional[Settings] = None
+_ai: Optional[OpenAIService] = None
+
+def setup_context(settings: Settings, ai: OpenAIService) -> None:
+    """
+    Инициализация зависимостей для хэндлеров.
+    Вызывается один раз из main.py перед стартом polling.
+    """
+    global _settings, _ai
+    _settings = settings
+    _ai = ai
+    logger.info("legal_query: контекст инициализирован")
 
 
 def _looks_like_spam(text: str) -> bool:
@@ -60,7 +69,7 @@ def _looks_like_spam(text: str) -> bool:
 
 
 @router.message(F.text & ~F.text.startswith("/"))
-async def handle_legal_query(message: types.Message, event_chat: types.Chat) -> None:
+async def handle_legal_query(message: types.Message) -> None:
     """
     Обрабатывает любой текст без команд:
       - валидация
@@ -69,13 +78,15 @@ async def handle_legal_query(message: types.Message, event_chat: types.Chat) -> 
       - запрос к GPT-5
       - форматирование и отправка чанками
     """
-    settings: Settings = router.data["settings"]
-    ai: OpenAIService = router.data["ai"]
+    if _settings is None or _ai is None:
+        logger.error("legal_query: setup_context не вызван до старта polling")
+        await message.answer("Сервис ещё инициализируется. Попробуйте через несколько секунд.")
+        return
 
     text = (message.text or "").strip()
-    if len(text) < settings.min_question_length:
+    if len(text) < _settings.min_question_length:
         await message.answer(
-            f"🧐 Пожалуйста, опишите вопрос подробнее (минимум {settings.min_question_length} символов)."
+            f"🧐 Пожалуйста, опишите вопрос подробнее (минимум {_settings.min_question_length} символов)."
         )
         return
     if _looks_like_spam(text):
@@ -84,7 +95,7 @@ async def handle_legal_query(message: types.Message, event_chat: types.Chat) -> 
 
     user_id = message.from_user.id if message.from_user else 0
     now = time.time()
-    if not _rate_map[user_id].hit(now, settings.max_requests_per_hour):
+    if not _rate_map[user_id].hit(now, _settings.max_requests_per_hour):
         await message.answer("⏳ Лимит запросов на час исчерпан. Попробуйте позже.")
         return
 
@@ -95,7 +106,7 @@ async def handle_legal_query(message: types.Message, event_chat: types.Chat) -> 
         pass
 
     try:
-        advice: LegalAdvice = await ai.generate_legal_advice(
+        advice: LegalAdvice = await _ai.generate_legal_advice(
             user_question=text, short_history=list(_history[user_id])
         )
     except asyncio.TimeoutError:
@@ -109,7 +120,11 @@ async def handle_legal_query(message: types.Message, event_chat: types.Chat) -> 
     reply = build_legal_reply(advice.summary, advice.details, advice.laws)
     for i, ch in enumerate(chunk_markdown_v2(reply)):
         prefix = "" if i == 0 else "…продолжение:\n\n"
-        await message.answer(prefix + ch, parse_mode=ParseMode.MARKDOWN_V2, disable_web_page_preview=True)
+        await message.answer(
+            prefix + ch,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            disable_web_page_preview=True,
+        )
 
     if advice.summary:
         _history[user_id].append(advice.summary)
