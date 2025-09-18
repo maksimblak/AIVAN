@@ -25,6 +25,10 @@ class Settings:
     max_requests_per_hour: int = 10
     min_question_length: int = 20
 
+    telegram_proxy_url: str | None = None
+    telegram_proxy_user: str | None = None
+    telegram_proxy_pass: str | None = None
+
     # Логи
     log_level: str = "INFO"
     json_logs: bool = False
@@ -69,6 +73,9 @@ def load_settings() -> Settings:
     log_level = os.getenv("LOG_LEVEL", "INFO").upper().strip()
     json_logs = _get_bool("JSON_LOGS", False)
     system_prompt = os.getenv("SYSTEM_PROMPT") or Settings.system_prompt
+    telegram_proxy_url = os.getenv("TELEGRAM_PROXY_URL") or None
+    telegram_proxy_user = os.getenv("TELEGRAM_PROXY_USER") or None
+    telegram_proxy_pass = os.getenv("TELEGRAM_PROXY_PASS") or None
 
     return Settings(
         telegram_token=token,
@@ -83,4 +90,7 @@ def load_settings() -> Settings:
         log_level=log_level,
         json_logs=json_logs,
         system_prompt=system_prompt,
+        telegram_proxy_url=telegram_proxy_url,
+        telegram_proxy_user=telegram_proxy_user,
+        telegram_proxy_pass=telegram_proxy_pass,
     )

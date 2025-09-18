@@ -82,23 +82,30 @@ async def handle_legal_query(message: types.Message) -> None:
     """
     if _settings is None or _ai is None:
         logger.error("legal_query: setup_context не вызван до старта polling")
-        await message.answer("Сервис ещё инициализируется. Попробуйте через несколько секунд.")
+        await message.answer(
+            "Сервис ещё инициализируется. Попробуйте через несколько секунд.",
+            parse_mode=None,
+        )
         return
 
     text = (message.text or "").strip()
     if len(text) < _settings.min_question_length:
         await message.answer(
-            f"🧐 Пожалуйста, опишите вопрос подробнее (минимум {_settings.min_question_length} символов)."
+            f"🧐 Пожалуйста, опишите вопрос подробнее (минимум {_settings.min_question_length} символов).",
+            parse_mode=None,
         )
         return
     if _looks_like_spam(text):
-        await message.answer("🤖 Похоже на спам/флуд. Если это ошибка — переформулируйте вопрос.")
+        await message.answer(
+            "🤖 Похоже на спам/флуд. Если это ошибка — переформулируйте вопрос.",
+            parse_mode=None,
+        )
         return
 
     user_id = message.from_user.id if message.from_user else 0
     now = time.time()
     if not _rate_map[user_id].hit(now, _settings.max_requests_per_hour):
-        await message.answer("⏳ Лимит запросов на час исчерпан. Попробуйте позже.")
+        await message.answer("⏳ Лимит запросов на час исчерпан. Попробуйте позже.", parse_mode=None)
         return
 
     # индикатор "печатает..."
@@ -111,11 +118,11 @@ async def handle_legal_query(message: types.Message) -> None:
             user_question=text, short_history=list(_history[user_id])
         )
     except asyncio.TimeoutError:
-        await message.answer("⏱️ Превышено время ожидания ответа. Попробуйте позже.")
+        await message.answer("⏱️ Превышено время ожидания ответа. Попробуйте позже.", parse_mode=None)
         return
     except Exception as e:
         logger.exception("Ошибка OpenAI: %s", e)
-        await message.answer("⚠️ Произошла ошибка при обработке. Попробуйте позже.")
+        await message.answer("⚠️ Произошла ошибка при обработке. Попробуйте позже.", parse_mode=None)
         return
 
     # форматирование + надёжная отправка

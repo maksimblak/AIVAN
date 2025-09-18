@@ -10,8 +10,10 @@ from typing import Sequence
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
+from aiohttp import BasicAuth
 
 # ── надёжные импорты (работает и как модуль, и как файл) ───────────────
 try:
@@ -69,13 +71,23 @@ async def main_async() -> None:
     _setup_logging(settings.log_level, settings.json_logs)
     logging.info("Запуск telegram_legal_bot (aiogram)…")
 
+    # ── прокси для Telegram (опционально, читается из .env через config)
+    proxy_url = getattr(settings, "telegram_proxy_url", None)
+    proxy_user = getattr(settings, "telegram_proxy_user", None)
+    proxy_pass = getattr(settings, "telegram_proxy_pass", None)
+    session = None
+    if proxy_url:
+        auth = BasicAuth(proxy_user, proxy_pass or "") if proxy_user else None
+        session = AiohttpSession(proxy=proxy_url, proxy_auth=auth)
+
     bot = Bot(
         token=settings.telegram_token,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
+        session=session,  # может быть None — тогда без прокси
     )
     dp = Dispatcher()
 
-    # DI: прокидываем конфиг и OpenAI-сервис в роутер
+    # DI: прокидываем конфиг и OpenAI-сервис в хэндлеры
     ai = OpenAIService(settings)
     setup_context(settings, ai)
 
