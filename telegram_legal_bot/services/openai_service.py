@@ -28,7 +28,10 @@ LEGAL_SCHEMA: Dict[str, Any]
 
 try:
     # Приоритет: новые имена (PROMPT_V2/LEGAL_SCHEMA_V2)
-    from telegram_legal_bot.promt import PROMPT_V2 as SYSTEM_PROMPT, LEGAL_SCHEMA_V2 as LEGAL_SCHEMA  # type: ignore
+    from telegram_legal_bot.promt import (  # type: ignore
+        PROMPT_V2 as SYSTEM_PROMPT,
+        LEGAL_SCHEMA_V2 as LEGAL_SCHEMA,
+    )
 except Exception:
     try:
         # Совместимость: старое имя PROMPT, без продвинутой схемы
@@ -159,16 +162,24 @@ class OpenAIService:
     # Публичные методы
     # ──────────────────────────────────────────────────────────────────────
 
-    async def ask_ivan(self, question: str) -> Dict[str, Any]:
+    async def ask_ivan(
+        self,
+        question: str,
+        short_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
         """
         Высокоточный режим: строго структурированный юридический ответ с инструментами поиска.
         Возвращает dict: {"data": <json|raw>, "citations": <list|None>, "raw_text": <str|None>}
+        Теперь поддерживает короткую историю диалога (последние 6 сообщений user/assistant).
         """
         # Настройки с дефолтами на случай отсутствия полей в Settings
         recency_days = getattr(self._s, "web_search_recency_days", 3650)
         max_results = getattr(self._s, "web_search_max_results", 8)
         tool_choice = getattr(self._s, "tool_choice", "required")
-        reasoning_effort = getattr(self._s, "reasoning_effort", None) or getattr(self._s, "openai_reasoning_effort", "medium")
+        reasoning_effort = (
+            getattr(self._s, "reasoning_effort", None)
+            or getattr(self._s, "openai_reasoning_effort", "medium")
+        )
         max_output_tokens = getattr(self._s, "max_output_tokens", None) or getattr(self._s, "openai_max_tokens", 1800)
         temperature = getattr(self._s, "temperature", None) or getattr(self._s, "openai_temperature", 0.3)
         top_p = getattr(self._s, "top_p", 1.0)
@@ -176,18 +187,26 @@ class OpenAIService:
         search_domains = getattr(self._s, "search_domains", None)
         file_search_enabled = getattr(self._s, "file_search_enabled", True)
 
+        # История (хвост до 6 сообщений, только роли user/assistant)
+        history_msgs: List[Dict[str, str]] = []
+        if short_history:
+            for h in short_history[-6:]:
+                r, c = h.get("role"), h.get("content")
+                if r in {"user", "assistant"} and c:
+                    history_msgs.append({"role": r, "content": str(c)})
+
         payload: Dict[str, Any] = {
             "model": getattr(self._s, "openai_model", "gpt-5"),
             "input": [
                 {"role": "system", "content": SYSTEM_PROMPT},
+                *history_msgs,
                 {"role": "user", "content": question},
             ],
             "response_format": LEGAL_SCHEMA,  # ← подаём всю обёртку V2
             "tools": [
-                {"type": "web_search", "web_search": {"recency_days": recency_days, "max_results": max_results}},
+                {"type": "web_search"},
             ],
             "tool_choice": tool_choice,
-            "extra_body": {"citations": True},
             "reasoning": {"effort": reasoning_effort},
             "temperature": temperature,
             "top_p": top_p,
@@ -197,10 +216,12 @@ class OpenAIService:
         }
 
         if search_domains:
-            payload["extra_body"]["domains"] = [d.strip() for d in str(search_domains).split(",") if d.strip()]
+            payload["extra_body"]["domains"] = [
+                d.strip() for d in str(search_domains).split(",") if d.strip()
+            ]
 
-        if file_search_enabled:
-            payload["tools"].append({"type": "file_search"})
+        # if file_search_enabled:
+        #     payload["tools"].append({"type": "file_search"})
 
         # Вызов с авто-дауншифтом неподдержанных ключей
         optional_keys = {
@@ -222,7 +243,6 @@ class OpenAIService:
         citations = getattr(resp, "citations", None)
         if citations is None:
             try:
-                # возможная форма в некоторых SDK
                 out = getattr(resp, "output", None) or []
                 if out and hasattr(out[0], "citations"):
                     citations = getattr(out[0], "citations", None)
@@ -406,9 +426,6 @@ class OpenAIService:
                 if bad and (bad in pl or bad in optional_keys):
                     log.debug("SDK doesn't support '%s' — removing and retrying...", bad)
                     pl.pop(bad, None)
-                    # защитно убираем вложенные контейнеры
-                    if bad in {"reasoning", "text", "response_format", "tools", "tool_choice", "extra_body", "max_output_tokens"}:
-                        pl.pop(bad, None)
                     continue
                 raise
             except Exception as e:
@@ -565,7 +582,7 @@ class OpenAIService:
     @staticmethod
     def _build_proxy_url(url: Optional[str], user: Optional[str], pwd: Optional[str]) -> Optional[str]:
         """
-        Возвращает корректный proxy-URL вида http(s)://user:pass@host:port
+        Возвращает корректный proxy-URL вида http(s)://user:pass@host:port.
         Логин/пароль экранируются (quote) на случай спецсимволов.
         Добавляем схему http:// если не указана.
         """
@@ -621,7 +638,6 @@ class OpenAIService:
         if isinstance(output, list):
             parts: List[str] = []
             for item in output:
-                # объект SDK или dict
                 content = None
                 if isinstance(item, dict):
                     content = item.get("content")
@@ -631,13 +647,11 @@ class OpenAIService:
                 if isinstance(content, list):
                     for seg in content:
                         if isinstance(seg, dict):
-                            # новый тип сегмента
                             if seg.get("type") in {"output_text", "text"}:
                                 txt = seg.get("text")
                                 if isinstance(txt, str):
                                     parts.append(txt)
                         else:
-                            # объект SDK
                             seg_type = getattr(seg, "type", None)
                             if seg_type in {"output_text", "text"}:
                                 txt = getattr(seg, "text", None)
@@ -686,7 +700,7 @@ class OpenAIService:
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                obj = json.loads(text[start: end + 1])
+                obj = json.loads(text[start : end + 1])
                 if isinstance(obj, dict):
                     return obj
             except Exception:

@@ -13,15 +13,17 @@ from telegram_legal_bot.config import Settings
 from telegram_legal_bot.services import OpenAIService
 from telegram_legal_bot.utils.rate_limiter import RateLimiter
 from telegram_legal_bot.utils.message_formatter import (
+    md2,
     build_legal_reply,
     chunk_markdown_v2,
     strip_md2_escapes,
+    _escape_md2_url as escape_md2_url,  # безопасные URL для MarkdownV2
 )
 
 router = Router(name="legal_query")
 log = logging.getLogger("legal_query")
 
-# Контекст, инициализируется из main.py
+# ── Глобальный контекст хэндлера (инициализируется из main.py) ────────────────
 _settings: Optional[Settings] = None
 _ai: Optional[OpenAIService] = None
 _rl: Optional[RateLimiter] = None
@@ -42,111 +44,134 @@ def setup_context(settings: Settings, ai: OpenAIService) -> None:
     _history = defaultdict(lambda: deque(maxlen=pairs * 2))
 
 
-def _fmt_md(text: str) -> str:
-    """
-    Мини-экранирование под MarkdownV2, чтобы гарантированно не ронять формат.
-    """
-    if not text:
-        return ""
-    # порядок важен: сначала обратный слеш
-    text = text.replace("\\", "\\\\")
-    for ch in ("_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"):
-        text = text.replace(ch, "\\" + ch)
-    return text
-
-
 def _schema_to_markdown(d: Dict[str, Any]) -> str:
     """
-    Рендерит ответ по LEGAL_SCHEMA_V2 в читаемый MarkdownV2.
-    Поля схемы опциональны — выводим то, что пришло.
+    Рендер ответа по LEGAL_SCHEMA_V2 → MarkdownV2.
+    Покрыты поля: conclusion, legal_basis(act, article, pinpoint, quote),
+    cases(court, date, case_no, url, holding, facts, norms, similarity),
+    analysis, risks, next_actions, sources(title, url), doc_drafts(title, doc_type),
+    clarifications.
     """
     lines: List[str] = []
 
+    def add(s: str) -> None:
+        if s:
+            lines.append(s)
+
+    # Краткий вывод
     conclusion = (d.get("conclusion") or "").strip()
     if conclusion:
-        lines.append(f"*Кратко:* {_fmt_md(conclusion)}")
-
-    # Подборка дел
-    cases = d.get("cases") or []
-    if isinstance(cases, list) and cases:
-        lines.append("\n*Подборка дел:*")
-        for c in cases:
-            court = _fmt_md(str(c.get("court", "")))
-            date = _fmt_md(str(c.get("date", "")))
-            case_no = _fmt_md(str(c.get("case_no", "")))
-            url = str(c.get("url", "") or "")
-            holding = _fmt_md(str(c.get("holding", "")))
-            facts = _fmt_md(str(c.get("facts", "")))
-
-            head = f"• {court}, {date}, № {case_no}"
-            if url:
-                # ссылка в круглых скобках — экранируем заранее
-                head += f" — [ссылка]({url})"
-            lines.append(head)
-            if holding:
-                lines.append(f"  └ Исход: {holding}")
-            if facts:
-                lines.append(f"  └ Фабула: {facts}")
+        add(f"*Кратко:* {md2(conclusion)}")
 
     # Нормы права
     legal_basis = d.get("legal_basis") or []
     if isinstance(legal_basis, list) and legal_basis:
-        lines.append("\n*Нормы права:*")
+        add("\n*Нормы права:*")
         for n in legal_basis:
-            act = _fmt_md(str(n.get("act", "")))
-            article = _fmt_md(str(n.get("article", "")))
-            lines.append(f"• {act}, {article}")
+            act = md2(str(n.get("act", "")).strip())
+            article = md2(str(n.get("article", "")).strip())
+            pin = md2(str(n.get("pinpoint", "")).strip()) if n.get("pinpoint") else ""
+            quote = md2(str(n.get("quote", "")).strip()) if n.get("quote") else ""
+            head = "• "
+            head += f"{act}, " if act else ""
+            head += f"{article}" if article else ""
+            if pin:
+                head += f" ({pin})"
+            add(head.strip() if head.strip() != "•" else "• Норма")
+            if quote:
+                add(f"  └ «{quote}»")
+
+    # Подборка дел
+    cases = d.get("cases") or []
+    if isinstance(cases, list) and cases:
+        add("\n*Подборка дел:*")
+        for c in cases:
+            court = md2(str(c.get("court", "")).strip())
+            date = md2(str(c.get("date", "")).strip())
+            case_no = md2(str(c.get("case_no", "")).strip())
+            url_raw = str(c.get("url") or "").strip()
+            url = escape_md2_url(url_raw) if url_raw else ""
+            holding = md2(str(c.get("holding", "")).strip())
+            facts = md2(str(c.get("facts", "")).strip())
+            norms = c.get("norms") or []
+            sim = c.get("similarity")
+
+            head = "• "
+            head += f"{court}, " if court else ""
+            head += f"{date}, " if date else ""
+            head += f"№ {case_no}" if case_no else "дело"
+            if url:
+                head += f" — [ссылка]({url})"
+            if isinstance(sim, (int, float)):
+                head += f" (схожесть: {sim:.2f})"
+            add(head)
+
+            if holding:
+                add(f"  └ Исход: {holding}")
+            if facts:
+                add(f"  └ Фабула: {facts}")
+            if isinstance(norms, list) and norms:
+                add("  └ Нормы: " + md2("; ".join(map(str, norms))))
 
     # Аналитика
     analysis = (d.get("analysis") or "").strip()
     if analysis:
-        lines.append("\n*Аналитика:*")
-        lines.append(_fmt_md(analysis))
+        add("\n*Аналитика:*")
+        add(md2(analysis))
 
     # Риски
     risks = d.get("risks") or []
     if isinstance(risks, list) and risks:
-        lines.append("\n*Риски:*")
+        add("\n*Риски:*")
         for r in risks:
-            lines.append(f"• {_fmt_md(str(r))}")
+            add("• " + md2(str(r)))
 
-    # Рекомендуемые действия
+    # Шаги
     steps = d.get("next_actions") or []
     if isinstance(steps, list) and steps:
-        lines.append("\n*Шаги:*")
+        add("\n*Шаги:*")
         for s in steps:
-            lines.append(f"• {_fmt_md(str(s))}")
+            add("• " + md2(str(s)))
 
-    # Источники (минимум 2 домена ожидается схемой, но рендерим всё, что пришло)
+    # Источники
     sources = d.get("sources") or []
     if isinstance(sources, list) and sources:
-        lines.append("\n*Источники:*")
+        add("\n*Источники:*")
         for s in sources:
-            title = _fmt_md(str(s.get("title", "") or "Источник"))
-            url = str(s.get("url", "") or "")
-            if url:
-                lines.append(f"• [{title}]({url})")
-            else:
-                lines.append(f"• {title}")
+            title = md2(str(s.get("title") or "Источник"))
+            u_raw = str(s.get("url") or "")
+            u = escape_md2_url(u_raw) if u_raw else ""
+            add(f"• [{title}]({u})" if u else f"• {title}")
 
-    # Уточняющие вопросы (если модель их вернула)
+    # Черновики документов
+    drafts = d.get("doc_drafts") or []
+    if isinstance(drafts, list) and drafts:
+        add("\n*Черновики документов:*")
+        for doc in drafts:
+            title = md2(str(doc.get("title") or "Документ"))
+            dtype = md2(str(doc.get("doc_type") or ""))
+            add(f"• *{title}*{f' ({dtype})' if dtype else ''} — доступен черновик")
+
+    # Уточнения
     clar = d.get("clarifications") or []
     if isinstance(clar, list) and clar:
-        lines.append("\n*Что ещё нужно уточнить:*")
+        add("\n*Что ещё нужно уточнить:*")
         for q in clar:
-            lines.append(f"• {_fmt_md(str(q))}")
+            add("• " + md2(str(q)))
 
-    return "\n".join(lines).strip() or _fmt_md(d.get("conclusion") or "")
+    result = "\n".join(lines).strip()
+    return result or md2(d.get("conclusion") or "")
 
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_legal_query(message: types.Message) -> None:
     """
-    Основной хэндлер юридических вопросов.
-    — Валидация длины
-    — Rate-limit на пользователя
-    — Индикация «печатает…»
-    — Ответ + разбиение сообщения по 4096
+    Основной хэндлер юридических вопросов:
+      • валидация длины,
+      • per-user rate-limit,
+      • индикатор «печатает…»,
+      • попытка строгого режима (LEGAL_SCHEMA_V2) и фолбэк,
+      • безопасная разбивка сообщения по 4096 символов.
     """
     assert _settings is not None and _ai is not None and _rl is not None
 
@@ -183,7 +208,7 @@ async def handle_legal_query(message: types.Message) -> None:
             assistant_summary: str = ""
 
             try:
-                rich = await _ai.ask_ivan(text)
+                rich = await _ai.ask_ivan(text)  # точный режим (без истории)
                 data = rich.get("data")
                 if isinstance(data, dict) and (data.get("conclusion") or data.get("sources") or data.get("cases")):
                     md_text = _schema_to_markdown(data)
@@ -191,7 +216,7 @@ async def handle_legal_query(message: types.Message) -> None:
             except Exception as e_json:
                 log.warning("ask_ivan failed, fallback to simple path: %r", e_json)
 
-            # 2) Фолбэк: упрощённый путь (answer + laws)
+            # 2) Фолбэк: упрощённый путь (answer + laws) — с краткой историей
             if not md_text:
                 result = await _ai.generate_legal_answer(text, short_history=short_history)
                 answer: str = result.get("answer") or ""
@@ -209,7 +234,7 @@ async def handle_legal_query(message: types.Message) -> None:
             try:
                 await message.answer(part, parse_mode=_settings.parse_mode)
             except TelegramBadRequest:
-                # фолбэк если MarkdownV2 сломался — убираем экранирование
+                # Фолбэк: если MarkdownV2 сломался — убираем экранирование
                 await message.answer(strip_md2_escapes(part), parse_mode=None)
 
         log.info("OUT: user=%s chat=%s sent_chunks=%s", user_id, chat_id, len(chunks))

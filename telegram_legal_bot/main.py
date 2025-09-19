@@ -69,15 +69,27 @@ def _setup_logging(json_mode: bool) -> None:
 
 # ── Утилиты ───────────────────────────────────────────────────────────────────
 def _build_proxy_url(url: str | None, user: Optional[str], pwd: Optional[str]) -> Optional[str]:
-    """http(s)://user:pass@host:port — с экранированием логина/пароля."""
+    """
+    Делает валидный прокси-URL для AiohttpSession:
+      - добавляет схему http:// при её отсутствии;
+      - при наличии user/password и отсутствии userinfo — внедряет user:pass@;
+      - логин/пароль экранируются.
+    Примеры входа: "localhost:8080", "http://host:8080", "socks5://1.2.3.4:1080".
+    """
     if not url:
         return None
-    if user and pwd and "@" not in url and "://" in url:
-        scheme, rest = url.split("://", 1)
-        u = quote(user, safe="")
-        p = quote(pwd, safe="")
-        return f"{scheme}://{u}:{p}@{rest}"
-    return url
+
+    u = url.strip()
+    if "://" not in u:
+        u = "http://" + u  # по умолчанию http://
+
+    if user and pwd and "@" not in u:
+        scheme, rest = u.split("://", 1)
+        u_enc = quote(user, safe="")
+        p_enc = quote(pwd, safe="")
+        u = f"{scheme}://{u_enc}:{p_enc}@{rest}"
+
+    return u
 
 
 def _get_api_server(base: Optional[str]) -> TelegramAPIServer:
