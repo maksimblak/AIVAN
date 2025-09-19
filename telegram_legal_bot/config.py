@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 
 # ── утилиты чтения ENV ────────────────────────────────────────────────────────
@@ -14,7 +14,6 @@ def _get_bool(name: str, default: bool = False) -> bool:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on", "y"}
 
-
 def _get_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:
@@ -23,7 +22,6 @@ def _get_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
-
 
 def _get_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -34,16 +32,15 @@ def _get_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
-
 def _maybe_load_dotenv() -> None:
     """
     Лёгкий .env-лоадер без зависимостей.
-    Ищем .env в (по порядку):
-      • текущей рабочей директории
-      • каталоге этого файла (…/telegram_legal_bot)
-      • его родителе (корень проекта)
-    Подставляем только те ключи, которых нет в os.environ.
-    Формат строк: KEY=VALUE, строки с # — комментарии.
+    Ищет .env в:
+      • текущая рабочая директория
+      • каталог этого файла
+      • родитель каталога (корень проекта)
+    Подставляет только те ключи, которых нет в os.environ.
+    Формат: KEY=VALUE. Строки с # игнорируются.
     """
     candidates: Iterable[Path] = {
         Path.cwd() / ".env",
@@ -64,9 +61,8 @@ def _maybe_load_dotenv() -> None:
                 if k and k not in os.environ:
                     os.environ[k] = v
         except Exception:
-            # best-effort: тихо игнорим
+            # best-effort
             pass
-
 
 def _env_first(*names: str, default: str = "") -> str:
     """Возвращает первое непустое значение из списка имён ENV."""
@@ -89,43 +85,56 @@ class Settings:
       - OPENAI_API_KEY     (или OPENAI_KEY / OPENAI_TOKEN)
     """
 
-    # обязательные (в начале!)
+    # обязательные
     telegram_token: str
     openai_api_key: str
 
     # Telegram proxy (опционально)
-    telegram_proxy_url: str | None = None
-    telegram_proxy_user: str | None = None
-    telegram_proxy_pass: str | None = None
+    telegram_proxy_url: Optional[str] = None
+    telegram_proxy_user: Optional[str] = None
+    telegram_proxy_pass: Optional[str] = None
 
     # Кастомный Bot API сервер (self-hosted), напр. http://127.0.0.1:8081
-    telegram_api_base: str | None = None
+    telegram_api_base: Optional[str] = None
 
-    # OpenAI базовые настройки
+    # OpenAI: базовые параметры генерации
     openai_model: str = "gpt-5"
     openai_temperature: float = 0.3
     openai_max_tokens: int = 1500
-    openai_verbosity: str = "low"            # low|medium|high
-    openai_reasoning_effort: str = "medium"  # low|medium|high
+    openai_verbosity: str = "low"             # low|medium|high (для логгирования/уровня трассировки)
+    openai_reasoning_effort: str = "medium"   # low|medium|high (оставлено для совместимости)
+
+    # Доп. параметры генерации (под ask_ivan)
+    top_p: float = 1.0
+    seed: int = 7
+    max_output_tokens: int = 1800              # специально под Responses API (может отличаться от openai_max_tokens)
+    reasoning_effort: str = "medium"           # дубль значения openai_reasoning_effort (удобнее в коде)
 
     # OpenAI proxy (опционально)
-    openai_proxy_url: str | None = None
-    openai_proxy_user: str | None = None
-    openai_proxy_pass: str | None = None
+    openai_proxy_url: Optional[str] = None
+    openai_proxy_user: Optional[str] = None
+    openai_proxy_pass: Optional[str] = None
 
     # App
-    parse_mode: str = "MarkdownV2"
+    parse_mode: Optional[str] = "MarkdownV2"   # нормализуется в None при "none"/""/ "null"
     log_json: bool = True
     min_question_length: int = 20
     max_requests_per_hour: int = 10
-    history_size: int = 5
+    history_size: int = 5                      # число пар «вопрос-ответ» рекомендуется * 2 в deque
+
+    # Поиск/инструменты
+    search_domains: Optional[str] = None       # CSV: "kad.arbitr.ru,sudrf.ru,vsrf.ru,ksrf.ru,publication.pravo.gov.ru"
+    web_search_recency_days: int = 3650
+    web_search_max_results: int = 8
+    file_search_enabled: bool = True
+    tool_choice: str = "required"              # "required" | "auto"
 
 
 def load_settings() -> Settings:
     """Собирает настройки. Пытается подхватить .env, если переменных нет в окружении."""
     _maybe_load_dotenv()
 
-    # --- Telegram token: поддерживаем альтернативные имена
+    # Telegram token (поддержка альтернативных имён)
     tg_token = _env_first(
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_TOKEN",
@@ -133,7 +142,7 @@ def load_settings() -> Settings:
         "TG_BOT_TOKEN",
         "TELEGRAM_BOT_API_TOKEN",
     )
-    # --- OpenAI key: поддерживаем альтернативные имена
+    # OpenAI key (поддержка альтернативных имён)
     oaikey = _env_first(
         "OPENAI_API_KEY",
         "OPENAI_KEY",
@@ -153,20 +162,24 @@ def load_settings() -> Settings:
             "Проверь .env или переменные окружения процесса."
         )
 
-    # Telegram proxy
+    # Telegram proxy / Bot API
     tg_proxy_url = os.getenv("TELEGRAM_PROXY_URL") or None
     tg_proxy_user = os.getenv("TELEGRAM_PROXY_USER") or None
     tg_proxy_pass = os.getenv("TELEGRAM_PROXY_PASS") or None
-
-    # Кастомный Bot API сервер (если используешь self-hosted)
     tg_api_base = os.getenv("TELEGRAM_API_BASE") or os.getenv("BOT_API_BASE") or None
 
     # OpenAI base
     model = os.getenv("OPENAI_MODEL", "gpt-5")
     temp = _get_float("OPENAI_TEMPERATURE", 0.3)
-    max_tokens = _get_int("OPENAI_MAX_TOKENS", 1500)
+    oai_max_tokens = _get_int("OPENAI_MAX_TOKENS", 1500)
     verbosity = (os.getenv("OPENAI_VERBOSITY", "low") or "low").lower()
     effort = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").lower()
+
+    # Доп. генерация (Responses API)
+    top_p = _get_float("TOP_P", 1.0)
+    seed = _get_int("SEED", 7)
+    max_output_tokens = _get_int("MAX_OUTPUT_TOKENS", 1800)
+    reasoning_effort = (os.getenv("REASONING_EFFORT", effort) or effort).lower()  # синхронизируем с OPENAI_REASONING_EFFORT
 
     # OpenAI proxy
     oai_proxy_url = os.getenv("OPENAI_PROXY_URL") or None
@@ -174,42 +187,77 @@ def load_settings() -> Settings:
     oai_proxy_pass = os.getenv("OPENAI_PROXY_PASS") or None
 
     # App
-    parse_mode = os.getenv("PARSE_MODE", "MarkdownV2")
+    parse_mode_raw = os.getenv("PARSE_MODE", "MarkdownV2")
+    parse_mode_norm = parse_mode_raw.strip().lower()
+    parse_mode: Optional[str]
+    if parse_mode_norm in {"none", "", "null"}:
+        parse_mode = None
+    else:
+        parse_mode = parse_mode_raw
+
     log_json = _get_bool("LOG_JSON", True)
     min_len = _get_int("MIN_QUESTION_LENGTH", 20)
     max_per_hour = _get_int("MAX_REQUESTS_PER_HOUR", 10)
     history_size = _get_int("HISTORY_SIZE", 5)
 
-    # Лёгкие валидации
+    # Поиск/инструменты
+    search_domains = os.getenv("SEARCH_DOMAINS") or None
+    web_search_recency_days = _get_int("WEB_SEARCH_RECENCY_DAYS", 3650)
+    web_search_max_results = _get_int("WEB_SEARCH_MAX_RESULTS", 8)
+    file_search_enabled = _get_bool("FILE_SEARCH_ENABLED", True)
+    tool_choice = (os.getenv("TOOL_CHOICE", "required") or "required").lower()
+
+    # Валидации
     if not (0.0 <= temp <= 2.0):
         temp = 0.3
-    if max_tokens < 1:
-        max_tokens = 1500
+    if oai_max_tokens < 1:
+        oai_max_tokens = 1500
+    if max_output_tokens < 1:
+        max_output_tokens = 1800
     if verbosity not in {"low", "medium", "high"}:
         verbosity = "low"
     if effort not in {"low", "medium", "high"}:
         effort = "medium"
-    if parse_mode not in {"MarkdownV2", "HTML", "Markdown", "None"}:
-        parse_mode = "MarkdownV2"
+    if reasoning_effort not in {"low", "medium", "high"}:
+        reasoning_effort = effort
+    if tool_choice not in {"required", "auto"}:
+        tool_choice = "required"
+    if not (0.0 < top_p <= 1.0):
+        top_p = 1.0
 
     return Settings(
         telegram_token=tg_token,
         openai_api_key=oaikey,
+
         telegram_proxy_url=tg_proxy_url,
         telegram_proxy_user=tg_proxy_user,
         telegram_proxy_pass=tg_proxy_pass,
         telegram_api_base=tg_api_base,
+
         openai_model=model,
         openai_temperature=temp,
-        openai_max_tokens=max_tokens,
+        openai_max_tokens=oai_max_tokens,
         openai_verbosity=verbosity,
         openai_reasoning_effort=effort,
+
+        top_p=top_p,
+        seed=seed,
+        max_output_tokens=max_output_tokens,
+        reasoning_effort=reasoning_effort,
+
         openai_proxy_url=oai_proxy_url,
         openai_proxy_user=oai_proxy_user,
         openai_proxy_pass=oai_proxy_pass,
+
         parse_mode=parse_mode,
         log_json=log_json,
         min_question_length=min_len,
         max_requests_per_hour=max_per_hour,
         history_size=history_size,
+
+        search_domains=search_domains,
+        web_search_recency_days=web_search_recency_days,
+        web_search_max_results=web_search_max_results,
+        file_search_enabled=file_search_enabled,
+        tool_choice=tool_choice,
     )

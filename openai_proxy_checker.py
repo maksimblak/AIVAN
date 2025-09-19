@@ -32,7 +32,7 @@ client = OpenAI(
 
 resp = client.responses.create(
     model=os.getenv("OPENAI_MODEL", "gpt-5"),
-    input="Write a one-sentence bedtime story about a unicorn.",
+    input="расторгнуть договор аренды?",
     max_output_tokens=16,      # ⬅️ минимум 16
 )
 print(resp.output_text.strip())

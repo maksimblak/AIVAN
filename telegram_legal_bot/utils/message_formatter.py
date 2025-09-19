@@ -1,12 +1,12 @@
+# telegram_legal_bot/utils/message_formatter.py
 from __future__ import annotations
 
 import re
 from typing import Iterable, List
 
 # ── Экранирование для Telegram MarkdownV2 ─────────────────────────────────────
-_MD2_NEED_ESCAPE = r"_*[]()~`>#+-=|{}.!"
+_MD2_NEED_ESCAPE = r"_*[]()~`>#+-=|{}.!\\"
 _MD2_RE = re.compile(f"[{re.escape(_MD2_NEED_ESCAPE)}]")
-
 
 def md2(text: str) -> str:
     """
@@ -16,6 +16,15 @@ def md2(text: str) -> str:
         return ""
     return _MD2_RE.sub(lambda m: "\\" + m.group(0), text)
 
+def strip_md2_escapes(text: str) -> str:
+    """
+    Убирает обратные слеши перед спецсимволами Telegram MarkdownV2.
+    Нужен для фоллбек-отправки plain-текста, если форматирование упало.
+    """
+    if not text:
+        return ""
+    # снимаем экранирование только с допустимых символов
+    return re.sub(r"\\([_*[\]()~`>#+\-=|{}.!\\])", r"\1", text)
 
 def _escape_md2_url(url: str) -> str:
     """
@@ -23,9 +32,7 @@ def _escape_md2_url(url: str) -> str:
     """
     return url.replace("(", r"\(").replace(")", r"\)")
 
-
-_url_re = re.compile(r"https?://\S+", re.IGNORECASE)
-
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 def format_laws(laws: Iterable[str] | None) -> str:
     """
@@ -39,7 +46,7 @@ def format_laws(laws: Iterable[str] | None) -> str:
         if not raw:
             continue
         raw = raw.strip()
-        m = _url_re.search(raw)
+        m = _URL_RE.search(raw)
         if m:
             url = _escape_md2_url(m.group(0))
             label = raw.replace(m.group(0), "").strip(" -—:") or "Ссылка"
@@ -48,8 +55,7 @@ def format_laws(laws: Iterable[str] | None) -> str:
             lines.append(f"• `{md2(raw)}`")
     return "\n".join(lines)
 
-
-def build_legal_answer_message(
+def build_legal_reply(
     answer: str,
     laws: Iterable[str] | None = None,
     intro: str | None = None,
@@ -68,44 +74,43 @@ def build_legal_answer_message(
         parts.append(format_laws(laws))
     return "\n".join(parts).strip()
 
-
-def chunk_for_telegram(text: str, limit: int = 4096) -> List[str]:
+def chunk_markdown_v2(text: str, limit: int = 4096) -> List[str]:
     """
     Дробит длинное сообщение на куски ≤ limit.
-    Старается резать по пустым строкам, чтобы не рвать абзацы.
+    Старается резать по пустым строкам, затем по строкам, затем жёстко.
     """
-    if len(text) <= limit:
-        return [text]
+    if not text:
+        return [""]
+    out: List[str] = []
+    buf: List[str] = []
 
-    chunks: List[str] = []
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + limit)
-        cut = text.rfind("\n\n", start, end)
-        if cut == -1 or cut <= start:
-            cut = end
-        chunks.append(text[start:cut])
-        start = cut
-    return [c for c in chunks if c]
+    def flush():
+        if not buf:
+            return
+        chunk = "\n".join(buf)
+        if len(chunk) <= limit:
+            out.append(chunk)
+        else:
+            # жёстко режем, если всё равно перебор
+            s = chunk
+            while len(s) > limit:
+                out.append(s[:limit])
+                s = s[limit:]
+            if s:
+                out.append(s)
+        buf.clear()
 
-
-# ── Алиасы под ожидаемые имена (чтобы импорты не падали) ─────────────────────
-def build_legal_reply(answer: str, laws: Iterable[str] | None = None, intro: str | None = None) -> str:
-    """Синоним build_legal_answer_message (для обратной совместимости)."""
-    return build_legal_answer_message(answer=answer, laws=laws, intro=intro)
-
-
-def chunk_markdown_v2(text: str, limit: int = 4096) -> List[str]:
-    """Синоним chunk_for_telegram (для обратной совместимости)."""
-    return chunk_for_telegram(text=text, limit=limit)
-
-
-__all__ = [
-    "md2",
-    "format_laws",
-    "build_legal_answer_message",
-    "chunk_for_telegram",
-    # алиасы:
-    "build_legal_reply",
-    "chunk_markdown_v2",
-]
+    # пробуем резать по параграфам
+    for block in text.split("\n\n"):
+        if not buf:
+            buf.append(block)
+        else:
+            candidate = "\n\n".join([ "\n".join(buf), block ])
+            if len(candidate) <= limit:
+                buf.append("")  # восстановим двойной перевод строки
+                buf.append(block)
+            else:
+                flush()
+                buf.append(block)
+    flush()
+    return out

@@ -1,4 +1,4 @@
-PROMPT = """
+PROMPT_V2  = """
 Тебя зовут ИИ-Иван — юридический ИИ-ассистент, специализирующийся на праве РФ и судебной практике.
 Твоя миссия: помогать юристу находить релевантную практику, давать аналитические выводы и готовить процессуальные документы.
 
@@ -95,4 +95,88 @@ PROMPT = """
 • Если источник временно недоступен — напиши: «Источник недоступен (укажи: что именно), повторю попытку позже».
 • Не дублируй один и тот же источник без необходимости.
 • Пиши человеческим юридическим стилем, избегай воды. Если можно — отвечай кратко.
+Отвечай только на юридические вопросы. Неюридические — вежливо отклоняй: «Извините, я специализируюсь только на юридических вопросах, уточните запрос».
 """
+
+
+LEGAL_SCHEMA_V2 = {
+  "type": "json_schema",
+  "json_schema": {
+    "name": "ru_legal_answer",
+    "strict": True,
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "question": {"type": "string", "minLength": 5},
+        "conclusion": {"type": "string"},  # краткий вывод (1–3 абзаца)
+        "legal_basis": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "act": {"type": "string"},             # ГК РФ, АПК РФ, УК РФ…
+              "article": {"type": "string"},         # ст./ч./п./подп.
+              "quote": {"type": "string", "maxLength": 300},  # ≈ до 25 слов
+              "pinpoint": {"type": "string"}         # напр. «ст. 10 ч. 1 ГК РФ»
+            },
+            "required": ["act", "article"]
+          }
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "court": {"type": "string"},
+              "court_region": {"type": "string"},           # субъект РФ/округ (если применимо)
+              "level": {"type": "string", "enum": ["первая", "апелляция", "кассация", "надзор", "ВС"]},
+              "case_no": {"type": "string"},
+              "date": {"type": "string", "format": "date"},
+              "url": {"type": "string", "format": "uri"},
+              "facts": {"type": "string"},                 # краткая фабула
+              "holding": {"type": "string"},               # исход и ключевая позиция суда
+              "norms": {"type": "array", "items": {"type": "string"}},  # перечисление норм
+              "similarity": {"type": "number", "minimum": 0, "maximum": 1} # близость фабулы
+            },
+            "required": ["court", "case_no", "date", "holding", "url"]
+          }
+        },
+        "analysis": {"type": "string"},                    # развернутый разбор
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "next_actions": {"type": "array", "items": {"type": "string"}},
+        "sources": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {"type": "string"},
+              "url": {"type": "string", "format": "uri"},
+              "pin": {"type": "string", "maxLength": 300},
+              "why": {"type": "string", "maxLength": 300}
+            },
+            "required": ["url"]
+          }
+        },
+        "doc_drafts": {                                      # необязательно: черновики документов
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "doc_type": {"type": "string"},             # иск, жалоба, ходатайство…
+              "title": {"type": "string"},
+              "body_md": {"type": "string"},              # Markdown
+              "placeholders": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["doc_type", "title", "body_md"]
+          }
+        },
+        "clarifications": {"type": "array", "items": {"type": "string"}},  # вопросы к пользователю
+        "confidence": {"type": "string", "enum": ["низкая", "средняя", "высокая"]},
+        "self_check": {"type": "array", "items": {"type": "string"}}     # чек‑лист верификации
+      },
+      "required": ["question", "conclusion", "legal_basis", "sources"]
+    }
+  }
+}
