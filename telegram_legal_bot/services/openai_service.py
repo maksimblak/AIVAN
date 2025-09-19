@@ -147,7 +147,19 @@ class OpenAIService:
             http_client=self._own_httpx,        # None → SDK создаст свой клиент без прокси
             api_key=getattr(self._s, "openai_api_key", None),
         )
-        log.debug("OpenAI client init: using_proxy=%s", bool(self._own_httpx))
+        # Безопасное логирование без раскрытия чувствительной информации
+        log.info("OpenAI client initialized: proxy_enabled=%s", bool(self._own_httpx))
+
+    def _get_model(self) -> str:
+        """Возвращает безопасное имя модели. Фолбэк на gpt-4o при некорректной конфигурации."""
+        try:
+            configured = (getattr(self._s, "openai_model", None) or "").strip()
+        except Exception:
+            configured = ""
+        lowered = configured.lower()
+        if not configured or lowered in {"gpt-5", "gpt5", "gpt-5.0"}:
+            return "gpt-4o"
+        return configured
 
     async def aclose(self) -> None:
         """Закрыть внутренний httpx-клиент и OpenAI-клиент."""
@@ -183,24 +195,20 @@ class OpenAIService:
             pass
         return cites
 
-    async def ask_ivan(
-        self,
-        question: str,
-        short_history: Optional[List[Dict[str, str]]] = None,
+
+    async def ask_ivan(self,question: str,short_history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """
         Высокоточный режим: строго структурированный юридический ответ с инструментами поиска.
         Возвращает dict: {"data": <json|raw>, "citations": <list|None>, "raw_text": <str|None>}
         Теперь поддерживает короткую историю диалога (последние 6 сообщений user/assistant).
         """
-        # Настройки с дефолтами на случай отсутствия полей в Settings
+        # Настройки
         recency_days = getattr(self._s, "web_search_recency_days", 3650)
         max_results = getattr(self._s, "web_search_max_results", 8)
         tool_choice = getattr(self._s, "tool_choice", "required")
-        reasoning_effort = (
-            getattr(self._s, "reasoning_effort", None)
-            or getattr(self._s, "openai_reasoning_effort", "medium")
-        )
+        reasoning_effort = getattr(self._s, "reasoning_effort", None) or getattr(self._s, "openai_reasoning_effort",
+                                                                                 "medium")
         max_output_tokens = getattr(self._s, "max_output_tokens", None) or getattr(self._s, "openai_max_tokens", 1800)
         temperature = getattr(self._s, "temperature", None) or getattr(self._s, "openai_temperature", 0.3)
         top_p = getattr(self._s, "top_p", 1.0)
@@ -208,7 +216,7 @@ class OpenAIService:
         search_domains = getattr(self._s, "search_domains", None)
         file_search_enabled = getattr(self._s, "file_search_enabled", True)
 
-        # История (хвост до 6 сообщений, только роли user/assistant)
+        # История (хвост до 6 сообщений user/assistant)
         history_msgs: List[Dict[str, str]] = []
         if short_history:
             for h in short_history[-6:]:
@@ -217,16 +225,14 @@ class OpenAIService:
                     history_msgs.append({"role": r, "content": str(c)})
 
         payload: Dict[str, Any] = {
-            "model": getattr(self._s, "openai_model", "gpt-5"),
+            "model": self._get_model(),
             "input": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 *history_msgs,
                 {"role": "user", "content": question},
             ],
-            "response_format": LEGAL_SCHEMA,  # ← подаём всю обёртку V2
-            "tools": [
-                {"type": "web_search"},
-            ],
+            "response_format": LEGAL_SCHEMA,  # работаем строго по LEGAL_SCHEMA_V2 (если поддерживается)
+            # инструменты будут добавлены ниже только если включены
             "tool_choice": tool_choice,
             "reasoning": {"effort": reasoning_effort},
             "temperature": temperature,
@@ -236,14 +242,25 @@ class OpenAIService:
             "seed": seed,
         }
 
+        # ✅ ИНИЦИАЛИЗИРУЕМ extra_body + домены + ограничения веб-поиска
+        extra_body: Dict[str, Any] = {}
         if search_domains:
-            payload["extra_body"]["domains"] = [
-                d.strip() for d in str(search_domains).split(",") if d.strip()
-            ]
+            # Валидация и очистка доменных имен
+            valid_domains = self._validate_domains(str(search_domains))
+            if valid_domains:
+                extra_body["domains"] = valid_domains
+        # web_search может быть отключен на аккаунте — добавим только если явно включён через tool_choice
+        extra_body["web_search"] = {"recency_days": recency_days, "max_results": max_results}
+        if extra_body:
+            payload["extra_body"] = extra_body
 
+        # Инструменты: добавляем лениво, чтобы уметь удалить при 400 Unknown parameter
+        tools: List[Dict[str, Any]] = []
+        tools.append({"type": "web_search"})
         if file_search_enabled:
-            pass
-             # payload["tools"].append({"type": "file_search"})
+            tools.append({"type": "file_search"})
+        if tools:
+            payload["tools"] = tools
 
         # Вызов с авто-дауншифтом неподдержанных ключей
         optional_keys = {
@@ -260,22 +277,11 @@ class OpenAIService:
         }
         resp = await self._responses_call_with_optional(payload, optional_keys)
 
-        # Достаём текст/цитации
+        # Достаём текст и url-citations
         raw_text: Optional[str] = self._extract_text_from_responses(resp)
-        # было:
-        # citations = getattr(resp, "citations", None)
-        # if citations is None:
-        #     try:
-        #         out = getattr(resp, "output", None) or []
-        #         if out and hasattr(out[0], "citations"):
-        #             citations = getattr(out[0], "citations", None)
-        #     except Exception:
-        #         citations = None
-
-        # стало:
         citations = self._extract_url_citations(resp)
 
-        # Парсим JSON, если есть
+        # Парсим JSON, если это он
         if raw_text:
             try:
                 data: Any = json.loads(raw_text)
@@ -291,10 +297,10 @@ class OpenAIService:
         question: str,
         short_history: Optional[List[Dict[str, str]]] = None,
         retries: int = 2,
-    ) -> LegalAdvice:
+    ) -> Dict[str, Any]:
         """
-        Бэк-совместимый путь: запросить у модели краткий юридический ответ и список норм права.
-        Возвращает LegalAdvice(answer, laws). Бросает RuntimeError при неуспехе после ретраев.
+        Получить развернутый юридический ответ строго по LEGAL_SCHEMA_V2.
+        Возвращает dict с полями схемы. Бросает RuntimeError при неуспехе.
         """
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if short_history:
@@ -304,26 +310,19 @@ class OpenAIService:
                     messages.append({"role": r, "content": c})
         messages.append({"role": "user", "content": question})
 
-        # Берём «внутреннюю» часть вашей LEGAL_SCHEMA_V2, если она есть.
+        # Внутренняя JSON-схема V2
         try:
-            inner_schema = LEGAL_SCHEMA["json_schema"]["schema"]  # type: ignore[index]
-        except Exception:
-            inner_schema = {
-                "type": "object",
-                "properties": {
-                    "answer": {"type": "string"},
-                    "laws": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["answer", "laws"],
-                "additionalProperties": False,
-            }
+            inner_schema: Dict[str, Any] = LEGAL_SCHEMA["json_schema"]["schema"]  # type: ignore[index]
+        except Exception as e:
+            raise RuntimeError("LEGAL_SCHEMA_V2 недоступна, проверь импорт PROMPT_V2/LEGAL_SCHEMA_V2") from e
 
+        # Безопасное логирование запроса без чувствительных данных
         log.debug(
-            "LLM request: model=%s temp=%s max_out=%s effort=%s proxy=%s",
-            getattr(self._s, "openai_model", None),
-            getattr(self._s, "openai_temperature", None),
-            getattr(self._s, "openai_max_tokens", None),
-            getattr(self._s, "openai_reasoning_effort", None),
+            "LLM request: model=%s temp=%s max_tokens=%s effort=%s proxy_enabled=%s",
+            getattr(self._s, "openai_model", "unknown"),
+            getattr(self._s, "openai_temperature", 0.3),
+            getattr(self._s, "openai_max_tokens", 1500),
+            getattr(self._s, "openai_reasoning_effort", "medium"),
             bool(getattr(self._s, "openai_proxy_url", None) or getattr(self._s, "telegram_proxy_url", None)),
         )
 
@@ -331,82 +330,55 @@ class OpenAIService:
         for attempt in range(retries + 1):
             t0 = perf_counter()
             try:
-                # 1) Попытка №1: Responses API с response_format (JSON Schema)
+                # 1) Responses API с response_format (JSON Schema V2)
                 content = await self._responses_create_compat(
                     messages=messages,
                     json_schema=inner_schema,
                     use_schema=True,
                 )
                 took_ms = int((perf_counter() - t0) * 1000)
-
-                data = self._safe_json_extract(content)
-                answer = str(data.get("answer") or "").strip()
-                laws = data.get("laws") or []
-                if not isinstance(laws, list):
-                    laws = []
-
-                log.info(
-                    "LLM ok: attempt=%s api=responses(schema) took_ms=%s answer_len=%s laws=%s",
-                    attempt, took_ms, len(answer), len(laws)
-                )
-                return LegalAdvice(answer=answer, laws=list(map(str, laws)))
+                data = self._safe_json_extract(content) or {}
+                if not (isinstance(data, dict) and data.get("conclusion") and data.get("sources")):
+                    raise ValueError("V2 schema parse: missing key fields")
+                log.info("LLM ok: attempt=%s api=responses(schema) took_ms=%s", attempt, took_ms)
+                return data
 
             except TypeError as e:
+                # SDK не знает response_format → убираем схему и просим JSON текстом
                 last_err = e
                 log.warning("Responses(schema) not supported by SDK: %r. Falling back.", e)
 
                 try:
-                    # 2) Попытка №2: Responses API без schema (просим вернуть JSON текстом)
-                    forced_messages = messages.copy()
-                    forced_messages[0] = {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT + " Всегда возвращай ТОЛЬКО JSON вида {\"answer\": \"...\", \"laws\": [\"...\"]}.",
-                    }
+                    # 2) Responses API без schema (но формат — V2 JSON)
                     content = await self._responses_create_compat(
-                        messages=forced_messages,       # <-- используем действительно forced_messages
+                        messages=messages,
                         json_schema=inner_schema,
                         use_schema=False,
                     )
                     took_ms = int((perf_counter() - t0) * 1000)
-
-                    data = self._safe_json_extract(content)
-                    answer = str(data.get("answer") or "").strip()
-                    laws = data.get("laws") or []
-                    if not isinstance(laws, list):
-                        laws = []
-
-                    log.info(
-                        "LLM ok: attempt=%s api=responses(plain) took_ms=%s answer_len=%s laws=%s",
-                        attempt, took_ms, len(answer), len(laws)
-                    )
-                    return LegalAdvice(answer=answer, laws=list(map(str, laws)))
+                    data = self._safe_json_extract(content) or {}
+                    if not (isinstance(data, dict) and data.get("conclusion") and data.get("sources")):
+                        raise ValueError("V2 parse (responses no-schema) failed")
+                    log.info("LLM ok: attempt=%s api=responses took_ms=%s", attempt, took_ms)
+                    return data
 
                 except Exception as e2:
                     last_err = e2
-                    log.warning("Responses(plain) fail: %r. Falling back to chat.completions.", e2)
+                    log.warning("Responses call failed: %r", e2)
 
-                    try:
-                        # 3) Попытка №3: Chat Completions
-                        content = await self._chat_completions_compat(
-                            messages=messages,
-                            force_json=True,
-                        )
-                        took_ms = int((perf_counter() - t0) * 1000)
+                try:
+                    # 3) Chat Completions (просим вернуть JSON V2)
+                    content = await self._chat_completions_compat(messages=messages, force_json=True)
+                    took_ms = int((perf_counter() - t0) * 1000)
+                    data = self._safe_json_extract(content) or {}
+                    if not (isinstance(data, dict) and data.get("conclusion") and data.get("sources")):
+                        raise ValueError("V2 parse (chat.completions) failed")
+                    log.info("LLM ok: attempt=%s api=chat.completions took_ms=%s", attempt, took_ms)
+                    return data
 
-                        data = self._safe_json_extract(content)
-                        answer = str(data.get("answer") or "").strip()
-                        laws = data.get("laws") or []
-                        if not isinstance(laws, list):
-                            laws = []
-
-                        log.info(
-                            "LLM ok: attempt=%s api=chat.completions took_ms=%s answer_len=%s laws=%s",
-                            attempt, took_ms, len(answer), len(laws)
-                        )
-                        return LegalAdvice(answer=answer, laws=list(map(str, laws)))
-                    except Exception as e3:
-                        last_err = e3
-                        log.warning("chat.completions fail: %r", e3)
+                except Exception as e3:
+                    last_err = e3
+                    log.warning("chat.completions fail: %r", e3)
 
             except Exception as e:
                 took_ms = int((perf_counter() - t0) * 1000)
@@ -416,16 +388,11 @@ class OpenAIService:
                 if getattr(e, "response", None) is not None:
                     try:
                         body = getattr(e.response, "text", None)
-                        if body and len(body) > 1000:
-                            body = body[:1000] + "…"
+                        body = self._safe_truncate_error_message(body)
                     except Exception:
                         body = "<unreadable>"
-                log.warning(
-                    "LLM fail: attempt=%s took_ms=%s status=%s err=%r body=%s",
-                    attempt, took_ms, status, e, body
-                )
+                log.warning("LLM fail: attempt=%s took_ms=%s status=%s err=%r body=%s", attempt, took_ms, status, e, body)
 
-            # backoff между попытками
             await asyncio.sleep(0.75 * (attempt + 1))
 
         log.exception("LLM fatal after retries: %r", last_err)
@@ -438,11 +405,15 @@ class OpenAIService:
         """
         Вызывает client.responses.create(**payload), удаляя неподдержанные параметры.
         Обрабатывает как ошибки SDK (TypeError), так и серверные 400 с указанием параметра.
+        Включает защиту от бесконечных циклов.
         """
         # Рабочая копия
         pl = dict(payload)
+        max_retries = 10  # Защита от бесконечного цикла
+        retry_count = 0
 
-        while True:
+        while retry_count < max_retries:
+            retry_count += 1
             try:
                 return await self._client.responses.create(**pl)
             except TypeError as e:
@@ -450,33 +421,153 @@ class OpenAIService:
                 m = re.search(r"unexpected keyword argument '([^']+)'", str(e))
                 bad = m.group(1) if m else None
                 if bad and (bad in pl or bad in optional_keys):
-                    log.debug("SDK doesn't support '%s' — removing and retrying...", bad)
+                    log.debug("SDK doesn't support '%s' — removing and retrying... (attempt %d/%d)", 
+                             bad, retry_count, max_retries)
                     pl.pop(bad, None)
                     continue
                 raise
             except Exception as e:
-                # Разбор серверного ответа
+                # Безопасная разборка серверного ответа
                 resp = getattr(e, "response", None)
                 err_param = None
                 err_message = ""
-                try:
-                    if resp is not None and hasattr(resp, "json"):
-                        j = resp.json()
-                        err = (j or {}).get("error") or {}
-                        err_param = err.get("param")
-                        err_message = (err.get("message") or "").lower()
-                except Exception:
-                    pass
+                
+                if resp is not None:
+                    err_param, err_message = self._safe_parse_error_response(resp)
+
+                # Специальная обработка кейса: Unknown parameter: 'web_search'
+                if "unknown parameter" in err_message and "web_search" in err_message:
+                    # Удаляем инструменты и extra_body целиком и пробуем снова
+                    if "tools" in pl:
+                        log.debug("Server reports web_search unknown — removing tools and retrying...")
+                        pl.pop("tools", None)
+                        removed = True
+                    if "extra_body" in pl:
+                        pl.pop("extra_body", None)
+                        removed = True
+                    if removed:
+                        continue
 
                 removed = False
                 for cand in list(optional_keys):
                     if (err_param == cand) or (cand in pl and f"'{cand}'" in err_message):
-                        log.debug("Server says param '%s' unsupported — removing and retrying...", cand)
+                        log.debug("Server says param '%s' unsupported — removing and retrying... (attempt %d/%d)", 
+                                 cand, retry_count, max_retries)
                         pl.pop(cand, None)
                         removed = True
                 if removed:
                     continue
                 raise
+        
+        # Если достигли максимального количества попыток
+        log.error("Reached maximum retry attempts (%d) for responses API call", max_retries)
+        raise RuntimeError(f"Maximum retry attempts ({max_retries}) exceeded for OpenAI API call")
+    
+    def _safe_parse_error_response(self, resp: Any) -> tuple[Optional[str], str]:
+        """
+        Безопасно парсит ошибку из HTTP ответа.
+        Возвращает (err_param, err_message).
+        """
+        try:
+            # Проверяем наличие метода json и Content-Type
+            if not hasattr(resp, "json"):
+                return None, ""
+            
+            # Дополнительная проверка Content-Type, если доступно
+            content_type = ""
+            if hasattr(resp, "headers"):
+                content_type = resp.headers.get("content-type", "").lower()
+            elif hasattr(resp, "content_type"):
+                content_type = str(resp.content_type).lower()
+            
+            # Проверяем, что это действительно JSON
+            if content_type and "application/json" not in content_type:
+                log.warning("Response Content-Type is not JSON: %s", content_type)
+                return None, ""
+            
+            j = resp.json()
+            if not isinstance(j, dict):
+                return None, ""
+                
+            err = j.get("error") or {}
+            if not isinstance(err, dict):
+                return None, ""
+                
+            err_param = err.get("param")
+            err_message = (err.get("message") or "").lower()
+            
+            return err_param, err_message
+            
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
+            log.debug("Failed to parse error response: %r", e)
+            return None, ""
+        except Exception as e:
+            log.warning("Unexpected error parsing response: %r", e)
+            return None, ""
+
+    def _validate_domains(self, domains_str: str) -> List[str]:
+        """
+        Валидирует и очищает список доменных имен.
+        Возвращает список валидных доменов.
+        """
+        if not domains_str or not isinstance(domains_str, str):
+            return []
+        
+        import re
+        # Простая regex для проверки доменных имен
+        domain_pattern = re.compile(
+            r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+        )
+        
+        valid_domains = []
+        for domain in domains_str.split(","):
+            domain = domain.strip().lower()
+            if not domain:
+                continue
+            
+            # Удаляем протокол если есть
+            if domain.startswith(("http://", "https://")):
+                domain = domain.split("//", 1)[1]
+            
+            # Удаляем путь если есть
+            if "/" in domain:
+                domain = domain.split("/", 1)[0]
+            
+            # Валидация доменного имени
+            if domain_pattern.match(domain) and len(domain) <= 253:
+                valid_domains.append(domain)
+            else:
+                log.warning("Invalid domain name ignored: %s", domain)
+        
+        log.debug("Validated domains: %s -> %s", domains_str, valid_domains)
+        return valid_domains
+
+    @staticmethod
+    def _safe_truncate_error_message(message: Optional[str], max_length: int = 1000) -> str:
+        """
+        Безопасно усекает сообщения об ошибках для предотвращения переполнения логов.
+        Удаляет потенциально чувствительные данные.
+        """
+        if not message:
+            return "<empty>"
+        
+        if not isinstance(message, str):
+            message = str(message)
+        
+        # Маскируем потенциально чувствительные данные
+        import re
+        # Маскируем API ключи
+        message = re.sub(r'sk-[a-zA-Z0-9-_]{20,}', 'sk-***MASKED***', message)
+        # Маскируем токены
+        message = re.sub(r'[Bb]earer\s+[a-zA-Z0-9-_]{20,}', 'Bearer ***MASKED***', message)
+        # Маскируем пароли в URL
+        message = re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', message)
+        
+        # Усекаем сообщение если необходимо
+        if len(message) > max_length:
+            return message[:max_length] + "…[TRUNCATED]"
+        
+        return message
 
     # ──────────────────────────────────────────────────────────────────────
     # Internal: Responses API с авто-удалением неподдержанных параметров
@@ -583,14 +674,9 @@ class OpenAIService:
                 resp = getattr(e, "response", None)
                 err_param = None
                 err_message = ""
-                try:
-                    if resp is not None and hasattr(resp, "json"):
-                        j = resp.json()
-                        err = (j or {}).get("error") or {}
-                        err_param = err.get("param")
-                        err_message = (err.get("message") or "").lower()
-                except Exception:
-                    pass
+                
+                if resp is not None:
+                    err_param, err_message = self._safe_parse_error_response(resp)
 
                 removed = False
                 for cand in list(removable):
@@ -692,16 +778,29 @@ class OpenAIService:
     @staticmethod
     def _extract_text_from_chat(resp: Any) -> str:
         """
-        Достаёт контент из Chat Completions ответа.
+        Безопасно достаёт контент из Chat Completions ответа.
         """
         try:
-            choices = getattr(resp, "choices", None) or []
-            if choices and hasattr(choices[0], "message"):
-                msg = choices[0].message
-                return getattr(msg, "content", "") or ""
-        except Exception:
-            pass
-        return str(resp)
+            choices = getattr(resp, "choices", None)
+            if not choices or not isinstance(choices, list) or len(choices) == 0:
+                return ""
+            
+            first_choice = choices[0]
+            if not hasattr(first_choice, "message"):
+                return ""
+            
+            msg = first_choice.message
+            content = getattr(msg, "content", None)
+            if content is None:
+                return ""
+                
+            return str(content)
+        except (IndexError, AttributeError, TypeError) as e:
+            log.debug("Failed to extract text from chat response: %r", e)
+            return ""
+        except Exception as e:
+            log.warning("Unexpected error extracting chat text: %r", e)
+            return ""
 
     @staticmethod
     def _safe_json_extract(text: str) -> Dict[str, Any]:

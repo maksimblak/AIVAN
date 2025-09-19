@@ -9,13 +9,13 @@ packages = [{ include = "telegram_legal_bot" }]
 [tool.poetry.dependencies]
 python = "^3.12"
 
-# Библиотеки из кода
-python-telegram-bot = {extras = ["rate-limiter"], version = "^22.4"}
-openai = ">=1.40.0"
-python-dotenv = "^1.0.1"
+# Библиотеки из кода (Aiogram)
 aiogram = ">=3.4.0,<4.0.0"
+openai = ">=1.40.0"
+httpx = ">=0.28.0"
+python-dotenv = "^1.0.1"
 redis = {version = "^5.0.6", optional = true}
- # если вынесешь лимитер/историю в Redis
+# если вынесешь лимитер/историю в Redis
 aiohttp-socks = "^0.10.1"
 requests = "^2.32.5"
 

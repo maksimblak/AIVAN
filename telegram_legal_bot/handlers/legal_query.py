@@ -1,7 +1,9 @@
 # telegram_legal_bot/handlers/legal_query.py
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections import defaultdict, deque
 from typing import Any, Deque, Dict, List, Optional
 
@@ -19,29 +21,77 @@ from telegram_legal_bot.utils.message_formatter import (
     strip_md2_escapes,
     _escape_md2_url as escape_md2_url,  # безопасные URL для MarkdownV2
 )
+from telegram_legal_bot.ui.messages import BotMessages
+from telegram_legal_bot.ui.animations import BotAnimations
 
 router = Router(name="legal_query")
 log = logging.getLogger("legal_query")
 
-# ── Глобальный контекст хэндлера (инициализируется из main.py) ────────────────
-_settings: Optional[Settings] = None
-_ai: Optional[OpenAIService] = None
-_rl: Optional[RateLimiter] = None
-_history: Dict[int, Deque[Dict[str, str]]] = defaultdict(lambda: deque(maxlen=10))
+
+class LegalQueryHandler:
+    """
+    Thread-safe обработчик юридических запросов.
+    Заменяет глобальные переменные на инкапсулированное состояние.
+    """
+    
+    def __init__(self, settings: Settings, ai: OpenAIService):
+        self.settings = settings
+        self.ai = ai
+        self.rate_limiter = RateLimiter(
+            max_calls=settings.max_requests_per_hour, 
+            period_seconds=3600
+        )
+        
+        # Thread-safe история с автоматической очисткой старых записей
+        pairs = max(1, int(settings.history_size))
+        self._history: Dict[int, Deque[Dict[str, str]]] = defaultdict(
+            lambda: deque(maxlen=pairs * 2)
+        )
+        self._history_lock = asyncio.Lock()
+        self._history_cleanup_time = time.time()
+        
+        # Максимальное количество пользователей в истории (защита от утечки памяти)
+        self.max_users_in_history = 10000
+        
+    async def _cleanup_history_if_needed(self) -> None:
+        """Периодическая очистка истории для предотвращения утечек памяти."""
+        now = time.time()
+        # Очищаем историю каждые 6 часов
+        if now - self._history_cleanup_time > 21600:  # 6 * 60 * 60
+            async with self._history_lock:
+                if len(self._history) > self.max_users_in_history:
+                    # Удаляем половину наименее активных пользователей
+                    users_to_remove = len(self._history) - self.max_users_in_history // 2
+                    # Преобразуем в list, т.к. defaultdict меняется во время итерации
+                    users = list(self._history.keys())[:users_to_remove]
+                    for user_id in users:
+                        del self._history[user_id]
+                    log.info("Cleaned up history for %d users", users_to_remove)
+                self._history_cleanup_time = now
+    
+    async def get_user_history(self, user_id: int) -> List[Dict[str, str]]:
+        """Безопасное получение истории пользователя."""
+        async with self._history_lock:
+            await self._cleanup_history_if_needed()
+            return list(self._history[user_id])
+    
+    async def add_to_history(self, user_id: int, user_msg: str, assistant_msg: str) -> None:
+        """Безопасное добавление в историю."""
+        async with self._history_lock:
+            self._history[user_id].append({"role": "user", "content": user_msg})
+            self._history[user_id].append({"role": "assistant", "content": assistant_msg[:1000]})
+
+
+# Глобальный экземпляр обработчика (инициализируется в setup_context)
+_handler: Optional[LegalQueryHandler] = None
 
 
 def setup_context(settings: Settings, ai: OpenAIService) -> None:
     """
-    Инициализация зависимостей хэндлера (вызывается из main.py).
+    Инициализация thread-safe обработчика (вызывается из main.py).
     """
-    global _settings, _ai, _rl, _history
-    _settings = settings
-    _ai = ai
-    _rl = RateLimiter(max_calls=settings.max_requests_per_hour, period_seconds=3600)
-
-    # Храним ровно N обменов (user↔assistant), значит maxlen = N * 2
-    pairs = max(1, int(settings.history_size))
-    _history = defaultdict(lambda: deque(maxlen=pairs * 2))
+    global _handler
+    _handler = LegalQueryHandler(settings, ai)
 
 
 def _schema_to_markdown(d: Dict[str, Any]) -> str:
@@ -77,7 +127,8 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
             head += f"{article}" if article else ""
             if pin:
                 head += f" ({pin})"
-            add(head.strip() if head.strip() != "•" else "• Норма")
+            head_stripped = head.strip()
+            add(head_stripped if head_stripped != "•" else "• Норма")
             if quote:
                 add(f"  └ «{quote}»")
 
@@ -173,34 +224,76 @@ async def handle_legal_query(message: types.Message) -> None:
       • попытка строгого режима (LEGAL_SCHEMA_V2) и фолбэк,
       • безопасная разбивка сообщения по 4096 символов.
     """
-    assert _settings is not None and _ai is not None and _rl is not None
+    if _handler is None:
+        log.error("Handler not initialized! Call setup_context() first.")
+        await message.answer(
+            "⚠️ Сервис временно недоступен. Попробуйте позже.",
+            parse_mode=None,
+        )
+        return
 
     user_id = message.from_user.id if message.from_user else 0
     chat_id = message.chat.id
     text = (message.text or "").strip()
 
-    log.info("IN: user=%s chat=%s len=%s", user_id, chat_id, len(text))
-
-    # Мини-длина
-    if len(text) < _settings.min_question_length:
+    # Валидация входных данных
+    if not text:
         await message.answer(
-            "✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.",
+            "✋ Пожалуйста, отправьте текстовый вопрос.",
             parse_mode=None,
         )
         return
 
-    # Rate-limit
-    if not await _rl.check(user_id):
-        remain = await _rl.remaining(user_id)
-        msg = "⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже."
-        if remain:
-            msg += f" Доступно ещё: {remain}."
-        await message.answer(msg, parse_mode=None)
+    log.info("IN: user=%s chat=%s len=%s", user_id, chat_id, len(text))
+
+    # Мини-длина
+    if len(text) < _handler.settings.min_question_length:
+        error_text = BotMessages.error_message("invalid_question")
+        
+        try:
+            await message.answer(
+                md2(error_text),
+                parse_mode="MarkdownV2"
+            )
+        except Exception:
+            await message.answer(
+                "✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.",
+                parse_mode=None
+            )
         return
 
-    short_history: List[Dict[str, str]] = list(_history[user_id])
+    # Rate-limit
+    if not await _handler.rate_limiter.check(user_id):
+        # Вычисляем оставшееся время до сброса лимита
+        remaining_time = 3600  # Примерное время в секундах
+        
+        rate_limit_text = BotMessages.rate_limit_message(remaining_time)
+        
+        try:
+            await message.answer(
+                md2(rate_limit_text),
+                parse_mode="MarkdownV2"
+            )
+        except Exception:
+            remain = await _handler.rate_limiter.remaining(user_id)
+            fallback_text = "⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже."
+            if remain:
+                fallback_text += f" Доступно ещё: {remain}."
+            await message.answer(
+                fallback_text,
+                parse_mode=None
+            )
+        return
 
+    # Получаем историю thread-safe способом
+    short_history: List[Dict[str, str]] = await _handler.get_user_history(user_id)
+
+    progress_msg: Optional[types.Message] = None
     try:
+        # Показываем красивую анимацию обработки
+        thinking_steps = BotMessages.thinking_messages()
+        progress_msg = await BotAnimations.progress_message(message, thinking_steps, delay=1.0)
+        
         # Индикатор «печатает…»
         async with ChatActionSender.typing(bot=message.bot, chat_id=chat_id):
             # 1) Пытаемся получить строгий ответ по LEGAL_SCHEMA_V2
@@ -208,8 +301,8 @@ async def handle_legal_query(message: types.Message) -> None:
             assistant_summary: str = ""
 
             try:
-                rich = await _ai.ask_ivan(text)  # точный режим (без истории)
-                data = rich.get("data")
+                rich = await _handler.ai.ask_ivan(text)  # точный режим (без истории)
+                data = rich.get("data") if rich else None
                 if isinstance(data, dict) and (data.get("conclusion") or data.get("sources") or data.get("cases")):
                     md_text = _schema_to_markdown(data)
                     assistant_summary = (data.get("conclusion") or "")[:1000]
@@ -218,24 +311,37 @@ async def handle_legal_query(message: types.Message) -> None:
 
             # 2) Фолбэк: упрощённый путь (answer + laws) — с краткой историей
             if not md_text:
-                result = await _ai.generate_legal_answer(text, short_history=short_history)
-                answer: str = result.get("answer") or ""
-                laws: List[str] = result.get("laws") or []
-                assistant_summary = answer[:1000]
+                result = await _handler.ai.generate_legal_answer(text, short_history=short_history)
+                answer: str = result.get("answer") or "" if result else ""
+                laws: List[str] = result.get("laws") or [] if result else []
+                assistant_summary = answer[:1000] if answer else "Ответ не получен"
                 md_text = build_legal_reply(answer=answer, laws=laws)
 
-        # Обновляем короткую историю (user→assistant)
-        _history[user_id].append({"role": "user", "content": text})
-        _history[user_id].append({"role": "assistant", "content": assistant_summary})
+        # Обновляем короткую историю thread-safe способом
+        await _handler.add_to_history(user_id, text, assistant_summary)
 
-        # Отправляем по кускам
-        chunks = chunk_markdown_v2(md_text, limit=4096)
-        for part in chunks:
+        # Удаляем сообщение о прогрессе если удалось создать
+        if progress_msg:
             try:
-                await message.answer(part, parse_mode=_settings.parse_mode)
+                await progress_msg.delete()
+            except Exception:
+                pass
+        
+        # Отправляем по кускам  
+        chunks = chunk_markdown_v2(md_text or "Не удалось получить ответ.", limit=4096)
+        
+        for i, part in enumerate(chunks):
+            try:
+                await message.answer(
+                    part, 
+                    parse_mode=_handler.settings.parse_mode
+                )
             except TelegramBadRequest:
                 # Фолбэк: если MarkdownV2 сломался — убираем экранирование
-                await message.answer(strip_md2_escapes(part), parse_mode=None)
+                await message.answer(
+                    strip_md2_escapes(part), 
+                    parse_mode=None
+                )
 
         log.info("OUT: user=%s chat=%s sent_chunks=%s", user_id, chat_id, len(chunks))
 
@@ -247,7 +353,24 @@ async def handle_legal_query(message: types.Message) -> None:
         )
     except Exception as e:
         log.exception("LLM handler error: user=%s chat=%s err=%r", user_id, chat_id, e)
-        await message.answer(
-            "😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.",
-            parse_mode=None,
-        )
+        
+        # Удаляем прогресс-сообщение в случае ошибки
+        if progress_msg:
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+        
+        error_text = BotMessages.error_message("general")
+        
+        try:
+            await message.answer(
+                md2(error_text),
+                parse_mode="MarkdownV2"
+            )
+        except Exception:
+            await message.answer(
+                "😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.",
+                parse_mode=None
+            )
+

@@ -1,5 +1,0 @@
-# Сгенерировано через Poetry. При необходимости обновите командой:
-# poetry export -f requirements.txt --output requirements.txt --without-hashes
-python-telegram-bot>=21.1,<22.0
-openai>=1.30,<2.0
-python-dotenv>=1.0,<2.0

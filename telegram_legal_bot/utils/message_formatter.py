@@ -5,7 +5,13 @@ import re
 from typing import Iterable, List
 
 # ── Экранирование для Telegram MarkdownV2 ─────────────────────────────────────
-_MD2_NEED_ESCAPE = r"_*[]()~`>#+-=|{}.!\\"
+from telegram_legal_bot.constants import (
+    MD_ESCAPE_CHARS,
+    TELEGRAM_MESSAGE_MAX_LENGTH,
+    MAX_CHUNK_BACKOFF_CHARS,
+)
+
+_MD2_NEED_ESCAPE = MD_ESCAPE_CHARS
 _MD2_RE = re.compile(f"[{re.escape(_MD2_NEED_ESCAPE)}]")
 
 def md2(text: str) -> str:
@@ -82,12 +88,11 @@ def build_legal_reply(
 
 
 # ── Безопасная разбивка MarkdownV2-сообщений ─────────────────────────────────
-_TELEGRAM_HARD_LIMIT = 4096
 _FENCE_LINE = re.compile(r"^\s*```")            # строка с тройными бэктиками
 _BULLET = re.compile(r"^\s*(?:[-*•]|—|\d+\.)\s+")  # признаки списка для мягкого реза
 
 
-def chunk_markdown_v2(text: str, limit: int = _TELEGRAM_HARD_LIMIT) -> List[str]:
+def chunk_markdown_v2(text: str, limit: int = TELEGRAM_MESSAGE_MAX_LENGTH) -> List[str]:
     """
     Дробит длинное MarkdownV2-сообщение на куски ≤ limit.
     Стратегия:
@@ -102,7 +107,7 @@ def chunk_markdown_v2(text: str, limit: int = _TELEGRAM_HARD_LIMIT) -> List[str]
     if not text:
         return []
 
-    limit = max(1, min(int(limit), _TELEGRAM_HARD_LIMIT))
+    limit = max(1, min(int(limit), TELEGRAM_MESSAGE_MAX_LENGTH))
     text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     paragraphs = re.split(r"\n{2,}", text)
 
@@ -116,7 +121,7 @@ def chunk_markdown_v2(text: str, limit: int = _TELEGRAM_HARD_LIMIT) -> List[str]
         return sum(1 for ln in block.split("\n") if _FENCE_LINE.match(ln))
 
     def _backoff_incomplete_link(s: str) -> str:
-        tail = s[-200:] if len(s) > 200 else s
+        tail = s[-MAX_CHUNK_BACKOFF_CHARS:] if len(s) > MAX_CHUNK_BACKOFF_CHARS else s
         last_open = max(tail.rfind("["), tail.rfind("("))
         last_close = max(tail.rfind("]"), tail.rfind(")"))
         if last_open > last_close >= 0:
@@ -201,7 +206,7 @@ def _split_long_block(block: str, limit: int) -> List[str]:
     local_code_open = False
 
     def _backoff_incomplete_link(s: str) -> str:
-        tail = s[-200:] if len(s) > 200 else s
+        tail = s[-MAX_CHUNK_BACKOFF_CHARS:] if len(s) > MAX_CHUNK_BACKOFF_CHARS else s
         last_open = max(tail.rfind("["), tail.rfind("("))
         last_close = max(tail.rfind("]"), tail.rfind(")"))
         if last_open > last_close >= 0:

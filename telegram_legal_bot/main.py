@@ -22,6 +22,7 @@ try:
         router as legal_router,
         setup_context as setup_legal_context,
     )
+    from telegram_legal_bot.handlers.ui_demo import router as ui_demo_router
 except ImportError:
     from config import Settings, load_settings
     try:
@@ -129,6 +130,7 @@ async def main_async() -> None:
     # Роутеры
     dp.include_router(start_router)
     dp.include_router(legal_router)
+    dp.include_router(ui_demo_router)
 
     # Запуск
     log.info("Запуск бота…")
