@@ -275,22 +275,30 @@ class OpenAIService:
             "parallel_tool_calls",
             "seed",
         }
-        resp = await self._responses_call_with_optional(payload, optional_keys)
-
-        # Достаём текст и url-citations
-        raw_text: Optional[str] = self._extract_text_from_responses(resp)
-        citations = self._extract_url_citations(resp)
-
-        # Парсим JSON, если это он
-        if raw_text:
-            try:
-                data: Any = json.loads(raw_text)
-            except Exception:
-                data = {"raw": raw_text}
-        else:
-            data = {"raw": repr(resp)}
-
-        return {"data": data, "citations": citations, "raw_text": raw_text}
+        try:
+            resp = await self._responses_call_with_optional(payload, optional_keys)
+            # Достаём текст и url-citations
+            raw_text: Optional[str] = self._extract_text_from_responses(resp)
+            citations = self._extract_url_citations(resp)
+            # Парсим JSON, если это он
+            if raw_text:
+                try:
+                    data: Any = json.loads(raw_text)
+                except Exception:
+                    data = {"raw": raw_text}
+            else:
+                data = {"raw": repr(resp)}
+            return {"data": data, "citations": citations, "raw_text": raw_text}
+        except Exception:
+            # Фолбэк: Chat Completions с просьбой вернуть JSON по схеме V2 (мягко)
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *history_msgs,
+                {"role": "user", "content": question},
+            ]
+            content = await self._chat_completions_compat(messages=messages, force_json=True)
+            data = self._safe_json_extract(content) or {}
+            return {"data": data, "citations": [], "raw_text": content}
 
     async def generate_legal_answer(
         self,
@@ -584,7 +592,7 @@ class OpenAIService:
         Возвращает объединённый текст ответа.
         """
         payload: Dict[str, Any] = {
-            "model": getattr(self._s, "openai_model", "gpt-5"),
+            "model": self._get_model(),
             "input": messages,
         }
 
@@ -636,7 +644,7 @@ class OpenAIService:
 
         # Базовые аргументы
         kwargs: Dict[str, Any] = dict(
-            model=getattr(self._s, "openai_model", "gpt-5"),
+            model=self._get_model(),
             messages=chat_msgs,
         )
         removable = set()
