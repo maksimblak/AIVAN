@@ -1,3 +1,4 @@
+# telegram_legal_bot/main.py
 from __future__ import annotations
 
 import asyncio
@@ -16,40 +17,49 @@ from aiogram.client.telegram import TelegramAPIServer
 # ── Импорты пакета (и фоллбек для плоской структуры) ─────────────────────────
 try:
     from telegram_legal_bot.config import Settings, load_settings
-    from telegram_legal_bot.services import OpenAIService
+    from telegram_legal_bot.services.openai_service import OpenAIService
     from telegram_legal_bot.handlers.start import router as start_router
     from telegram_legal_bot.handlers.legal_query import (
         router as legal_router,
         setup_context as setup_legal_context,
     )
-    from telegram_legal_bot.handlers.ui_demo import router as ui_demo_router
+
 except ImportError:
-    from config import Settings, load_settings
+    from config import Settings, load_settings  # type: ignore
     try:
-        from services import OpenAIService
+        from services.openai_service import OpenAIService  # type: ignore
     except ImportError:
-        from services.openai_service import OpenAIService
-    from handlers.start import router as start_router
-    from handlers.legal_query import router as legal_router, setup_context as setup_legal_context
+        from services import OpenAIService  # type: ignore
+    from handlers.start import router as start_router  # type: ignore
+    from handlers.legal_query import (  # type: ignore
+        router as legal_router,
+        setup_context as setup_legal_context,
+    )
+    try:
+        from handlers.ui_demo import router as ui_demo_router  # type: ignore
+    except Exception:
+        ui_demo_router = None  # type: ignore[assignment]
 
 
 # ── Логирование ───────────────────────────────────────────────────────────────
 def _setup_logging(json_mode: bool) -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
+
     if json_mode:
         class JsonFormatter(logging.Formatter):
             def format(self, record: logging.LogRecord) -> str:
-                import json, time
+                import json as _json
+                import time as _time
                 payload = {
-                    "t": int(time.time()),
+                    "t": int(_time.time()),
                     "lvl": record.levelname,
                     "msg": record.getMessage(),
                     "name": record.name,
                 }
                 if record.exc_info:
                     payload["exc"] = self.formatException(record.exc_info)
-                return json.dumps(payload, ensure_ascii=False)
+                return _json.dumps(payload, ensure_ascii=False)
 
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(JsonFormatter())
@@ -58,13 +68,15 @@ def _setup_logging(json_mode: bool) -> None:
         root.addHandler(handler)
         root.setLevel(level)
     else:
-        logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
 
     # 🔉 уровни библиотек
     logging.getLogger("aiogram").setLevel(level)
     logging.getLogger("httpx").setLevel(logging.INFO)
     logging.getLogger("openai_service").setLevel(logging.DEBUG)
-
     logging.getLogger("legal_query").setLevel(level)
 
 
@@ -111,15 +123,25 @@ async def main_async() -> None:
 
     # Telegram: корректно задаём API-сервер (official или self-hosted) и HTTP-прокси
     api = _get_api_server(getattr(settings, "telegram_api_base", None))
-    tg_proxy = _build_proxy_url(settings.telegram_proxy_url, settings.telegram_proxy_user, settings.telegram_proxy_pass)
+    tg_proxy = _build_proxy_url(
+        getattr(settings, "telegram_proxy_url", None),
+        getattr(settings, "telegram_proxy_user", None),
+        getattr(settings, "telegram_proxy_pass", None),
+    )
 
     # ВАЖНО: proxy передаём через параметр proxy= (а не в api=)
-    session = AiohttpSession(api=api, proxy=tg_proxy)
+    session = AiohttpSession(api=api, proxy=tg_proxy, timeout=70)
+
+    default_props = (
+        DefaultBotProperties(parse_mode=settings.parse_mode)
+        if getattr(settings, "parse_mode", None) is not None
+        else DefaultBotProperties()
+    )
 
     bot = Bot(
         token=settings.telegram_token,
         session=session,
-        default=DefaultBotProperties(parse_mode=settings.parse_mode),
+        default=default_props,
     )
     dp = Dispatcher()
 
@@ -130,12 +152,25 @@ async def main_async() -> None:
     # Роутеры
     dp.include_router(start_router)
     dp.include_router(legal_router)
-    dp.include_router(ui_demo_router)
 
-    # Запуск
+
+    # Перехват необработанных ошибок, чтобы не ронять процесс
+    @dp.errors()
+    async def _on_error(event, exception):
+        logging.getLogger("aiogram.errors").exception("Unhandled error: %r", exception)
+
+    # Запуск с авто-перезапуском polling при падениях
     log.info("Запуск бота…")
     try:
-        await dp.start_polling(bot)
+        while True:
+            try:
+                await dp.start_polling(bot)
+            except Exception as e:
+                log.exception("Polling crashed, restarting in 3s: %r", e)
+                await asyncio.sleep(3.0)
+                continue
+            else:
+                break
     finally:
         with suppress(Exception):
             await ai.aclose()
@@ -145,6 +180,7 @@ async def main_async() -> None:
 
 if __name__ == "__main__":
     try:
+        # Не используем uvloop принудительно: совместимость шире
         asyncio.run(main_async())
     except (KeyboardInterrupt, SystemExit):
         pass

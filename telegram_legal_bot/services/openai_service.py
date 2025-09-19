@@ -7,7 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import httpx
@@ -121,13 +121,13 @@ class OpenAIService:
     """
     Обёртка над OpenAI для получения юридического ответа.
     Фишки:
+      • только Responses API (поддержка reasoning-моделей, напр. gpt-5)
       • поддержка HTTP-прокси (OPENAI_PROXY_* + фоллбек на TELEGRAM_PROXY_*)
       • мягкие ретраи с backoff
       • явное закрытие собственного httpx-клиента (aclose)
-      • автосовместимость: Responses (JSON Schema) → Responses (plain) → Chat Completions
       • подробное логирование (latency, попытки, статусы, усечённые тела ошибок)
-      • дауншифт неподдержанных параметров (temperature/response_format/…)
-      • ask_ivan(...) с web_search/file_search/citations и LEGAL_SCHEMA_V2
+      • авто-совместимость: переключение input↔messages, снятие response_format при старом SDK
+      • ask_ivan(...) возвращает citations, реальные ссылки из ответа Responses
     """
 
     def __init__(self, settings: Settings):
@@ -143,10 +143,17 @@ class OpenAIService:
         if proxy_url:
             self._own_httpx = self._make_async_httpx_client_with_proxy(proxy_url)
 
-        self._client = AsyncOpenAI(
-            http_client=self._own_httpx,        # None → SDK создаст свой клиент без прокси
-            api_key=getattr(self._s, "openai_api_key", None),
-        )
+        client_kwargs: Dict[str, Any] = {
+            "http_client": self._own_httpx,        # None → SDK создаст свой клиент без прокси
+            "api_key": getattr(self._s, "openai_api_key", None),
+        }
+        # если используется частный шлюз (совместимый API)
+        base_url = getattr(self._s, "openai_base_url", None)
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        self._client = AsyncOpenAI(**client_kwargs)
+
         # Безопасное логирование без раскрытия чувствительной информации
         log.info("OpenAI client initialized: proxy_enabled=%s", bool(self._own_httpx))
 
@@ -175,29 +182,70 @@ class OpenAIService:
     # Публичные методы
     # ──────────────────────────────────────────────────────────────────────
     def _extract_url_citations(self, resp: Any) -> List[Dict[str, str]]:
+        """
+        Пытается найти URL-цитаты в structure Responses:
+        - в content[].annotations[] (type='url_citation')
+        - в top-level attachments/citations, если такие поля есть
+        Возвращает список словарей: {"title": str, "url": str}
+        """
         cites: List[Dict[str, str]] = []
+
+        # a) content[].annotations[]
         try:
             output = getattr(resp, "output", None) or []
-            for item in output:
-                content = getattr(item, "content", None) or (
-                    item.get("content") if isinstance(item, dict) else None) or []
-                for seg in content:
-                    annotations = getattr(seg, "annotations", None) or (
-                        seg.get("annotations") if isinstance(seg, dict) else None) or []
-                    for ann in annotations:
-                        atype = getattr(ann, "type", None) or (ann.get("type") if isinstance(ann, dict) else None)
-                        if atype == "url_citation":
-                            title = getattr(ann, "title", None) or (
-                                ann.get("title") if isinstance(ann, dict) else "") or ""
-                            url = getattr(ann, "url", None) or (ann.get("url") if isinstance(ann, dict) else "") or ""
-                            if url:
-                                cites.append({"title": str(title), "url": str(url)})
+            if isinstance(output, list):
+                for item in output:
+                    content = getattr(item, "content", None) or (
+                        item.get("content") if isinstance(item, dict) else None) or []
+                    if isinstance(content, list):
+                        for seg in content:
+                            annotations = getattr(seg, "annotations", None) or (
+                                seg.get("annotations") if isinstance(seg, dict) else None) or []
+                            if isinstance(annotations, list):
+                                for ann in annotations:
+                                    atype = getattr(ann, "type", None) or (ann.get("type") if isinstance(ann, dict) else None)
+                                    if atype == "url_citation":
+                                        title = getattr(ann, "title", None) or (ann.get("title") if isinstance(ann, dict) else "") or ""
+                                        url = getattr(ann, "url", None) or (ann.get("url") if isinstance(ann, dict) else "") or ""
+                                        if url:
+                                            cites.append({"title": str(title), "url": str(url)})
         except Exception:
             pass
-        return cites
 
+        # b) top-level attachments/citations
+        try:
+            for field in ("attachments", "citations"):
+                raw = getattr(resp, field, None)
+                if isinstance(raw, list):
+                    for it in raw:
+                        url = None
+                        title = ""
+                        if isinstance(it, dict):
+                            url = it.get("url") or it.get("source_url") or it.get("href")
+                            title = it.get("title") or ""
+                        else:
+                            url = getattr(it, "url", None) or getattr(it, "source_url", None) or getattr(it, "href", None)
+                            title = getattr(it, "title", "") or ""
+                        if isinstance(url, str) and url:
+                            cites.append({"title": str(title), "url": url})
+        except Exception:
+            pass
 
-    async def ask_ivan(self,question: str,short_history: Optional[List[Dict[str, str]]] = None,
+        # уникализируем по URL, сохраняя порядок
+        seen = set()
+        uniq: List[Dict[str, str]] = []
+        for c in cites:
+            u = c.get("url")
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            uniq.append({"title": c.get("title", "") or "", "url": u})
+        return uniq
+
+    async def ask_ivan(
+        self,
+        question: str,
+        short_history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """
         Высокоточный режим: строго структурированный юридический ответ с инструментами поиска.
@@ -207,11 +255,9 @@ class OpenAIService:
         # Настройки
         recency_days = getattr(self._s, "web_search_recency_days", 3650)
         max_results = getattr(self._s, "web_search_max_results", 8)
-        tool_choice = getattr(self._s, "tool_choice", "required")
-        reasoning_effort = getattr(self._s, "reasoning_effort", None) or getattr(self._s, "openai_reasoning_effort",
-                                                                                 "medium")
+        reasoning_effort = getattr(self._s, "reasoning_effort", None) or getattr(self._s, "openai_reasoning_effort", "medium")
         max_output_tokens = getattr(self._s, "max_output_tokens", None) or getattr(self._s, "openai_max_tokens", 1800)
-        temperature = getattr(self._s, "temperature", None) or getattr(self._s, "openai_temperature", 0.3)
+        temperature = getattr(self._s, "openai_temperature", 0.3)
         top_p = getattr(self._s, "top_p", 1.0)
         seed = getattr(self._s, "seed", 7)
         search_domains = getattr(self._s, "search_domains", None)
@@ -232,22 +278,23 @@ class OpenAIService:
                 *history_msgs,
                 {"role": "user", "content": question},
             ],
-            "response_format": LEGAL_SCHEMA,  # работаем строго по LEGAL_SCHEMA_V2 (если поддерживается)
-            # инструменты будут добавлены ниже только если включены
-            "tool_choice": tool_choice,
+            "modalities": ["text"],
             "reasoning": {"effort": reasoning_effort},
+            "max_output_tokens": max_output_tokens,
+            "response_format": LEGAL_SCHEMA,
+            "tool_choice": getattr(self._s, "tool_choice", "auto"),
+            # Дополнительные параметры генерации (оставляем как «мягкие»)
             "temperature": temperature,
             "top_p": top_p,
-            "max_output_tokens": max_output_tokens,
-            "parallel_tool_calls": True,
             "seed": seed,
         }
 
         # --- инструменты и extra_body ---
         extra_body: Dict[str, Any] = {}
-
         if search_domains:
-            extra_body["search_domains"] = search_domains
+            valid = self._validate_domains(search_domains)
+            if valid:
+                extra_body["search_domains"] = valid
 
         if getattr(self._s, "web_search_enabled", False):
             extra_body["web_search"] = {
@@ -257,8 +304,6 @@ class OpenAIService:
 
         if extra_body:
             payload["extra_body"] = extra_body
-        else:
-            payload.pop("extra_body", None)
 
         tools: List[Dict[str, Any]] = []
         if getattr(self._s, "web_search_enabled", False):
@@ -267,48 +312,21 @@ class OpenAIService:
             tools.append({"type": "file_search"})
         if tools:
             payload["tools"] = tools
-        else:
-            payload.pop("tools", None)
 
-        payload["tool_choice"] = getattr(self._s, "tool_choice", "auto")
-
-        # Вызов с авто-дауншифтом неподдержанных ключей
-        optional_keys = {
-            "response_format",
-            "tools",
-            "tool_choice",
-            "extra_body",
-            "reasoning",
-            "temperature",
-            "top_p",
-            "max_output_tokens",
-            "parallel_tool_calls",
-            "seed",
-        }
         try:
-            resp = await self._responses_call_with_optional(payload, optional_keys)
-            # Достаём текст и url-citations
-            raw_text: Optional[str] = self._extract_text_from_responses(resp)
-            citations = self._extract_url_citations(resp)
-            # Парсим JSON, если это он
+            raw_text, citations = await self._responses_call_with_optional(payload)
             if raw_text:
                 try:
                     data: Any = json.loads(raw_text)
                 except Exception:
                     data = {"raw": raw_text}
             else:
-                data = {"raw": repr(resp)}
+                data = {"raw": ""}
+
             return {"data": data, "citations": citations, "raw_text": raw_text}
-        except Exception:
-            # Фолбэк: Chat Completions с просьбой вернуть JSON по схеме V2 (мягко)
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                *history_msgs,
-                {"role": "user", "content": question},
-            ]
-            content = await self._chat_completions_compat(messages=messages, force_json=True)
-            data = self._safe_json_extract(content) or {}
-            return {"data": data, "citations": [], "raw_text": content}
+        except Exception as e:
+            log.exception("ask_ivan failed: %r", e)
+            raise
 
     async def generate_legal_answer(
         self,
@@ -317,7 +335,7 @@ class OpenAIService:
         retries: int = 2,
     ) -> Dict[str, Any]:
         """
-        Получить развернутый юридический ответ строго по LEGAL_SCHEMA_V2.
+        Получить развернутый юридический ответ строго по LEGAL_SCHEMA_V2 (если доступна).
         Возвращает dict с полями схемы. Бросает RuntimeError при неуспехе.
         """
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -334,13 +352,12 @@ class OpenAIService:
         except Exception as e:
             raise RuntimeError("LEGAL_SCHEMA_V2 недоступна, проверь импорт PROMPT_V2/LEGAL_SCHEMA_V2") from e
 
-        # Безопасное логирование запроса без чувствительных данных
+        # Безопасное логирование для Responses
         log.debug(
-            "LLM request: model=%s temp=%s max_tokens=%s effort=%s proxy_enabled=%s",
+            "LLM request (Responses): model=%s effort=%s max_output_tokens=%s proxy_enabled=%s",
             getattr(self._s, "openai_model", "unknown"),
-            getattr(self._s, "openai_temperature", 0.3),
-            getattr(self._s, "openai_max_tokens", 1500),
             getattr(self._s, "openai_reasoning_effort", "medium"),
+            getattr(self._s, "openai_max_tokens", 1500),
             bool(getattr(self._s, "openai_proxy_url", None) or getattr(self._s, "telegram_proxy_url", None)),
         )
 
@@ -356,10 +373,11 @@ class OpenAIService:
                 )
                 took_ms = int((perf_counter() - t0) * 1000)
                 data = self._safe_json_extract(content) or {}
-                if not (isinstance(data, dict) and data.get("conclusion") and data.get("sources")):
-                    raise ValueError("V2 schema parse: missing key fields")
-                log.info("LLM ok: attempt=%s api=responses(schema) took_ms=%s", attempt, took_ms)
-                return data
+                # Желательно наличие ключевых полей; если их нет — вернём как есть
+                if isinstance(data, dict) and data:
+                    log.info("LLM ok: attempt=%s api=responses(schema) took_ms=%s", attempt, took_ms)
+                    return data
+                raise ValueError("V2 schema parse: empty data")
 
             except TypeError as e:
                 # SDK не знает response_format → убираем схему и просим JSON текстом
@@ -375,28 +393,14 @@ class OpenAIService:
                     )
                     took_ms = int((perf_counter() - t0) * 1000)
                     data = self._safe_json_extract(content) or {}
-                    if not (isinstance(data, dict) and data.get("conclusion") and data.get("sources")):
-                        raise ValueError("V2 parse (responses no-schema) failed")
-                    log.info("LLM ok: attempt=%s api=responses took_ms=%s", attempt, took_ms)
-                    return data
+                    if isinstance(data, dict) and data:
+                        log.info("LLM ok: attempt=%s api=responses took_ms=%s", attempt, took_ms)
+                        return data
+                    raise ValueError("V2 parse (responses no-schema) failed")
 
                 except Exception as e2:
                     last_err = e2
                     log.warning("Responses call failed: %r", e2)
-
-                try:
-                    # 3) Chat Completions (просим вернуть JSON V2)
-                    content = await self._chat_completions_compat(messages=messages, force_json=True)
-                    took_ms = int((perf_counter() - t0) * 1000)
-                    data = self._safe_json_extract(content) or {}
-                    if not (isinstance(data, dict) and data.get("conclusion") and data.get("sources")):
-                        raise ValueError("V2 parse (chat.completions) failed")
-                    log.info("LLM ok: attempt=%s api=chat.completions took_ms=%s", attempt, took_ms)
-                    return data
-
-                except Exception as e3:
-                    last_err = e3
-                    log.warning("chat.completions fail: %r", e3)
 
             except Exception as e:
                 took_ms = int((perf_counter() - t0) * 1000)
@@ -417,103 +421,115 @@ class OpenAIService:
         raise RuntimeError(f"OpenAI error: {last_err}")
 
     # ──────────────────────────────────────────────────────────────────────
-    # Internal: универсальный вызов Responses с авто-удалением ключей
+    # Internal: универсальный вызов Responses с авто-совместимостью
     # ──────────────────────────────────────────────────────────────────────
-    async def _responses_call_with_optional(self, payload: Dict[str, Any]) -> Any:
+    async def _responses_call_with_optional(self, payload: Dict[str, Any]) -> Tuple[str, List[Dict[str, str]]]:
         """
-        Вызывает Responses API, поэтапно снимая неподдержанные поля.
-        Важно: модель не изменяем. Если модель недоступна — кидаем явную ошибку.
+        Универсальный вызов Responses API:
+        1) пробуем payload как есть;
+        2) если ругается на input/messages — автоматически переключаем;
+        3) если ругается на response_format — повторяем без схемы.
+        Возвращает (text, citations).
         """
-        max_attempts = 4
-        pl: Dict[str, Any] = dict(payload)
+        allowed = {
+            "model", "input", "messages", "modalities", "audio", "metadata",
+            "max_output_tokens", "reasoning", "text", "response_format",
+            "temperature", "top_p", "seed", "stop", "extra_body",
+            "tools", "tool_choice", "presence_penalty", "frequency_penalty",
+            "parallel_tool_calls",
+        }
+        pl = {k: v for k, v in payload.items() if k in allowed and v is not None}
 
-        for attempt in range(1, max_attempts + 1):
-            try:
-                return await self._client.responses.create(**pl)
-            except Exception as e:  # noqa: BLE001
-                msg = str(e)
-                low = msg.lower()
-                removed_any = False
+        # У reasoning-моделей некоторые параметры не поддерживаются — убираем на всякий случай
+        if self._is_reasoning_model():
+            for k in ("presence_penalty", "frequency_penalty", "stop", "max_tokens"):
+                pl.pop(k, None)
 
-                # 1) SDK-уровень: неожиданные аргументы
-                if "response_format" in low:
-                    pl.pop("response_format", None)
-                    removed_any = True
-                if "seed" in low:
-                    pl.pop("seed", None)
-                    removed_any = True
-                if "temperature" in low:
-                    pl.pop("temperature", None)
-                    removed_any = True
-                if "top_p" in low:
-                    pl.pop("top_p", None)
-                    removed_any = True
-                if "max_output_tokens" in low:
-                    pl.pop("max_output_tokens", None)
-                    removed_any = True
-                if "parallel_tool_calls" in low:
-                    pl.pop("parallel_tool_calls", None)
-                    removed_any = True
+        log_local = logging.getLogger("openai_service")
+        m = pl.get("model", self._get_model())
+        try:
+            effort = (pl.get("reasoning") or {}).get("effort", "")
+        except Exception:
+            effort = ""
+        log_local.debug(
+            "LLM request (Responses): model=%s effort=%s max_output_tokens=%s proxy_enabled=%s",
+            m,
+            effort or "<unset>",
+            pl.get("max_output_tokens"),
+            bool(getattr(self._s, "openai_proxy_url", None) or getattr(self._s, "telegram_proxy_url", None)),
+        )
 
-                # 2) Сервер: инструменты и веб-поиск недоступны
-                if "web_search" in low or ("unknown" in low and "tools" in low):
-                    pl.pop("tools", None)
-                    eb = pl.get("extra_body") or {}
-                    if isinstance(eb, dict):
-                        eb.pop("web_search", None)
-                        if eb:
-                            pl["extra_body"] = eb
-                        else:
-                            pl.pop("extra_body", None)
-                    removed_any = True
+        # 1) первая попытка
+        try:
+            resp = await self._client.responses.create(**pl)
+            return self._extract_text_and_citations(resp)
+        except Exception as e:
+            resp_obj = getattr(e, "response", None)
+            err_param, err_message = (None, "")
+            if resp_obj is not None:
+                err_param, err_message = self._safe_parse_error_response(resp_obj)
+            log_local.debug("Responses 1st attempt failed: param=%r detail=%r", err_param, err_message)
 
-                # 3) Модель недоступна/неизвестна — НЕ фолбэчим, а объясняем
-                if ("model" in low) and (
-                    "not found" in low or "does not exist" in low or "unknown" in low
-                ):
-                    raise RuntimeError(
-                        f"Модель '{pl.get('model')}' недоступна на аккаунте/в регионе. Укажите корректную модель через OPENAI_MODEL."
-                    ) from e
+            msg = (err_message or "").lower()
 
-                if removed_any and attempt < max_attempts:
-                    continue
-                raise
-    
+            # 2) автопереключение input ↔ messages
+            if ("unrecognized request argument: input" in msg) or (err_param == "input"):
+                if "messages" not in pl and "input" in pl:
+                    pl2 = dict(pl)
+                    pl2["messages"] = pl2.pop("input")
+                    resp2 = await self._client.responses.create(**pl2)
+                    return self._extract_text_and_citations(resp2)
+
+            if ("unrecognized request argument: messages" in msg) or (err_param == "messages"):
+                if "input" not in pl and "messages" in pl:
+                    pl2 = dict(pl)
+                    pl2["input"] = pl2.pop("messages")
+                    resp2 = await self._client.responses.create(**pl2)
+                    return self._extract_text_and_citations(resp2)
+
+            # 3) убрать response_format, если не поддерживается вашей версией SDK
+            if (err_param == "response_format") or ("response_format" in msg):
+                pl2 = dict(pl)
+                pl2.pop("response_format", None)
+                resp2 = await self._client.responses.create(**pl2)
+                return self._extract_text_and_citations(resp2)
+
+            # иначе — пробрасываем дальше
+            raise
+
     def _safe_parse_error_response(self, resp: Any) -> tuple[Optional[str], str]:
         """
         Безопасно парсит ошибку из HTTP ответа.
         Возвращает (err_param, err_message).
         """
         try:
-            # Проверяем наличие метода json и Content-Type
             if not hasattr(resp, "json"):
                 return None, ""
-            
-            # Дополнительная проверка Content-Type, если доступно
+
+            # Попробуем извлечь Content-Type (если доступен)
             content_type = ""
             if hasattr(resp, "headers"):
                 content_type = resp.headers.get("content-type", "").lower()
             elif hasattr(resp, "content_type"):
                 content_type = str(resp.content_type).lower()
-            
-            # Проверяем, что это действительно JSON
+
             if content_type and "application/json" not in content_type:
                 log.warning("Response Content-Type is not JSON: %s", content_type)
                 return None, ""
-            
+
             j = resp.json()
             if not isinstance(j, dict):
                 return None, ""
-                
+
             err = j.get("error") or {}
             if not isinstance(err, dict):
                 return None, ""
-                
+
             err_param = err.get("param")
             err_message = (err.get("message") or "").lower()
-            
+
             return err_param, err_message
-            
+
         except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
             log.debug("Failed to parse error response: %r", e)
             return None, ""
@@ -528,33 +544,31 @@ class OpenAIService:
         """
         if not domains_str or not isinstance(domains_str, str):
             return []
-        
-        import re
-        # Простая regex для проверки доменных имен
+
         domain_pattern = re.compile(
             r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
         )
-        
-        valid_domains = []
+
+        valid_domains: List[str] = []
         for domain in domains_str.split(","):
             domain = domain.strip().lower()
             if not domain:
                 continue
-            
+
             # Удаляем протокол если есть
             if domain.startswith(("http://", "https://")):
                 domain = domain.split("//", 1)[1]
-            
+
             # Удаляем путь если есть
             if "/" in domain:
                 domain = domain.split("/", 1)[0]
-            
+
             # Валидация доменного имени
             if domain_pattern.match(domain) and len(domain) <= 253:
                 valid_domains.append(domain)
             else:
                 log.warning("Invalid domain name ignored: %s", domain)
-        
+
         log.debug("Validated domains: %s -> %s", domains_str, valid_domains)
         return valid_domains
 
@@ -566,27 +580,26 @@ class OpenAIService:
         """
         if not message:
             return "<empty>"
-        
+
         if not isinstance(message, str):
             message = str(message)
-        
+
         # Маскируем потенциально чувствительные данные
-        import re
         # Маскируем API ключи
         message = re.sub(r'sk-[a-zA-Z0-9-_]{20,}', 'sk-***MASKED***', message)
         # Маскируем токены
         message = re.sub(r'[Bb]earer\s+[a-zA-Z0-9-_]{20,}', 'Bearer ***MASKED***', message)
         # Маскируем пароли в URL
         message = re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', message)
-        
+
         # Усекаем сообщение если необходимо
         if len(message) > max_length:
             return message[:max_length] + "…[TRUNCATED]"
-        
+
         return message
 
     # ──────────────────────────────────────────────────────────────────────
-    # Internal: Responses API с авто-удалением неподдержанных параметров
+    # Internal: Responses API «совместимый» вызов (со схемой/без)
     # ──────────────────────────────────────────────────────────────────────
     async def _responses_create_compat(
         self,
@@ -596,131 +609,50 @@ class OpenAIService:
         use_schema: bool,
     ) -> str:
         """
-        Пытается вызвать client.responses.create(**payload) с мягким удалением неподдержанных ключей.
-        Возвращает объединённый текст ответа.
+        Вызывает client.responses.create(**payload) с «мягким» снятием неподдержанных ключей.
+        Возвращает итоговый текст ответа (string).
         """
         payload: Dict[str, Any] = {
             "model": self._get_model(),
             "input": messages,
         }
 
-        optional_keys = set()
-
-        # temperature — у reasoning-моделей часто не поддерживается
+        # temperature — у reasoning-моделей может игнорироваться; передаём как «мягкий» параметр
         if getattr(self._s, "openai_temperature", None) is not None:
             payload["temperature"] = self._s.openai_temperature
-            optional_keys.add("temperature")
-
         # max_output_tokens (в Responses)
         if getattr(self._s, "openai_max_tokens", None):
             payload["max_output_tokens"] = self._s.openai_max_tokens
-            optional_keys.add("max_output_tokens")
-
-        # reasoning/text — «новые» допы
+        # reasoning/text — дополнительные параметры
         if getattr(self._s, "openai_reasoning_effort", None):
             payload["reasoning"] = {"effort": self._s.openai_reasoning_effort}
-            optional_keys.add("reasoning")
         if getattr(self._s, "openai_verbosity", None):
             payload["text"] = {"verbosity": self._s.openai_verbosity}
-            optional_keys.add("text")
 
-        # JSON Schema (может не поддерживаться)
+        # JSON Schema (может не поддерживаться старым SDK)
         if use_schema:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {"name": "legal_answer", "schema": json_schema},
             }
-            optional_keys.add("response_format")
 
-        resp = await self._responses_call_with_optional(payload)
-        return self._extract_text_from_responses(resp) or ""
+        text, _cites = await self._responses_call_with_optional(payload)
+        return text or ""
 
     # ──────────────────────────────────────────────────────────────────────
-    # Internal: Chat Completions fallback
+    # Helpers: модель/прокси/извлечение текста и цитат
     # ──────────────────────────────────────────────────────────────────────
-    async def _chat_completions_compat(
-        self,
-        *,
-        messages: List[Dict[str, str]],
-        force_json: bool,
-    ) -> str:
+    def _is_reasoning_model(self) -> bool:
         """
-        Пытается вызвать client.chat.completions.create(...).
-        Если SDK/сервер не знает response_format={"type":"json_object"} или temperature — убираем и повторяем.
+        True для reasoning-моделей, которые надо вызывать через Responses API
+        (gpt-5, o4, o3, o1 и т.п.).
         """
-        chat_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
+        try:
+            m = self._get_model()
+        except Exception:
+            return False
+        return m.startswith(("gpt-5", "o4", "o3", "o1"))
 
-        # Базовые аргументы
-        kwargs: Dict[str, Any] = dict(
-            model=self._get_model(),
-            messages=chat_msgs,
-        )
-        removable = set()
-
-        if getattr(self._s, "openai_temperature", None) is not None:
-            kwargs["temperature"] = self._s.openai_temperature
-            removable.add("temperature")
-
-        if getattr(self._s, "openai_max_tokens", None):
-            kwargs["max_tokens"] = self._s.openai_max_tokens
-
-        if force_json:
-            kwargs["response_format"] = {"type": "json_object"}
-            removable.add("response_format")
-
-        # Попробуем один-два прохода с удалением неподдержанных параметров
-        for _ in range(2):
-            try:
-                resp = await self._client.chat.completions.create(**kwargs)
-                return self._extract_text_from_chat(resp)
-            except TypeError as e:
-                if "response_format" in str(e) and "response_format" in kwargs:
-                    kwargs.pop("response_format", None)
-                    # усилим system-подсказку в сообщениях
-                    patched = chat_msgs.copy()
-                    if patched and patched[0]["role"] == "system":
-                        patched[0] = {
-                            "role": "system",
-                            "content": patched[0]["content"] + " Всегда возвращай ТОЛЬКО JSON {\"answer\":\"...\",\"laws\":[\"...\"]}.",
-                        }
-                    kwargs["messages"] = patched
-                    continue
-                raise
-            except Exception as e:
-                resp = getattr(e, "response", None)
-                err_param = None
-                err_message = ""
-                
-                if resp is not None:
-                    err_param, err_message = self._safe_parse_error_response(resp)
-
-                removed = False
-                # Модель недоступна/не найдена — не фолбэчим, объясняем явно
-                if (err_param == "model") or ("model" in err_message and ("not found" in err_message or "does not exist" in err_message or "unknown" in err_message)):
-                    raise RuntimeError(
-                        f"Модель '{kwargs.get('model')}' недоступна. Задайте корректную OPENAI_MODEL."
-                    ) from e
-                
-                # Параметр max_tokens не поддержан — пробуем max_completion_tokens
-                if (err_param == "max_tokens") or ("max_tokens" in err_message and "max_completion_tokens" in err_message):
-                    if "max_tokens" in kwargs:
-                        val = kwargs.pop("max_tokens")
-                        kwargs["max_completion_tokens"] = val
-                        log.debug("Chat: switching 'max_tokens' -> 'max_completion_tokens' and retrying...")
-                        removed = True
-                
-                for cand in list(removable):
-                    if (err_param == cand) or (f"'{cand}'" in err_message and cand in kwargs):
-                        log.debug("Server says chat param '%s' unsupported — removing and retrying...", cand)
-                        kwargs.pop(cand, None)
-                        removed = True
-                if removed:
-                    continue
-                raise
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Helpers: прокси и извлечение текста
-    # ──────────────────────────────────────────────────────────────────────
     @staticmethod
     def _build_proxy_url(url: Optional[str], user: Optional[str], pwd: Optional[str]) -> Optional[str]:
         """
@@ -754,11 +686,21 @@ class OpenAIService:
             )
         except TypeError:
             return httpx.AsyncClient(
-                proxies=proxy_url,               # старые версии httpx
+                proxies=proxy_url,               # ← ключевой фикс для старых версий httpx
                 timeout=httpx.Timeout(45.0),
                 verify=True,
                 trust_env=False,
             )
+
+    def _extract_text_and_citations(self, resp: Any) -> Tuple[str, List[Dict[str, str]]]:
+        """
+        Унифицированный проход по объекту Responses:
+        - собираем финальный text (включая output_text, если есть),
+        - достаём URL-цитаты.
+        """
+        text = self._extract_text_from_responses(resp)
+        cites = self._extract_url_citations(resp)
+        return text, cites
 
     @staticmethod
     def _extract_text_from_responses(resp: Any) -> str:
@@ -780,7 +722,6 @@ class OpenAIService:
         if isinstance(output, list):
             parts: List[str] = []
             for item in output:
-                content = None
                 if isinstance(item, dict):
                     content = item.get("content")
                 else:
@@ -806,33 +747,6 @@ class OpenAIService:
         return str(resp)
 
     @staticmethod
-    def _extract_text_from_chat(resp: Any) -> str:
-        """
-        Безопасно достаёт контент из Chat Completions ответа.
-        """
-        try:
-            choices = getattr(resp, "choices", None)
-            if not choices or not isinstance(choices, list) or len(choices) == 0:
-                return ""
-            
-            first_choice = choices[0]
-            if not hasattr(first_choice, "message"):
-                return ""
-            
-            msg = first_choice.message
-            content = getattr(msg, "content", None)
-            if content is None:
-                return ""
-                
-            return str(content)
-        except (IndexError, AttributeError, TypeError) as e:
-            log.debug("Failed to extract text from chat response: %r", e)
-            return ""
-        except Exception as e:
-            log.warning("Unexpected error extracting chat text: %r", e)
-            return ""
-
-    @staticmethod
     def _safe_json_extract(text: str) -> Dict[str, Any]:
         """
         Пытается распарсить JSON даже если модель вернула «обёртку».
@@ -855,7 +769,7 @@ class OpenAIService:
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                obj = json.loads(text[start : end + 1])
+                obj = json.loads(text[start: end + 1])
                 if isinstance(obj, dict):
                     return obj
             except Exception:

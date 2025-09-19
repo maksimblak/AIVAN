@@ -1,3 +1,4 @@
+# config.py
 from __future__ import annotations
 
 import os
@@ -14,6 +15,7 @@ def _get_bool(name: str, default: bool = False) -> bool:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on", "y"}
 
+
 def _get_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:
@@ -22,6 +24,7 @@ def _get_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
 
 def _get_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -32,13 +35,16 @@ def _get_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
 def _maybe_load_dotenv() -> None:
     """
     Лёгкий .env-лоадер без зависимостей.
+
     Ищет .env в:
       • текущая рабочая директория
       • каталог этого файла
       • родитель каталога (корень проекта)
+
     Подставляет только те ключи, которых нет в os.environ.
     Формат: KEY=VALUE. Строки с # игнорируются.
     """
@@ -63,6 +69,7 @@ def _maybe_load_dotenv() -> None:
         except Exception:
             # best-effort
             pass
+
 
 def _env_first(*names: str, default: str = "") -> str:
     """Возвращает первое непустое значение из списка имён ENV."""
@@ -89,6 +96,10 @@ class Settings:
     telegram_token: str
     openai_api_key: str
 
+    # OpenAI (жестко фиксируем GPT-5 и Responses API)
+    openai_model: str                     # всегда "gpt-5"
+    openai_base_url: Optional[str] = None # опционально, если используется частный шлюз
+
     # Telegram proxy (опционально)
     telegram_proxy_url: Optional[str] = None
     telegram_proxy_user: Optional[str] = None
@@ -97,18 +108,17 @@ class Settings:
     # Кастомный Bot API сервер (self-hosted), напр. http://127.0.0.1:8081
     telegram_api_base: Optional[str] = None
 
-    # OpenAI: базовые параметры генерации
-    openai_model: str
+    # OpenAI: параметры генерации
     openai_temperature: float = 0.3
     openai_max_tokens: int = 1500
-    openai_verbosity: str = "low"             # low|medium|high (для логгирования/уровня трассировки)
-    openai_reasoning_effort: str = "medium"   # low|medium|high (оставлено для совместимости)
+    openai_verbosity: str = "low"            # low|medium|high (для логгирования)
+    openai_reasoning_effort: str = "medium"  # low|medium|high
 
-    # Доп. параметры генерации (под ask_ivan)
+    # Доп. параметры генерации (под Responses)
     top_p: float = 1.0
     seed: int = 7
-    max_output_tokens: int = 1800              # специально под Responses API (может отличаться от openai_max_tokens)
-    reasoning_effort: str = "medium"           # дубль значения openai_reasoning_effort (удобнее в коде)
+    max_output_tokens: int = 1800            # специально под Responses API
+    reasoning_effort: str = "medium"         # дубль значения openai_reasoning_effort (удобнее в коде)
 
     # OpenAI proxy (опционально)
     openai_proxy_url: Optional[str] = None
@@ -116,18 +126,18 @@ class Settings:
     openai_proxy_pass: Optional[str] = None
 
     # App
-    parse_mode: Optional[str] = "MarkdownV2"   # нормализуется в None при "none"/""/ "null"
+    parse_mode: Optional[str] = "MarkdownV2"  # нормализуется в None при "none"/""/"null"
     log_json: bool = True
     min_question_length: int = 20
     max_requests_per_hour: int = 10
-    history_size: int = 5                      # число пар «вопрос-ответ» рекомендуется * 2 в deque
+    history_size: int = 5                     # число пар «вопрос-ответ» (рекомендуется *2 в deque)
 
     # Поиск/инструменты
-    search_domains: Optional[str] = None       # CSV: "kad.arbitr.ru,sudrf.ru,vsrf.ru,ksrf.ru,publication.pravo.gov.ru"
+    search_domains: Optional[str] = None      # CSV: "kad.arbitr.ru,sudrf.ru,vsrf.ru,ksrf.ru,publication.pravo.gov.ru"
     web_search_recency_days: int = 3650
     web_search_max_results: int = 8
     file_search_enabled: bool = True
-    tool_choice: str = "auto"              # "required" | "auto"
+    tool_choice: str = "auto"                 # "required" | "auto" (для Responses)
     web_search_enabled: bool = False
 
 
@@ -143,6 +153,7 @@ def load_settings() -> Settings:
         "TG_BOT_TOKEN",
         "TELEGRAM_BOT_API_TOKEN",
     )
+
     # OpenAI key (поддержка альтернативных имён)
     oaikey = _env_first(
         "OPENAI_API_KEY",
@@ -169,18 +180,23 @@ def load_settings() -> Settings:
     tg_proxy_pass = os.getenv("TELEGRAM_PROXY_PASS") or None
     tg_api_base = os.getenv("TELEGRAM_API_BASE") or os.getenv("BOT_API_BASE") or None
 
-    # OpenAI base
-    openai_model = (os.getenv("OPENAI_MODEL", "") or "").strip()
+    # OpenAI base (опционально, если у вас свой шлюз)
+    openai_base_url = os.getenv("OPENAI_BASE_URL") or None
+
+    # ── GPT-5 только: принудительно фиксируем модель независимо от ENV ─────────
+    openai_model = "gpt-5"
+
+    # Параметры генерации
     temp = _get_float("OPENAI_TEMPERATURE", 0.3)
     oai_max_tokens = _get_int("OPENAI_MAX_TOKENS", 1500)
-    verbosity = (os.getenv("OPENAI_VERBOSITY", "low") or "low").lower()
-    effort = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").lower()
+    verbosity = (os.getenv("OPENAI_VERBOSITY", "low") or "low").strip().lower()
+    effort_env = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").strip().lower()
 
     # Доп. генерация (Responses API)
     top_p = _get_float("TOP_P", 1.0)
     seed = _get_int("SEED", 7)
     max_output_tokens = _get_int("MAX_OUTPUT_TOKENS", 1800)
-    reasoning_effort = (os.getenv("REASONING_EFFORT", effort) or effort).lower()  # синхронизируем с OPENAI_REASONING_EFFORT
+    reasoning_effort = (os.getenv("REASONING_EFFORT", effort_env) or effort_env).strip().lower()
 
     # OpenAI proxy
     oai_proxy_url = os.getenv("OPENAI_PROXY_URL") or None
@@ -190,9 +206,8 @@ def load_settings() -> Settings:
     # App
     parse_mode_raw = os.getenv("PARSE_MODE", "MarkdownV2")
     parse_mode_norm = parse_mode_raw.strip().lower()
-    parse_mode: Optional[str]
     if parse_mode_norm in {"none", "", "null"}:
-        parse_mode = None
+        parse_mode: Optional[str] = None
     else:
         parse_mode = parse_mode_raw
 
@@ -206,9 +221,10 @@ def load_settings() -> Settings:
     web_search_recency_days = _get_int("WEB_SEARCH_RECENCY_DAYS", 3650)
     web_search_max_results = _get_int("WEB_SEARCH_MAX_RESULTS", 8)
     file_search_enabled = _get_bool("FILE_SEARCH_ENABLED", True)
-    tool_choice = (os.getenv("TOOL_CHOICE", "required") or "required").lower()
+    tool_choice = (os.getenv("TOOL_CHOICE", "auto") or "auto").strip().lower()
+    web_search_enabled = _get_bool("WEB_SEARCH_ENABLED", False)
 
-    # Валидации
+    # ── Валидации и нормализация ───────────────────────────────────────────────
     if not (0.0 <= temp <= 2.0):
         temp = 0.3
     if oai_max_tokens < 1:
@@ -217,34 +233,32 @@ def load_settings() -> Settings:
         max_output_tokens = 1800
     if verbosity not in {"low", "medium", "high"}:
         verbosity = "low"
-    if effort not in {"low", "medium", "high"}:
-        effort = "medium"
+    if effort_env not in {"low", "medium", "high"}:
+        effort_env = "medium"
     if reasoning_effort not in {"low", "medium", "high"}:
-        reasoning_effort = effort
+        reasoning_effort = effort_env
     if tool_choice not in {"required", "auto"}:
-        tool_choice = "required"
+        tool_choice = "auto"
     if not (0.0 < top_p <= 1.0):
         top_p = 1.0
 
-    if not openai_model:
-        raise RuntimeError(
-            "OPENAI_MODEL не задан. Укажите доступную модель (например, 'gpt-4o', 'gpt-4.1-mini')."
-        )
-
+    # Итог
     return Settings(
         telegram_token=tg_token,
         openai_api_key=oaikey,
+
+        openai_model=openai_model,
+        openai_base_url=openai_base_url,
 
         telegram_proxy_url=tg_proxy_url,
         telegram_proxy_user=tg_proxy_user,
         telegram_proxy_pass=tg_proxy_pass,
         telegram_api_base=tg_api_base,
 
-        openai_model=openai_model,
         openai_temperature=temp,
         openai_max_tokens=oai_max_tokens,
         openai_verbosity=verbosity,
-        openai_reasoning_effort=effort,
+        openai_reasoning_effort=effort_env,
 
         top_p=top_p,
         seed=seed,
@@ -266,5 +280,5 @@ def load_settings() -> Settings:
         web_search_max_results=web_search_max_results,
         file_search_enabled=file_search_enabled,
         tool_choice=tool_choice,
-        web_search_enabled=_get_bool("WEB_SEARCH_ENABLED", False),
+        web_search_enabled=web_search_enabled,
     )
