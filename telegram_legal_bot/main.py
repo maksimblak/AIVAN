@@ -141,10 +141,13 @@ async def main_async() -> None:
             await ai.aclose()
         with suppress(Exception):
             await bot.session.close()
-
-
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entrypoint for Poetry script."""
     try:
         asyncio.run(main_async())
     except (KeyboardInterrupt, SystemExit):
         pass
+
+
+if __name__ == "__main__":
+    main()

@@ -231,7 +231,8 @@ async def handle_legal_query(message: types.Message) -> None:
     if len(text) < _handler.settings.min_question_length:
         error_text = BotMessages.error_message("invalid_question")
         try:
-            await message.answer(md2(error_text), parse_mode="MarkdownV2")
+            # Сообщение уже содержит корректную Markdown/HTML разметку — отправляем без доп. экранирования
+            await message.answer(error_text, parse_mode="MarkdownV2")
         except Exception:
             await message.answer("✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.", parse_mode=None)
         return
@@ -249,7 +250,7 @@ async def handle_legal_query(message: types.Message) -> None:
 
         rate_limit_text = BotMessages.rate_limit_message(ttl_seconds)
         try:
-            await message.answer(md2(rate_limit_text), parse_mode="MarkdownV2")
+            await message.answer(rate_limit_text, parse_mode="MarkdownV2")
         except Exception:
             remain_text = ""
             remaining_fn = getattr(_handler.rate_limiter, "remaining", None)
@@ -336,6 +337,6 @@ async def handle_legal_query(message: types.Message) -> None:
                 pass
         error_text = BotMessages.error_message("general")
         try:
-            await message.answer(md2(error_text), parse_mode="MarkdownV2")
+            await message.answer(error_text, parse_mode="MarkdownV2")
         except Exception:
             await message.answer("😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.", parse_mode=None)

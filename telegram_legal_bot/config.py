@@ -183,8 +183,10 @@ def load_settings() -> Settings:
     # OpenAI base (опционально, если у вас свой шлюз)
     openai_base_url = os.getenv("OPENAI_BASE_URL") or None
 
-    # ── GPT-5 только: принудительно фиксируем модель независимо от ENV ─────────
-    openai_model = "gpt-5"
+    # Модель: берём из ENV с дефолтом на reasoning-модель
+    openai_model = (os.getenv("OPENAI_MODEL") or "gpt-5").strip()
+    if not openai_model:
+        openai_model = "gpt-5"
 
     # Параметры генерации
     temp = _get_float("OPENAI_TEMPERATURE", 0.3)

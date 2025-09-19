@@ -676,10 +676,20 @@ class OpenAIService:
                 if isinstance(content, list):
                     for seg in content:
                         if isinstance(seg, dict):
-                            if seg.get("type") in {"output_text", "text"}:
+                            seg_type = seg.get("type")
+                            # 1) Прямой текст
+                            if seg_type in {"output_text", "text"}:
                                 txt = seg.get("text")
                                 if isinstance(txt, str):
                                     parts.append(txt)
+                            # 2) Некоторые SDK кладут JSON-ответ в поле 'json'/'object'/'parsed'
+                            for key in ("json", "object", "parsed", "value"):
+                                val = seg.get(key)
+                                if isinstance(val, (dict, list)):
+                                    try:
+                                        parts.append(json.dumps(val, ensure_ascii=False))
+                                    except Exception:
+                                        pass
                         else:
                             seg_type = getattr(seg, "type", None)
                             if seg_type in {"output_text", "text"}:
@@ -688,7 +698,8 @@ class OpenAIService:
                                     parts.append(txt)
             if parts:
                 return "".join(parts)
-        return str(resp)
+        # Безопасный фолбэк: не отдаём str(resp) пользователю
+        return ""
 
     @staticmethod
     def _safe_json_extract(text: str) -> Dict[str, Any]:
