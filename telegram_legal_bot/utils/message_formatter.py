@@ -1,38 +1,36 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, Sequence
+from typing import Iterable, List
 
-TG_MAX_LEN = 4096
-_url_re = re.compile(r"https?://\S+", re.IGNORECASE)
-
-_MD2_NEED_ESCAPE = re.compile(r'([_*\[\]()~`>#+\-=|{}.!])')
-
-
-def escape_md2(text: str) -> str:
-    """
-    Минималистичный экранировщик под Telegram MarkdownV2.
-    Экранируем спецсимволы из доки Telegram:
-    _ * [ ] ( ) ~ ` > # + - = | { } . !
-    и сначала удваиваем обратные слеши.
-    """
-    if not text:
-        return ""
-    text = text.replace("\\", "\\\\")
-    return _MD2_NEED_ESCAPE.sub(r"\\\1", text)
+# ── Экранирование для Telegram MarkdownV2 ─────────────────────────────────────
+_MD2_NEED_ESCAPE = r"_*[]()~`>#+-=|{}.!"
+_MD2_RE = re.compile(f"[{re.escape(_MD2_NEED_ESCAPE)}]")
 
 
 def md2(text: str) -> str:
-    """Сахарная обёртка — используем в проекте везде вместо внешних хелперов."""
-    return escape_md2(text)
+    """
+    Экранирует произвольный текст под Telegram MarkdownV2.
+    """
+    if not text:
+        return ""
+    return _MD2_RE.sub(lambda m: "\\" + m.group(0), text)
+
+
+def _escape_md2_url(url: str) -> str:
+    """
+    Для MarkdownV2 в URL критичны только круглые скобки — экранируем.
+    """
+    return url.replace("(", r"\(").replace(")", r"\)")
+
+
+_url_re = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 def format_laws(laws: Iterable[str] | None) -> str:
     """
-    Форматирует список норм/ссылок:
-    - Текст нормы — моноширинный,
-    - URL — кликабельный (не прячем в моноширинный блок).
-    Пример: • `ст. 10 ГК РФ` — https://.../article/10
+    Форматирует список «норм права» дружелюбно к MarkdownV2.
+    Если внутри есть URL — делаем кликабельную метку.
     """
     if not laws:
         return "Нормы права не найдены."
@@ -43,50 +41,71 @@ def format_laws(laws: Iterable[str] | None) -> str:
         raw = raw.strip()
         m = _url_re.search(raw)
         if m:
-            url = m.group(0)
-            label = raw.replace(url, "").strip(" -—:") or "Норма"
-            lines.append(f"• `{md2(label)}` — {url}")
+            url = _escape_md2_url(m.group(0))
+            label = raw.replace(m.group(0), "").strip(" -—:") or "Ссылка"
+            lines.append(f"• `{md2(label)}` — [{md2('открыть')}]({url})")
         else:
             lines.append(f"• `{md2(raw)}`")
     return "\n".join(lines)
 
 
-def build_legal_reply(summary: str, details: str, laws: Sequence[str] | None) -> str:
-    return (
-        f"⚖️ *{md2('ЮРИДИЧЕСКАЯ КОНСУЛЬТАЦИЯ')}*\n\n"
-        f"📋 *{md2('Краткий ответ:')}*\n"
-        f"{md2(summary)}\n\n"
-        f"📄 *{md2('Подробное разъяснение:')}*\n"
-        f"{md2(details)}\n\n"
-        f"📚 *{md2('Применимые нормы права:')}*\n"
-        f"{format_laws(laws)}\n\n"
-        f"⚠️ *{md2('Важно:')}*\n"
-        f"{md2('Данная консультация носит информационный характер и не заменяет профессиональную юридическую помощь.')}"
-    )
-
-
-def chunk_markdown_v2(text: str, limit: int = TG_MAX_LEN) -> list[str]:
+def build_legal_answer_message(
+    answer: str,
+    laws: Iterable[str] | None = None,
+    intro: str | None = None,
+) -> str:
     """
-    Режем длинный MarkdownV2-текст на части, стараясь попадать в переносы.
+    Собирает финальный ответ: вступление (если есть), текст ответа, блок «Нормы права».
     """
     parts: list[str] = []
-    for block in text.split("\n\n"):
-        block = block.strip()
-        if not block:
-            continue
-        if len(block) <= limit:
-            parts.append(block)
-            continue
-        cur = block
-        while len(cur) > limit:
-            cut = cur.rfind("\n", 0, limit)
-            if cut == -1:
-                cut = limit
-            parts.append(cur[:cut])
-            cur = cur[cut:].lstrip()
-        if cur:
-            parts.append(cur)
-    return parts
+    if intro:
+        parts.append(md2(intro.strip()))
+    if answer:
+        parts.append(md2(answer.strip()))
+    if laws is not None:
+        parts.append("")
+        parts.append("*Нормы права:*")
+        parts.append(format_laws(laws))
+    return "\n".join(parts).strip()
 
-# back-compat alias (если где-то осталось старое имя)
-format_legal_response = build_legal_reply
+
+def chunk_for_telegram(text: str, limit: int = 4096) -> List[str]:
+    """
+    Дробит длинное сообщение на куски ≤ limit.
+    Старается резать по пустым строкам, чтобы не рвать абзацы.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: List[str] = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + limit)
+        cut = text.rfind("\n\n", start, end)
+        if cut == -1 or cut <= start:
+            cut = end
+        chunks.append(text[start:cut])
+        start = cut
+    return [c for c in chunks if c]
+
+
+# ── Алиасы под ожидаемые имена (чтобы импорты не падали) ─────────────────────
+def build_legal_reply(answer: str, laws: Iterable[str] | None = None, intro: str | None = None) -> str:
+    """Синоним build_legal_answer_message (для обратной совместимости)."""
+    return build_legal_answer_message(answer=answer, laws=laws, intro=intro)
+
+
+def chunk_markdown_v2(text: str, limit: int = 4096) -> List[str]:
+    """Синоним chunk_for_telegram (для обратной совместимости)."""
+    return chunk_for_telegram(text=text, limit=limit)
+
+
+__all__ = [
+    "md2",
+    "format_laws",
+    "build_legal_answer_message",
+    "chunk_for_telegram",
+    # алиасы:
+    "build_legal_reply",
+    "chunk_markdown_v2",
+]

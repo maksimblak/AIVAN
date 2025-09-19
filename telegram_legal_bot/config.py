@@ -1,96 +1,215 @@
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
-from dotenv import load_dotenv
+from pathlib import Path
+from typing import Iterable
 
-load_dotenv()
-logger = logging.getLogger(__name__)
 
+# ── утилиты чтения ENV ────────────────────────────────────────────────────────
+
+def _get_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _get_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _get_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _maybe_load_dotenv() -> None:
+    """
+    Лёгкий .env-лоадер без зависимостей.
+    Ищем .env в (по порядку):
+      • текущей рабочей директории
+      • каталоге этого файла (…/telegram_legal_bot)
+      • его родителе (корень проекта)
+    Подставляем только те ключи, которых нет в os.environ.
+    Формат строк: KEY=VALUE, строки с # — комментарии.
+    """
+    candidates: Iterable[Path] = {
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+    }
+    for env_path in candidates:
+        if not env_path.exists():
+            continue
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            # best-effort: тихо игнорим
+            pass
+
+
+def _env_first(*names: str, default: str = "") -> str:
+    """Возвращает первое непустое значение из списка имён ENV."""
+    for n in names:
+        v = os.getenv(n)
+        if v:
+            return v.strip()
+    return default
+
+
+# ── модель настроек ───────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Settings:
+    """
+    Конфигурация бота и LLM. Значения берутся из ENV (+ .env, если найден).
+
+    Обязательные:
+      - TELEGRAM_BOT_TOKEN (или TELEGRAM_TOKEN / BOT_TOKEN / TG_BOT_TOKEN / TELEGRAM_BOT_API_TOKEN)
+      - OPENAI_API_KEY     (или OPENAI_KEY / OPENAI_TOKEN)
+    """
+
+    # обязательные (в начале!)
     telegram_token: str
     openai_api_key: str
 
-    # GPT-5 + Responses API
-    openai_model: str = "gpt-5"
-    openai_temperature: float = 0.3
-    openai_max_tokens: int = 1500
-    openai_verbosity: str = "low"           # low|medium|high
-    openai_reasoning_effort: str = "medium" # minimal|medium|high
-
-    # Бот
-    max_requests_per_hour: int = 10
-    min_question_length: int = 20
-
+    # Telegram proxy (опционально)
     telegram_proxy_url: str | None = None
     telegram_proxy_user: str | None = None
     telegram_proxy_pass: str | None = None
 
-    # Логи
-    log_level: str = "INFO"
-    json_logs: bool = False
+    # Кастомный Bot API сервер (self-hosted), напр. http://127.0.0.1:8081
+    telegram_api_base: str | None = None
 
-    system_prompt: str = (
-        "Ты — квалифицированный юрист-консультант. Отвечай на юридические вопросы "
-        "четко и структурированно. Всегда указывай применимые нормы права "
-        "(если уместно и известно). Предупреждай, что консультация носит "
-        "информационный характер и не заменяет профессиональную юридическую помощь. "
-        "Формат: краткий ответ, подробности, нормы, дисклеймер."
-    )
+    # OpenAI базовые настройки
+    openai_model: str = "gpt-5"
+    openai_temperature: float = 0.3
+    openai_max_tokens: int = 1500
+    openai_verbosity: str = "low"            # low|medium|high
+    openai_reasoning_effort: str = "medium"  # low|medium|high
 
+    # OpenAI proxy (опционально)
+    openai_proxy_url: str | None = None
+    openai_proxy_user: str | None = None
+    openai_proxy_pass: str | None = None
 
-def _get_bool(name: str, default: bool) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return str(val).strip().lower() in {"1", "true", "yes", "y", "on"}
+    # App
+    parse_mode: str = "MarkdownV2"
+    log_json: bool = True
+    min_question_length: int = 20
+    max_requests_per_hour: int = 10
+    history_size: int = 5
 
 
 def load_settings() -> Settings:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY не задан в .env")
+    """Собирает настройки. Пытается подхватить .env, если переменных нет в окружении."""
+    _maybe_load_dotenv()
 
-    model = os.getenv("OPENAI_MODEL", "gpt-5").strip()
-    temp = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
-    max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1500"))
-    verbosity = os.getenv("OPENAI_VERBOSITY", "low").strip().lower()
-    effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower()
+    # --- Telegram token: поддерживаем альтернативные имена
+    tg_token = _env_first(
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_TOKEN",
+        "BOT_TOKEN",
+        "TG_BOT_TOKEN",
+        "TELEGRAM_BOT_API_TOKEN",
+    )
+    # --- OpenAI key: поддерживаем альтернативные имена
+    oaikey = _env_first(
+        "OPENAI_API_KEY",
+        "OPENAI_KEY",
+        "OPENAI_TOKEN",
+    )
 
-    try:
-        max_per_hour = int(os.getenv("MAX_REQUESTS_PER_HOUR", "10"))
-    except ValueError:
-        logging.warning("Некорректное MAX_REQUESTS_PER_HOUR — используем 10")
-        max_per_hour = 10
+    if not tg_token:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is required "
+            "(также поддерж.: TELEGRAM_TOKEN / BOT_TOKEN / TG_BOT_TOKEN / TELEGRAM_BOT_API_TOKEN). "
+            "Проверь .env или переменные окружения процесса."
+        )
+    if not oaikey:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required "
+            "(также поддерж.: OPENAI_KEY / OPENAI_TOKEN). "
+            "Проверь .env или переменные окружения процесса."
+        )
 
-    min_len = int(os.getenv("MIN_QUESTION_LENGTH", "20"))
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper().strip()
-    json_logs = _get_bool("JSON_LOGS", False)
-    system_prompt = os.getenv("SYSTEM_PROMPT") or Settings.system_prompt
-    telegram_proxy_url = os.getenv("TELEGRAM_PROXY_URL") or None
-    telegram_proxy_user = os.getenv("TELEGRAM_PROXY_USER") or None
-    telegram_proxy_pass = os.getenv("TELEGRAM_PROXY_PASS") or None
+    # Telegram proxy
+    tg_proxy_url = os.getenv("TELEGRAM_PROXY_URL") or None
+    tg_proxy_user = os.getenv("TELEGRAM_PROXY_USER") or None
+    tg_proxy_pass = os.getenv("TELEGRAM_PROXY_PASS") or None
+
+    # Кастомный Bot API сервер (если используешь self-hosted)
+    tg_api_base = os.getenv("TELEGRAM_API_BASE") or os.getenv("BOT_API_BASE") or None
+
+    # OpenAI base
+    model = os.getenv("OPENAI_MODEL", "gpt-5")
+    temp = _get_float("OPENAI_TEMPERATURE", 0.3)
+    max_tokens = _get_int("OPENAI_MAX_TOKENS", 1500)
+    verbosity = (os.getenv("OPENAI_VERBOSITY", "low") or "low").lower()
+    effort = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").lower()
+
+    # OpenAI proxy
+    oai_proxy_url = os.getenv("OPENAI_PROXY_URL") or None
+    oai_proxy_user = os.getenv("OPENAI_PROXY_USER") or None
+    oai_proxy_pass = os.getenv("OPENAI_PROXY_PASS") or None
+
+    # App
+    parse_mode = os.getenv("PARSE_MODE", "MarkdownV2")
+    log_json = _get_bool("LOG_JSON", True)
+    min_len = _get_int("MIN_QUESTION_LENGTH", 20)
+    max_per_hour = _get_int("MAX_REQUESTS_PER_HOUR", 10)
+    history_size = _get_int("HISTORY_SIZE", 5)
+
+    # Лёгкие валидации
+    if not (0.0 <= temp <= 2.0):
+        temp = 0.3
+    if max_tokens < 1:
+        max_tokens = 1500
+    if verbosity not in {"low", "medium", "high"}:
+        verbosity = "low"
+    if effort not in {"low", "medium", "high"}:
+        effort = "medium"
+    if parse_mode not in {"MarkdownV2", "HTML", "Markdown", "None"}:
+        parse_mode = "MarkdownV2"
 
     return Settings(
-        telegram_token=token,
-        openai_api_key=key,
+        telegram_token=tg_token,
+        openai_api_key=oaikey,
+        telegram_proxy_url=tg_proxy_url,
+        telegram_proxy_user=tg_proxy_user,
+        telegram_proxy_pass=tg_proxy_pass,
+        telegram_api_base=tg_api_base,
         openai_model=model,
         openai_temperature=temp,
         openai_max_tokens=max_tokens,
         openai_verbosity=verbosity,
         openai_reasoning_effort=effort,
-        max_requests_per_hour=max_per_hour,
+        openai_proxy_url=oai_proxy_url,
+        openai_proxy_user=oai_proxy_user,
+        openai_proxy_pass=oai_proxy_pass,
+        parse_mode=parse_mode,
+        log_json=log_json,
         min_question_length=min_len,
-        log_level=log_level,
-        json_logs=json_logs,
-        system_prompt=system_prompt,
-        telegram_proxy_url=telegram_proxy_url,
-        telegram_proxy_user=telegram_proxy_user,
-        telegram_proxy_pass=telegram_proxy_pass,
+        max_requests_per_hour=max_per_hour,
+        history_size=history_size,
     )

@@ -1,145 +1,82 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import logging
-import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from typing import Deque, Dict, Optional
+from typing import Deque, Dict, List, Optional
 
-from aiogram import Router, types, F
-from aiogram.enums import ChatAction, ParseMode
+from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.utils.chat_action import ChatActionSender  # ✅ aiogram v3 way
+
 
 from telegram_legal_bot.config import Settings
-from telegram_legal_bot.services.openai_service import OpenAIService, LegalAdvice
-from telegram_legal_bot.utils.message_formatter import build_legal_reply, chunk_markdown_v2
-
-logger = logging.getLogger(__name__)
-router = Router()
-
-# ───────── per-user rate limit (in-memory, 1h окно) ─────────
-@dataclass
-class RateWindow:
-    timestamps: Deque[float] = field(default_factory=deque)
-
-    def hit(self, now: float, max_per_hour: int) -> bool:
-        hour_ago = now - 3600.0
-        while self.timestamps and self.timestamps[0] < hour_ago:
-            self.timestamps.popleft()
-        if len(self.timestamps) >= max_per_hour:
-            return False
-        self.timestamps.append(now)
-        return True
+from telegram_legal_bot.services import OpenAIService
+from telegram_legal_bot.utils.rate_limiter import RateLimiter
 
 
-_rate_map: Dict[int, RateWindow] = defaultdict(RateWindow)
-_history: Dict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=5))
 
-# ───────── DI через module-level singletons ─────────
+
+router = Router(name="legal_query")
+
 _settings: Optional[Settings] = None
 _ai: Optional[OpenAIService] = None
+_rl: Optional[RateLimiter] = None
+_history: Dict[int, Deque[Dict[str, str]]] = defaultdict(lambda: deque(maxlen=5))
 
 
 def setup_context(settings: Settings, ai: OpenAIService) -> None:
-    """Инициализация зависимостей для хэндлеров."""
-    global _settings, _ai
+    global _settings, _ai, _rl, _history
     _settings = settings
     _ai = ai
-    logger.info("legal_query: контекст инициализирован")
-
-
-def _looks_like_spam(text: str) -> bool:
-    t = text.replace(" ", "")
-    if len(t) > 20:
-        from collections import Counter
-
-        c = Counter(t)
-        if c.most_common(1)[0][1] / len(t) > 0.6:
-            return True
-    words = [w for w in text.lower().split() if w]
-    rep = 1
-    for i in range(1, len(words)):
-        if words[i] == words[i - 1]:
-            rep += 1
-            if rep >= 6:
-                return True
-        else:
-            rep = 1
-    return False
+    _rl = RateLimiter(max_calls=settings.max_requests_per_hour, period_seconds=3600)
+    _history = defaultdict(lambda: deque(maxlen=max(1, int(settings.history_size))))
 
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_legal_query(message: types.Message) -> None:
-    """
-    Обрабатывает любой текст без команд:
-      - валидация
-      - rate-limit
-      - индикатор печати
-      - запрос к GPT-5
-      - форматирование и отправка чанками (с фоллбеком на plain text)
-    """
-    if _settings is None or _ai is None:
-        logger.error("legal_query: setup_context не вызван до старта polling")
-        await message.answer(
-            "Сервис ещё инициализируется. Попробуйте через несколько секунд.",
-            parse_mode=None,
-        )
-        return
-
-    text = (message.text or "").strip()
-    if len(text) < _settings.min_question_length:
-        await message.answer(
-            f"🧐 Пожалуйста, опишите вопрос подробнее (минимум {_settings.min_question_length} символов).",
-            parse_mode=None,
-        )
-        return
-    if _looks_like_spam(text):
-        await message.answer(
-            "🤖 Похоже на спам/флуд. Если это ошибка — переформулируйте вопрос.",
-            parse_mode=None,
-        )
-        return
+    assert _settings is not None and _ai is not None and _rl is not None
 
     user_id = message.from_user.id if message.from_user else 0
-    now = time.time()
-    if not _rate_map[user_id].hit(now, _settings.max_requests_per_hour):
-        await message.answer("⏳ Лимит запросов на час исчерпан. Попробуйте позже.", parse_mode=None)
-        return
+    text = (message.text or "").strip()
 
-    # индикатор "печатает..."
-    with contextlib.suppress(Exception):
-        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
-    # запрос к модели
-    try:
-        advice: LegalAdvice = await _ai.generate_legal_advice(
-            user_question=text, short_history=list(_history[user_id])
+    if len(text) < _settings.min_question_length:
+        await message.answer(
+            "✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.",
+            parse_mode=None,
         )
-    except asyncio.TimeoutError:
-        await message.answer("⏱️ Превышено время ожидания ответа. Попробуйте позже.", parse_mode=None)
-        return
-    except Exception as e:
-        logger.exception("Ошибка OpenAI: %s", e)
-        await message.answer("⚠️ Произошла ошибка при обработке. Попробуйте позже.", parse_mode=None)
         return
 
-    # форматирование + надёжная отправка
-    reply = build_legal_reply(advice.summary, advice.details, advice.laws)
-    for i, ch in enumerate(chunk_markdown_v2(reply)):
-        prefix = "" if i == 0 else "…продолжение:\n\n"
-        text_part = prefix + ch
-        try:
-            await message.answer(
-                text_part,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                disable_web_page_preview=True,
-            )
-        except TelegramBadRequest:
-            # ВАЖНО: переопределяем parse_mode, иначе сработает глобальный MARKDOWN_V2
-            plain = text_part.replace("\\", "").replace("*", "").replace("_", "")
-            await message.answer(plain, parse_mode=None, disable_web_page_preview=True)
+    if not await _rl.check(user_id):
+        remain = await _rl.remaining(user_id)
+        msg = "⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже."
+        if remain:
+            msg += f" Доступно ещё: {remain}."
+        await message.answer(msg, parse_mode=None)
+        return
 
-    if advice.summary:
-        _history[user_id].append(advice.summary)
+    short_history: List[Dict[str, str]] = list(_history[user_id])
+
+    # ✅ держим индикатор «печатает…» пока ждём LLM
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            result = await _ai.generate_legal_answer(text, short_history=short_history)
+
+        answer: str = result.get("answer") or ""
+        laws: List[str] = result.get("laws") or []
+
+        _history[user_id].append({"role": "user", "content": text})
+        _history[user_id].append({"role": "assistant", "content": answer})
+
+        final = build_legal_reply(answer=answer, laws=laws)
+        chunks = chunk_markdown_v2(final, limit=4096)
+
+        for part in chunks:
+            try:
+                await message.answer(part, parse_mode=_settings.parse_mode)
+            except TelegramBadRequest:
+                await message.answer(part, parse_mode=None)
+
+    except Exception:
+        await message.answer(
+            "😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.",
+            parse_mode=None,
+        )

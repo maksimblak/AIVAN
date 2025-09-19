@@ -2,191 +2,154 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Dict, List, Optional
 
 import httpx
-from openai import AsyncOpenAI
-from openai._exceptions import OpenAIError, PermissionDeniedError
-from urllib.parse import urlparse, urlunparse
+try:
+    from openai import AsyncOpenAI
+except Exception as exc:  # pragma: no cover
+    raise RuntimeError("Не удалось импортировать openai. Установите пакет: pip install openai>=1.0") from exc
 
-from telegram_legal_bot.config import Settings
-
-logger = logging.getLogger(__name__)
+try:
+    # пакетный импорт
+    from telegram_legal_bot.config import Settings
+except ImportError:  # fallback для «плоской» структуры
+    from config import Settings
 
 
 @dataclass
 class LegalAdvice:
-    """Нормализованный ответ от модели."""
-    summary: str
-    details: str
-    laws: list[str]
+    """Единый контейнер ответа ИИ."""
+    answer: str
+    laws: List[str]
+
+    # совместимость со старым кодом, который ожидает dict
+    def to_dict(self) -> Dict[str, Any]:
+        return {"answer": self.answer, "laws": self.laws}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.to_dict().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_dict()[key]
 
 
 class OpenAIService:
     """
-    Обёртка над OpenAI Responses API (GPT-5):
-      - developer + user сообщения
-      - строгий JSON-ответ
-      - таймаут + ретраи с экспоненциальным бэкоффом
-      - управление стилем: text.verbosity, reasoning.effort
-      - опциональный системный прокси (НЕ для обхода гео-блоков)
+    Обёртка над OpenAI Responses API.
+    - Поддержка прокси (OPENAI_PROXY_URL/USER/PASS)
+    - Мягкие ретраи
+    - Аккуратное закрытие http-клиента (aclose)
     """
 
     def __init__(self, settings: Settings):
         self._s = settings
+        self._own_httpx: Optional[httpx.AsyncClient] = None
+        http_client: Optional[httpx.AsyncClient] = None
 
-        # --- httpx клиент с прокси (если указан в .env) ---
-        http_client: httpx.AsyncClient | None = None
         if getattr(settings, "openai_proxy_url", None):
             proxy_url = self._inject_basic_auth(
                 settings.openai_proxy_url or "",
                 settings.openai_proxy_user,
                 settings.openai_proxy_pass,
             )
-            http_client = httpx.AsyncClient(
+            self._own_httpx = httpx.AsyncClient(
                 proxies=proxy_url,
                 timeout=httpx.Timeout(45.0),
             )
+            http_client = self._own_httpx
 
-        self._client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            http_client=http_client,  # None = без прокси
-        )
+        self._client = AsyncOpenAI(api_key=settings.openai_api_key, http_client=http_client)
 
-    # --------------------------- Публичное API ---------------------------
+    async def aclose(self) -> None:
+        if self._own_httpx is not None:
+            await self._own_httpx.aclose()
 
-    async def generate_legal_advice(
-        self,
-        user_question: str,
-        short_history: Sequence[str] | None = None,
-    ) -> LegalAdvice:
-        """Формирует юридический ответ в нормализованной структуре."""
-        hist = ""
-        if short_history:
-            hist_json = json.dumps(list(short_history), ensure_ascii=False)
-            hist = f"\nИстория последних ответов (кратко): {hist_json}\n"
-
-        user_msg = (
-            "Вот юридический вопрос пользователя.\n"
-            "Сформируй ответ строго в формате JSON:\n"
-            '{ "summary": "Краткий ответ (2-3 предложения)", '
-            '"details": "Развернутое объяснение", '
-            '"laws": ["Норма/ссылка 1", "Норма/ссылка 2"] }\n'
-            "Никакого текста вне JSON не добавляй.\n"
-            f"{hist}\n"
-            f"Вопрос: {user_question}"
-        )
-
-        raw = await self._ask_with_retries(user_msg)
-
-        # Жёсткий парс JSON (с отрезанием мусора вокруг)
-        try:
-            start, end = raw.find("{"), raw.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                raw = raw[start : end + 1]
-            data = json.loads(raw)
-        except Exception as e:
-            logger.warning("JSON-парсер споткнулся. Фрагмент: %r", raw[:800])
-            raise ValueError("Модель вернула невалидный JSON") from e
-
-        summary = (data.get("summary") or "").strip() or "Краткий ответ не сформирован."
-        details = (data.get("details") or "").strip() or "Подробное объяснение не сформировано."
-        laws = [str(x).strip() for x in (data.get("laws") or []) if str(x).strip()]
-        return LegalAdvice(summary=summary, details=details, laws=laws)
-
-    # --------------------------- Внутренности ---------------------------
-
-    async def _ask_with_retries(self, user_msg: str) -> str:
-        delay = 1.5
-        for attempt in range(1, 4):
-            try:
-                return await self._ask_once(user_msg)
-            except asyncio.TimeoutError as e:
-                if attempt == 3:
-                    raise
-                logger.warning("Timeout (попытка %s) — ретраим через %.1fs", attempt, delay)
-            except PermissionDeniedError as e:
-                # Специально ловим 403 с гео-блоком, чтобы не молотить ретраи
-                if self._is_unsupported_region(e):
-                    logger.error("OpenAI: регион/территория не поддерживается (403). Останавливаем ретраи.")
-                    raise RuntimeError(
-                        "OpenAI отклонил запрос: регион/территория не поддерживается (403)."
-                    ) from e
-                if attempt == 3:
-                    raise
-                logger.warning("PermissionDenied (попытка %s) — ретраим через %.1fs", attempt, delay)
-            except OpenAIError as e:
-                if attempt == 3:
-                    raise
-                logger.warning("Попытка %s: %s — ретраим через %.1fs", attempt, e, delay)
-            await asyncio.sleep(delay)
-            delay *= 2
-        # Теоретически не достигнем
-        raise RuntimeError("Не удалось получить ответ от OpenAI")
-
-    async def _ask_once(self, user_msg: str) -> str:
-        """Один запрос к Responses API с управлением стилем и таймаутом."""
-        try:
-            resp = await asyncio.wait_for(
-                self._client.responses.create(
-                    model=self._s.openai_model,
-                    input=[
-                        {"role": "developer", "content": self._s.system_prompt},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    text={"verbosity": self._s.openai_verbosity},
-                    reasoning={"effort": self._s.openai_reasoning_effort},
-                    max_output_tokens=self._s.openai_max_tokens,
-                    temperature=self._s.openai_temperature,
-                ),
-                timeout=45.0,
-            )
-        except asyncio.TimeoutError as e:
-            raise asyncio.TimeoutError("Timeout при обращении к OpenAI") from e
-
-        # Нормально достаём текст
-        text = getattr(resp, "output_text", None)
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-
-        # Фоллбек: собрать текст из output.*.content[].text
-        parts: list[str] = []
-        for block in getattr(resp, "output", []) or []:
-            for item in getattr(block, "content", []) or []:
-                t = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
-                if t:
-                    parts.append(str(t))
-        return "".join(parts).strip()
-
-    # --------------------------- Utils ----------------------------------
-
-    @staticmethod
-    def _inject_basic_auth(url: str, user: str | None, password: str | None) -> str:
-        """Если логин/пароль заданы и не вписаны в URL — вписываем их."""
-        if not url or not user:
+    def _inject_basic_auth(self, url: str, user: Optional[str], pwd: Optional[str]) -> str:
+        if not url:
             return url
-        p = urlparse(url)
-        if "@" in (p.netloc or ""):
-            return url  # уже есть креды в URL
-        netloc = f"{user}:{password or ''}@{p.hostname or ''}"
-        if p.port:
-            netloc += f":{p.port}"
-        return urlunparse((p.scheme, netloc, p.path or "", p.params or "", p.query or "", p.fragment or ""))
+        if user and pwd and "@" not in url and "://" in url:
+            scheme, rest = url.split("://", 1)
+            return f"{scheme}://{user}:{pwd}@{rest}"
+        return url
+
+    async def generate_legal_answer(
+        self,
+        question: str,
+        short_history: Optional[List[Dict[str, str]]] = None,
+        retries: int = 2,
+    ) -> LegalAdvice:
+        """
+        Возвращает LegalAdvice(answer, laws).
+        Совместимо со старым кодом через .get() / __getitem__.
+        """
+        sys_prompt = (
+            "Ты юридический ассистент для РФ. Отвечай кратко, ясно и корректно. "
+            "Если данных недостаточно, проси уточнить. Выделяй списки с новой строки. "
+            "Строго соблюдай фактологию, не выдумывай нормы права."
+        )
+
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "laws": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["answer", "laws"],
+            "additionalProperties": False,
+        }
+
+        messages: List[Dict[str, str]] = [{"role": "system", "content": sys_prompt}]
+        if short_history:
+            for h in short_history[-5:]:
+                r, c = h.get("role"), h.get("content")
+                if r in {"user", "assistant"} and c:
+                    messages.append({"role": r, "content": c})
+        messages.append({"role": "user", "content": question})
+
+        payload = dict(
+            model=self._s.openai_model,
+            input=messages,
+            max_output_tokens=self._s.openai_max_tokens,
+            temperature=self._s.openai_temperature,
+            reasoning={"effort": self._s.openai_reasoning_effort},
+            text={"verbosity": self._s.openai_verbosity},
+            response_format={"type": "json_schema", "json_schema": {"name": "legal_answer", "schema": json_schema}},
+        )
+
+        last_err: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                resp = await self._client.responses.create(**payload)
+                content = (resp.output_text or "").strip()
+                data = self._safe_json_extract(content)
+                answer = str(data.get("answer") or "").strip()
+                laws = data.get("laws") or []
+                if not isinstance(laws, list):
+                    laws = []
+                return LegalAdvice(answer=answer, laws=list(map(str, laws)))
+            except Exception as e:
+                last_err = e
+                await asyncio.sleep(0.75 * (attempt + 1))
+
+        raise RuntimeError(f"OpenAI error: {last_err}")
 
     @staticmethod
-    def _is_unsupported_region(err: OpenAIError) -> bool:
-        """
-        Пытаемся аккуратно распознать 403 'unsupported_country_region_territory'
-        из тела ответа, чтобы не крутить бессмысленные ретраи.
-        """
+    def _safe_json_extract(text: str) -> Dict[str, Any]:
+        text = text.strip()
         try:
-            resp = getattr(err, "response", None)
-            if resp is None:
-                return False
-            data = resp.json()
-            code = (data or {}).get("error", {}).get("code")
-            return str(code) == "unsupported_country_region_territory"
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                return obj
         except Exception:
-            return False
+            pass
+        s, e = text.find("{"), text.rfind("}")
+        if s != -1 and e != -1 and e > s:
+            try:
+                obj = json.loads(text[s : e + 1])
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+        return {"answer": text, "laws": []}

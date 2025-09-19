@@ -1,6 +1,4 @@
-# Ничего не импортируем на инициализации пакета, чтобы избежать ранних ошибок.
-# При желании можно реэкспортнуть функции форматтера (они лёгкие).
+# Ничего не импортируем при инициализации пакета — ноль побочных эффектов.
+# Импортируй нужное напрямую: from telegram_legal_bot.utils.message_formatter import md2, build_legal_reply, ...
 
-from .message_formatter import build_legal_reply, chunk_markdown_v2, format_laws
-
-__all__ = ["build_legal_reply", "chunk_markdown_v2", "format_laws"]
+__all__ = []

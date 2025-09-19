@@ -1,152 +1,127 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import signal
 import sys
 from contextlib import suppress
-from typing import Sequence
-from urllib.parse import urlparse, urlunparse
+from typing import Optional
+from urllib.parse import quote
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
+from aiogram.client.telegram import TelegramAPIServer
 
-# ── надёжные импорты (работает и как модуль, и как файл) ───────────────
+# ── Импорты пакета (и фоллбек для плоской структуры) ─────────────────────────
 try:
-    from .config import load_settings
-    from .handlers.start import router as start_router
-    from .handlers.legal_query import router as legal_router, setup_context
-    from .services.openai_service import OpenAIService
-except ImportError:
-    from telegram_legal_bot.config import load_settings
+    from telegram_legal_bot.config import Settings, load_settings
+    from telegram_legal_bot.services import OpenAIService
     from telegram_legal_bot.handlers.start import router as start_router
-    from telegram_legal_bot.handlers.legal_query import router as legal_router, setup_context
-    from telegram_legal_bot.services.openai_service import OpenAIService
-
-
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
-        data = {
-            "level": record.levelname,
-            "name": record.name,
-            "msg": record.getMessage(),
-            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-        }
-        if record.exc_info:
-            data["exc_info"] = self.formatException(record.exc_info)
-        return json.dumps(data, ensure_ascii=False)
-
-
-def _setup_logging(level: str, json_logs: bool) -> None:
-    root = logging.getLogger()
-    root.setLevel(getattr(logging, level, logging.INFO))
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(getattr(logging, level, logging.INFO))
-    handler.setFormatter(
-        JsonFormatter()
-        if json_logs
-        else logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    from telegram_legal_bot.handlers.legal_query import (
+        router as legal_router,
+        setup_context as setup_legal_context,
     )
-    root.addHandler(handler)
+except ImportError:
+    from config import Settings, load_settings
+    try:
+        from services import OpenAIService
+    except ImportError:
+        from services.openai_service import OpenAIService
+    from handlers.start import router as start_router
+    from handlers.legal_query import router as legal_router, setup_context as setup_legal_context
 
 
-async def _set_bot_commands(bot: Bot) -> None:
-    commands: Sequence[BotCommand] = [
-        BotCommand(command="start", description="Начать работу"),
-        BotCommand(command="help", description="Помощь"),
-    ]
-    await bot.set_my_commands(commands)
-
-
-def _embed_basic_auth(url: str | None, user: str | None, pwd: str | None) -> str | None:
+# ── Утилиты ───────────────────────────────────────────────────────────────────
+def _build_proxy_url(url: str | None, user: Optional[str], pwd: Optional[str]) -> Optional[str]:
+    """http(s)://user:pass@host:port — с экранированием логина/пароля."""
     if not url:
         return None
-    if not user:
-        return url
-    p = urlparse(url)
-    # если уже есть креды — оставляем
-    if "@" in (p.netloc or ""):
-        return url
-    host = p.hostname or ""
-    netloc = f"{user}:{pwd or ''}@{host}"
-    if p.port:
-        netloc += f":{p.port}"
-    return urlunparse((p.scheme, netloc, p.path or "", p.params or "", p.query or "", p.fragment or ""))
+    if user and pwd and "@" not in url and "://" in url:
+        scheme, rest = url.split("://", 1)
+        u = quote(user, safe="")
+        p = quote(pwd, safe="")
+        return f"{scheme}://{u}:{p}@{rest}"
+    return url
 
 
+def _get_api_server(base: Optional[str]) -> TelegramAPIServer:
+    """Всегда возвращаем валидный TelegramAPIServer (официальный по умолчанию)."""
+    # aiogram может иметь TelegramAPIServer.official()
+    official = getattr(TelegramAPIServer, "official", None)
+    if base:
+        return TelegramAPIServer.from_base(base)
+    if callable(official):
+        return official()
+    return TelegramAPIServer.from_base("https://api.telegram.org")
+
+
+def _setup_logging(json_mode: bool) -> None:
+    level = logging.INFO
+    if json_mode:
+        class JsonFormatter(logging.Formatter):
+            def format(self, record: logging.LogRecord) -> str:
+                import json, time
+                payload = {
+                    "t": int(time.time()),
+                    "lvl": record.levelname,
+                    "msg": record.getMessage(),
+                    "name": record.name,
+                }
+                if record.exc_info:
+                    payload["exc"] = self.formatException(record.exc_info)
+                return json.dumps(payload, ensure_ascii=False)
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(JsonFormatter())
+        root = logging.getLogger()
+        root.handlers.clear()
+        root.addHandler(handler)
+        root.setLevel(level)
+    else:
+        logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+# ── entrypoint ────────────────────────────────────────────────────────────────
 async def main_async() -> None:
     settings = load_settings()
-    _setup_logging(settings.log_level, settings.json_logs)
-    logging.info("Запуск telegram_legal_bot (aiogram)…")
+    _setup_logging(settings.log_json)
+    log = logging.getLogger("main")
 
-    # ── Telegram proxy (вшиваем креды прямо в URL; никаких proxy_auth) ──
-    proxy_url = _embed_basic_auth(
-        getattr(settings, "telegram_proxy_url", None),
-        getattr(settings, "telegram_proxy_user", None),
-        getattr(settings, "telegram_proxy_pass", None),
-    )
-    session = AiohttpSession(proxy=proxy_url) if proxy_url else None
+    # Telegram: корректно задаём API-сервер (official или self-hosted) и HTTP-прокси
+    api = _get_api_server(getattr(settings, "telegram_api_base", None))
+    tg_proxy = _build_proxy_url(settings.telegram_proxy_url, settings.telegram_proxy_user, settings.telegram_proxy_pass)
+
+    # proxy передаём через параметр proxy=, а не в api=
+    session = AiohttpSession(api=api, proxy=tg_proxy)
 
     bot = Bot(
         token=settings.telegram_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
-        session=session,  # может быть None — тогда без прокси
+        session=session,
+        default=DefaultBotProperties(parse_mode=settings.parse_mode),
     )
     dp = Dispatcher()
 
-    # DI: прокидываем конфиг и OpenAI-сервис в хэндлеры
+    # OpenAI service + контекст хэндлеров
     ai = OpenAIService(settings)
-    setup_context(settings, ai)
+    setup_legal_context(settings, ai)
 
-    # Подключаем роутеры
+    # Роутеры
     dp.include_router(start_router)
     dp.include_router(legal_router)
 
-    # Команды
-    await _set_bot_commands(bot)
-
-    # Грациозная остановка
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-
-    def _stop(*_: object) -> None:
-        logging.info("Получен сигнал — останавливаемся…")
-        stop_event.set()
-
+    # Запуск
+    log.info("Запуск бота…")
     try:
-        loop.add_signal_handler(signal.SIGINT, _stop)
-        loop.add_signal_handler(signal.SIGTERM, _stop)
-    except NotImplementedError:
-        signal.signal(signal.SIGINT, lambda *_: _stop())
-        signal.signal(signal.SIGTERM, lambda *_: _stop())
-
-    # Стартуем polling в отдельной таске, ждём сигнал, затем отменяем таску
-    polling_task = asyncio.create_task(
-        dp.start_polling(
-            bot,
-            skip_updates=True,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
-    )
-    try:
-        await stop_event.wait()
+        await dp.start_polling(bot)
     finally:
-        polling_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await polling_task
-        await bot.session.close()
-        logging.info("Остановлено. Пока 👋")
-
-
-def run() -> None:
-    asyncio.run(main_async())
+        with suppress(Exception):
+            await ai.aclose()
+        with suppress(Exception):
+            await bot.session.close()
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        asyncio.run(main_async())
+    except (KeyboardInterrupt, SystemExit):
+        pass

@@ -1,75 +1,42 @@
 from __future__ import annotations
 
 from aiogram import Router, types
-from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command
 
 from telegram_legal_bot.utils.message_formatter import md2
 
-router = Router()
+router = Router(name="start")
 
 
-def _final_sanitize_md2(text: str) -> str:
-    """
-    Доп. страховка для MarkdownV2: экранируем дефис и скобки в статике.
-    Динамику мы экранируем md2().
-    """
-    return (
-        text.replace("-", r"\-")
-        .replace("(", r"\(")
-        .replace(")", r"\)")
-    )
+WELCOME_TEXT = (
+    "Привет! Я — юридический ассистент. Помогаю быстро разобраться "
+    "в вопросах по праву РФ: от бытовых ситуаций до деловой переписки.\n\n"
+    "Как пользоваться:\n"
+    "• Опиши свою ситуацию или задай вопрос\n"
+    "• Я отвечу кратко и по делу, а также приложу используемые нормы\n\n"
+    "⚠️ Помни: я не заменяю юриста, а помогаю сориентироваться."
+)
+
+HELP_TEXT = (
+    "Отправь текст вопроса — я постараюсь ответить и показать нормы права.\n\n"
+    "Подсказки:\n"
+    "• Пиши контекст: кто, где, когда и что именно произошло\n"
+    "• Если есть документы/сроки — укажи их\n"
+    "• Чем точнее вводные, тем полезнее ответ"
+)
 
 
-@router.message(CommandStart())
-async def cmd_start(message: types.Message) -> None:
-    text = (
-        f"👋 *{md2('Привет!')}*\n\n"
-        f"Я — бот юридических консультаций на базе GPT-5.\n\n"
-        f"Что умею:\n"
-        f"• {md2('Отвечать на юридические вопросы')} ⚖️\n"
-        f"• {md2('Структурировать ответы')} — кратко, подробно, нормы права\n"
-        f"• {md2('Форматировать ответ')} — эмодзи, списки, MarkdownV2\n\n"
-        f"Как пользоваться:\n"
-        f"1\\. {md2('Отправьте текстовый вопрос')} — например: _{md2('Как расторгнуть договор аренды?')}_\n"
-        f"2\\. {md2('Подождите — я покажу статус печати')}\n"
-        f"3\\. {md2('Получите оформленный ответ с нормами права')} 📚\n\n"
-        f"⚠️ *{md2('Важно')}*: {md2('консультация носит информационный характер и не заменяет профессиональную юридическую помощь.')}"
-    )
-
-    safe_text = _final_sanitize_md2(text)
-
+@router.message(Command("start"))
+async def cmd_start(msg: types.Message) -> None:
     try:
-        await message.answer(
-            safe_text,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            disable_web_page_preview=True,
-        )
-    except TelegramBadRequest:
-        # ВАЖНО: переопределяем parse_mode, иначе у бота глобально стоит MARKDOWN_V2
-        plain = safe_text.replace("\\", "").replace("*", "").replace("_", "")
-        await message.answer(plain, parse_mode=None, disable_web_page_preview=True)
+        await msg.answer(md2(WELCOME_TEXT), parse_mode="MarkdownV2")
+    except Exception:
+        await msg.answer(WELCOME_TEXT, parse_mode=None)
 
 
 @router.message(Command("help"))
-async def cmd_help(message: types.Message) -> None:
-    text = (
-        f"🆘 *{md2('Помощь')}:*\n\n"
-        f"• {md2('Пишите конкретно и по делу — так точнее.')}\n"
-        f"• {md2('Есть ограничение запросов в час (антиспам).')}\n"
-        f"• {md2('Длинные ответы я режу автоматически.')}\n\n"
-        f"{md2('Команды')}:\n"
-        f"/start — {md2('приветствие')}\n"
-        f"/help — {md2('помощь')}\n"
-    )
-    safe_text = _final_sanitize_md2(text)
+async def cmd_help(msg: types.Message) -> None:
     try:
-        await message.answer(
-            safe_text,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            disable_web_page_preview=True,
-        )
-    except TelegramBadRequest:
-        plain = safe_text.replace("\\", "").replace("*", "").replace("_", "")
-        await message.answer(plain, parse_mode=None, disable_web_page_preview=True)
+        await msg.answer(md2(HELP_TEXT), parse_mode="MarkdownV2")
+    except Exception:
+        await msg.answer(HELP_TEXT, parse_mode=None)
