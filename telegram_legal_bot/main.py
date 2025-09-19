@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from contextlib import suppress
 from typing import Optional
@@ -31,32 +32,10 @@ except ImportError:
     from handlers.legal_query import router as legal_router, setup_context as setup_legal_context
 
 
-# ── Утилиты ───────────────────────────────────────────────────────────────────
-def _build_proxy_url(url: str | None, user: Optional[str], pwd: Optional[str]) -> Optional[str]:
-    """http(s)://user:pass@host:port — с экранированием логина/пароля."""
-    if not url:
-        return None
-    if user and pwd and "@" not in url and "://" in url:
-        scheme, rest = url.split("://", 1)
-        u = quote(user, safe="")
-        p = quote(pwd, safe="")
-        return f"{scheme}://{u}:{p}@{rest}"
-    return url
-
-
-def _get_api_server(base: Optional[str]) -> TelegramAPIServer:
-    """Всегда возвращаем валидный TelegramAPIServer (официальный по умолчанию)."""
-    # aiogram может иметь TelegramAPIServer.official()
-    official = getattr(TelegramAPIServer, "official", None)
-    if base:
-        return TelegramAPIServer.from_base(base)
-    if callable(official):
-        return official()
-    return TelegramAPIServer.from_base("https://api.telegram.org")
-
-
+# ── Логирование ───────────────────────────────────────────────────────────────
 def _setup_logging(json_mode: bool) -> None:
-    level = logging.INFO
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
     if json_mode:
         class JsonFormatter(logging.Formatter):
             def format(self, record: logging.LogRecord) -> str:
@@ -80,6 +59,36 @@ def _setup_logging(json_mode: bool) -> None:
     else:
         logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    # 🔉 уровни библиотек
+    logging.getLogger("aiogram").setLevel(level)
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # подними до INFO при дебаге
+    # наши
+    logging.getLogger("openai_service").setLevel(level)
+    logging.getLogger("legal_query").setLevel(level)
+
+
+# ── Утилиты ───────────────────────────────────────────────────────────────────
+def _build_proxy_url(url: str | None, user: Optional[str], pwd: Optional[str]) -> Optional[str]:
+    """http(s)://user:pass@host:port — с экранированием логина/пароля."""
+    if not url:
+        return None
+    if user and pwd and "@" not in url and "://" in url:
+        scheme, rest = url.split("://", 1)
+        u = quote(user, safe="")
+        p = quote(pwd, safe="")
+        return f"{scheme}://{u}:{p}@{rest}"
+    return url
+
+
+def _get_api_server(base: Optional[str]) -> TelegramAPIServer:
+    """Всегда возвращаем валидный TelegramAPIServer (официальный по умолчанию)."""
+    official = getattr(TelegramAPIServer, "official", None)
+    if base:
+        return TelegramAPIServer.from_base(base)
+    if callable(official):
+        return official()
+    return TelegramAPIServer.from_base("https://api.telegram.org")
+
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
 async def main_async() -> None:
@@ -91,7 +100,7 @@ async def main_async() -> None:
     api = _get_api_server(getattr(settings, "telegram_api_base", None))
     tg_proxy = _build_proxy_url(settings.telegram_proxy_url, settings.telegram_proxy_user, settings.telegram_proxy_pass)
 
-    # proxy передаём через параметр proxy=, а не в api=
+    # ВАЖНО: proxy передаём через параметр proxy= (а не в api=)
     session = AiohttpSession(api=api, proxy=tg_proxy)
 
     bot = Bot(
