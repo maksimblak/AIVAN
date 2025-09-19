@@ -1,4 +1,3 @@
-# telegram_legal_bot/handlers/legal_query.py
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +27,18 @@ router = Router(name="legal_query")
 log = logging.getLogger("legal_query")
 
 
+def _looks_bad_markdown(s: str) -> bool:
+    """
+    Эвристика «плохого» ответа: короткий текст без ключевых секций.
+    Триггерит фолбэк на альтернативный путь.
+    """
+    t = (s or "").strip()
+    if len(t) >= 120:
+        return False
+    markers = ("*Кратко:*", "*Шаги:*", "*Аналитика:*", "*Источники:*", "*Черновики документов:*")
+    return not any(m in t for m in markers)
+
+
 class LegalQueryHandler:
     """
     Thread-safe обработчик юридических запросов.
@@ -37,43 +48,27 @@ class LegalQueryHandler:
     def __init__(self, settings: Settings, ai: OpenAIService):
         self.settings = settings
         self.ai = ai
-        # ✔ корректная сигнатура RateLimiter: max_requests, period
+        # корректная сигнатура RateLimiter: max_requests, period
         self.rate_limiter = RateLimiter(
             max_requests=settings.max_requests_per_hour,
             period=3600,
         )
 
-        # Thread-safe история с автоматической очисткой старых записей
         pairs = max(1, int(settings.history_size))
-        self._history: Dict[int, Deque[Dict[str, str]]] = defaultdict(
-            lambda: deque(maxlen=pairs * 2)
-        )
+        self._history: Dict[int, Deque[Dict[str, str]]] = defaultdict(lambda: deque(maxlen=pairs * 2))
         self._history_lock = asyncio.Lock()
         self._history_cleanup_time = time.time()
-        # Последнее обращение пользователя к истории (для корректной очистки наименее активных)
         self._last_access: Dict[int, float] = {}
-
-        # Максимальное количество пользователей в истории (защита от утечки памяти)
         self.max_users_in_history = 10_000
 
     async def _cleanup_history_if_needed(self) -> None:
-        """
-        Периодическая очистка истории для предотвращения утечек памяти.
-        Запускается редко и сама берёт lock, чтобы не создавать дедлоков.
-        """
         now = time.time()
-        # Очищаем историю не чаще, чем раз в 6 часов
         if now - self._history_cleanup_time <= 6 * 60 * 60:
             return
-
         async with self._history_lock:
             if len(self._history) > self.max_users_in_history:
                 overflow = len(self._history) - self.max_users_in_history
-                # Сортируем по последнему доступу (наименее активные — вперёд)
-                sorted_users = sorted(
-                    list(self._history.keys()),
-                    key=lambda uid: self._last_access.get(uid, 0.0),
-                )
+                sorted_users = sorted(self._history.keys(), key=lambda uid: self._last_access.get(uid, 0.0))
                 to_remove = sorted_users[:overflow]
                 for uid in to_remove:
                     self._history.pop(uid, None)
@@ -82,30 +77,22 @@ class LegalQueryHandler:
             self._history_cleanup_time = now
 
     async def get_user_history(self, user_id: int) -> List[Dict[str, str]]:
-        """Безопасное получение истории пользователя без реэнтрантного захвата lock."""
-        # Сначала, вне lock, решаем вопрос с периодической очисткой (сама возьмёт lock внутри)
         await self._cleanup_history_if_needed()
         async with self._history_lock:
             self._last_access[user_id] = time.time()
             return list(self._history[user_id])
 
     async def add_to_history(self, user_id: int, user_msg: str, assistant_msg: str) -> None:
-        """Безопасное добавление в историю."""
         async with self._history_lock:
             self._history[user_id].append({"role": "user", "content": user_msg})
-            # не храним слишком длинные сообщения ассистента
             self._history[user_id].append({"role": "assistant", "content": assistant_msg[:1000]})
             self._last_access[user_id] = time.time()
 
 
-# Глобальный экземпляр обработчика (инициализируется в setup_context)
 _handler: Optional[LegalQueryHandler] = None
 
 
 def setup_context(settings: Settings, ai: OpenAIService) -> None:
-    """
-    Инициализация thread-safe обработчика (вызывается из main.py).
-    """
     global _handler
     _handler = LegalQueryHandler(settings, ai)
 
@@ -113,10 +100,6 @@ def setup_context(settings: Settings, ai: OpenAIService) -> None:
 def _schema_to_markdown(d: Dict[str, Any]) -> str:
     """
     Рендер ответа по LEGAL_SCHEMA_V2 → MarkdownV2.
-    Покрыты поля: conclusion, legal_basis(act, article, pinpoint, quote),
-    cases(court, date, case_no, url, holding, facts, norms, similarity),
-    analysis, risks, next_actions, sources(title, url), doc_drafts(title, doc_type),
-    clarifications.
     """
     lines: List[str] = []
 
@@ -124,12 +107,10 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
         if s:
             lines.append(s)
 
-    # Краткий вывод
     conclusion = (d.get("conclusion") or "").strip()
     if conclusion:
         add(f"*Кратко:* {md2(conclusion)}")
 
-    # Нормы права
     legal_basis = d.get("legal_basis") or []
     if isinstance(legal_basis, list) and legal_basis:
         add("\n*Нормы права:*")
@@ -148,7 +129,6 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
             if quote:
                 add(f"  └ «{quote}»")
 
-    # Подборка дел
     cases = d.get("cases") or []
     if isinstance(cases, list) and cases:
         add("\n*Подборка дел:*")
@@ -180,27 +160,23 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
             if isinstance(norms, list) and norms:
                 add("  └ Нормы: " + md2("; ".join(map(str, norms))))
 
-    # Аналитика
     analysis = (d.get("analysis") or "").strip()
     if analysis:
         add("\n*Аналитика:*")
         add(md2(analysis))
 
-    # Риски
     risks = d.get("risks") or []
     if isinstance(risks, list) and risks:
         add("\n*Риски:*")
         for r in risks:
             add("• " + md2(str(r)))
 
-    # Шаги
     steps = d.get("next_actions") or []
     if isinstance(steps, list) and steps:
         add("\n*Шаги:*")
         for s in steps:
             add("• " + md2(str(s)))
 
-    # Источники
     sources = d.get("sources") or []
     if isinstance(sources, list) and sources:
         add("\n*Источники:*")
@@ -210,7 +186,6 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
             u = escape_md2_url(u_raw) if u_raw else ""
             add(f"• [{title}]({u})" if u else f"• {title}")
 
-    # Черновики документов
     drafts = d.get("doc_drafts") or []
     if isinstance(drafts, list) and drafts:
         add("\n*Черновики документов:*")
@@ -219,7 +194,6 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
             dtype = md2(str(doc.get("doc_type") or ""))
             add(f"• *{title}*{f' ({dtype})' if dtype else ''} — доступен черновик")
 
-    # Уточнения
     clar = d.get("clarifications") or []
     if isinstance(clar, list) and clar:
         add("\n*Что ещё нужно уточнить:*")
@@ -233,54 +207,36 @@ def _schema_to_markdown(d: Dict[str, Any]) -> str:
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_legal_query(message: types.Message) -> None:
     """
-    Основной хэндлер юридических вопросов:
-      • валидация длины,
-      • per-user rate-limit,
-      • индикатор «печатает…»,
-      • попытка строгого режима (LEGAL_SCHEMA_V2) и фолбэк,
-      • безопасная разбивка сообщения по 4096 символов.
+    Основной хэндлер:
+      • валидация, лимиты, индикатор «печатает…»;
+      • строгий режим (V2) + quality-gate;
+      • жёсткий фолбэк;
+      • безопасная разбивка на 4096.
     """
     if _handler is None:
         log.error("Handler not initialized! Call setup_context() first.")
-        await message.answer(
-            "⚠️ Сервис временно недоступен. Попробуйте позже.",
-            parse_mode=None,
-        )
+        await message.answer("⚠️ Сервис временно недоступен. Попробуйте позже.", parse_mode=None)
         return
 
     user_id = message.from_user.id if message.from_user else 0
     chat_id = message.chat.id
     text = (message.text or "").strip()
 
-    # Валидация входных данных
     if not text:
-        await message.answer(
-            "✋ Пожалуйста, отправьте текстовый вопрос.",
-            parse_mode=None,
-        )
+        await message.answer("✋ Пожалуйста, отправьте текстовый вопрос.", parse_mode=None)
         return
 
     log.info("IN: user=%s chat=%s len=%s", user_id, chat_id, len(text))
 
-    # Мини-длина
     if len(text) < _handler.settings.min_question_length:
         error_text = BotMessages.error_message("invalid_question")
-
         try:
-            await message.answer(
-                md2(error_text),
-                parse_mode="MarkdownV2",
-            )
+            await message.answer(md2(error_text), parse_mode="MarkdownV2")
         except Exception:
-            await message.answer(
-                "✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.",
-                parse_mode=None,
-            )
+            await message.answer("✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.", parse_mode=None)
         return
 
-    # Rate-limit
     if not await _handler.rate_limiter.check(user_id):
-        # Попробуем получить реальный TTL, если лимитер его предоставляет
         ttl_seconds: int = 3600
         retry_after_fn = getattr(_handler.rate_limiter, "retry_after", None)
         if callable(retry_after_fn):
@@ -292,14 +248,9 @@ async def handle_legal_query(message: types.Message) -> None:
                 pass
 
         rate_limit_text = BotMessages.rate_limit_message(ttl_seconds)
-
         try:
-            await message.answer(
-                md2(rate_limit_text),
-                parse_mode="MarkdownV2",
-            )
+            await message.answer(md2(rate_limit_text), parse_mode="MarkdownV2")
         except Exception:
-            # Фолбэк: простое сообщение + остаток доступных запросов (если метод есть)
             remain_text = ""
             remaining_fn = getattr(_handler.rate_limiter, "remaining", None)
             if callable(remaining_fn):
@@ -309,110 +260,82 @@ async def handle_legal_query(message: types.Message) -> None:
                         remain_text = f" Доступно ещё: {remain}."
                 except Exception:
                     pass
-
-            await message.answer(
-                "⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже." + remain_text,
-                parse_mode=None,
-            )
+            await message.answer("⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже." + remain_text, parse_mode=None)
         return
 
-    # Получаем историю thread-safe способом
     short_history: List[Dict[str, str]] = await _handler.get_user_history(user_id)
 
     progress_msg: Optional[types.Message] = None
     try:
-        # Показываем красивую анимацию обработки
         thinking_steps = BotMessages.thinking_messages()
         progress_msg = await BotAnimations.progress_message(message, thinking_steps, delay=1.0)
 
-        # Индикатор «печатает…»
         async with ChatActionSender.typing(bot=message.bot, chat_id=chat_id):
-            # 1) Пытаемся получить строгий ответ по LEGAL_SCHEMA_V2
             md_text: Optional[str] = None
             assistant_summary: str = ""
 
+            # 1) Строгий режим со схемой + история + quality-gate
             try:
-                rich = await _handler.ai.ask_ivan(text)  # точный режим (без истории)
+                rich = await _handler.ai.ask_ivan(text, short_history=short_history)
                 data = rich.get("data") if rich else None
                 citations = rich.get("citations") or []
                 if isinstance(data, dict) and (data.get("conclusion") or data.get("sources") or data.get("cases")):
-                    md_text = _schema_to_markdown(data)
-                    # Добавим блок «Ссылки из поиска» из citations для повышения проверяемости
-                    if citations:
-                        md_text += "\n\n*Ссылки из поиска:*\n" + "\n".join(
-                            f"• [{md2(c.get('title') or 'Источник')}]({escape_md2_url(str(c.get('url') or ''))})"
-                            for c in citations
-                            if c.get("url")
-                        )
-                    assistant_summary = (data.get("conclusion") or "")[:1000]
+                    candidate = _schema_to_markdown(data)
+                    if candidate and not _looks_bad_markdown(candidate):
+                        md_text = candidate
+                        if citations:
+                            md_text += "\n\n*Ссылки из поиска:*\n" + "\n".join(
+                                f"• [{md2(c.get('title') or 'Источник')}]({escape_md2_url(str(c.get('url') or ''))})"
+                                for c in citations if c.get("url")
+                            )
+                        assistant_summary = (data.get("conclusion") or "")[:1000]
             except Exception as e_json:
                 log.warning("ask_ivan failed, fallback to simple path: %r", e_json)
 
-            # 2) Фолбэк: пробуем отрисовать V2 JSON напрямую; если формат другой — используем старый answer/laws
+            # 2) Жёсткий фолбэк: JSON V2 → если тоже «так себе» → простой answer+laws
             if not md_text:
                 result = await _handler.ai.generate_legal_answer(text, short_history=short_history)
                 if isinstance(result, dict) and (result.get("conclusion") or result.get("sources") or result.get("cases")):
-                    md_text = _schema_to_markdown(result)
-                    assistant_summary = (result.get("conclusion") or "")[:1000]
-                else:
+                    candidate = _schema_to_markdown(result) or ""
+                    if candidate and not _looks_bad_markdown(candidate):
+                        md_text = candidate
+                        assistant_summary = (result.get("conclusion") or "")[:1000]
+
+                if not md_text:
                     answer: str = (result.get("answer") or "") if result else ""
                     laws: List[str] = (result.get("laws") or []) if result else []
                     assistant_summary = answer[:1000] if answer else "Ответ не получен"
                     md_text = build_legal_reply(answer=answer, laws=laws)
 
-        # Обновляем короткую историю thread-safe способом
         await _handler.add_to_history(user_id, text, assistant_summary)
 
-        # Удаляем сообщение о прогрессе если удалось создать
         if progress_msg:
             try:
                 await progress_msg.delete()
             except Exception:
                 pass
 
-        # Отправляем по кускам
         chunks = chunk_markdown_v2(md_text or "Не удалось получить ответ.", limit=4096)
-
         for part in chunks:
             try:
-                await message.answer(
-                    part,
-                    parse_mode=_handler.settings.parse_mode,
-                )
+                await message.answer(part, parse_mode=_handler.settings.parse_mode)
             except TelegramBadRequest:
-                # Фолбэк: если MarkdownV2 сломался — убираем экранирование
-                await message.answer(
-                    strip_md2_escapes(part),
-                    parse_mode=None,
-                )
+                await message.answer(strip_md2_escapes(part), parse_mode=None)
 
         log.info("OUT: user=%s chat=%s sent_chunks=%s", user_id, chat_id, len(chunks))
 
     except TelegramBadRequest as e:
         log.exception("TelegramBadRequest: user=%s chat=%s err=%r", user_id, chat_id, e)
-        await message.answer(
-            "😕 Ошибка форматирования сообщения. Отправляю без разметки.",
-            parse_mode=None,
-        )
+        await message.answer("😕 Ошибка форматирования сообщения. Отправляю без разметки.", parse_mode=None)
     except Exception as e:
         log.exception("LLM handler error: user=%s chat=%s err=%r", user_id, chat_id, e)
-
-        # Удаляем прогресс-сообщение в случае ошибки
         if progress_msg:
             try:
                 await progress_msg.delete()
             except Exception:
                 pass
-
         error_text = BotMessages.error_message("general")
-
         try:
-            await message.answer(
-                md2(error_text),
-                parse_mode="MarkdownV2",
-            )
+            await message.answer(md2(error_text), parse_mode="MarkdownV2")
         except Exception:
-            await message.answer(
-                "😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.",
-                parse_mode=None,
-            )
+            await message.answer("😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.", parse_mode=None)
