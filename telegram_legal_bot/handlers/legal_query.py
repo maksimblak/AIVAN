@@ -31,17 +31,18 @@ log = logging.getLogger("legal_query")
 class LegalQueryHandler:
     """
     Thread-safe обработчик юридических запросов.
-    Заменяет глобальные переменные на инкапсулированное состояние.
+    Инкапсулирует состояние: лимитер, история, служебные таймеры.
     """
-    
+
     def __init__(self, settings: Settings, ai: OpenAIService):
         self.settings = settings
         self.ai = ai
+        # ✔ корректная сигнатура RateLimiter: max_requests, period
         self.rate_limiter = RateLimiter(
-            max_calls=settings.max_requests_per_hour, 
-            period_seconds=3600
+            max_requests=settings.max_requests_per_hour,
+            period=3600,
         )
-        
+
         # Thread-safe история с автоматической очисткой старых записей
         pairs = max(1, int(settings.history_size))
         self._history: Dict[int, Deque[Dict[str, str]]] = defaultdict(
@@ -51,25 +52,27 @@ class LegalQueryHandler:
         self._history_cleanup_time = time.time()
         # Последнее обращение пользователя к истории (для корректной очистки наименее активных)
         self._last_access: Dict[int, float] = {}
-        
+
         # Максимальное количество пользователей в истории (защита от утечки памяти)
-        self.max_users_in_history = 10000
-        
+        self.max_users_in_history = 10_000
+
     async def _cleanup_history_if_needed(self) -> None:
-        """Периодическая очистка истории для предотвращения утечек памяти.
+        """
+        Периодическая очистка истории для предотвращения утечек памяти.
         Запускается редко и сама берёт lock, чтобы не создавать дедлоков.
         """
         now = time.time()
         # Очищаем историю не чаще, чем раз в 6 часов
-        if now - self._history_cleanup_time <= 21600:  # 6 * 60 * 60
+        if now - self._history_cleanup_time <= 6 * 60 * 60:
             return
+
         async with self._history_lock:
             if len(self._history) > self.max_users_in_history:
                 overflow = len(self._history) - self.max_users_in_history
                 # Сортируем по последнему доступу (наименее активные — вперёд)
                 sorted_users = sorted(
-                    self._history.keys(),
-                    key=lambda uid: self._last_access.get(uid, 0.0)
+                    list(self._history.keys()),
+                    key=lambda uid: self._last_access.get(uid, 0.0),
                 )
                 to_remove = sorted_users[:overflow]
                 for uid in to_remove:
@@ -77,7 +80,7 @@ class LegalQueryHandler:
                     self._last_access.pop(uid, None)
                 log.info("Cleaned up history for %d users", len(to_remove))
             self._history_cleanup_time = now
-    
+
     async def get_user_history(self, user_id: int) -> List[Dict[str, str]]:
         """Безопасное получение истории пользователя без реэнтрантного захвата lock."""
         # Сначала, вне lock, решаем вопрос с периодической очисткой (сама возьмёт lock внутри)
@@ -85,11 +88,12 @@ class LegalQueryHandler:
         async with self._history_lock:
             self._last_access[user_id] = time.time()
             return list(self._history[user_id])
-    
+
     async def add_to_history(self, user_id: int, user_msg: str, assistant_msg: str) -> None:
         """Безопасное добавление в историю."""
         async with self._history_lock:
             self._history[user_id].append({"role": "user", "content": user_msg})
+            # не храним слишком длинные сообщения ассистента
             self._history[user_id].append({"role": "assistant", "content": assistant_msg[:1000]})
             self._last_access[user_id] = time.time()
 
@@ -261,39 +265,54 @@ async def handle_legal_query(message: types.Message) -> None:
     # Мини-длина
     if len(text) < _handler.settings.min_question_length:
         error_text = BotMessages.error_message("invalid_question")
-        
+
         try:
             await message.answer(
                 md2(error_text),
-                parse_mode="MarkdownV2"
+                parse_mode="MarkdownV2",
             )
         except Exception:
             await message.answer(
                 "✋ Вопрос слишком короткий. Пожалуйста, опишите ситуацию подробней.",
-                parse_mode=None
+                parse_mode=None,
             )
         return
 
     # Rate-limit
     if not await _handler.rate_limiter.check(user_id):
-        # Вычисляем оставшееся время до сброса лимита
-        remaining_time = 3600  # Примерное время в секундах
-        
-        rate_limit_text = BotMessages.rate_limit_message(remaining_time)
-        
+        # Попробуем получить реальный TTL, если лимитер его предоставляет
+        ttl_seconds: int = 3600
+        retry_after_fn = getattr(_handler.rate_limiter, "retry_after", None)
+        if callable(retry_after_fn):
+            try:
+                ttl_val = await retry_after_fn(user_id)  # type: ignore[misc]
+                if isinstance(ttl_val, (int, float)):
+                    ttl_seconds = max(0, int(ttl_val))
+            except Exception:
+                pass
+
+        rate_limit_text = BotMessages.rate_limit_message(ttl_seconds)
+
         try:
             await message.answer(
                 md2(rate_limit_text),
-                parse_mode="MarkdownV2"
+                parse_mode="MarkdownV2",
             )
         except Exception:
-            remain = await _handler.rate_limiter.remaining(user_id)
-            fallback_text = "⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже."
-            if remain:
-                fallback_text += f" Доступно ещё: {remain}."
+            # Фолбэк: простое сообщение + остаток доступных запросов (если метод есть)
+            remain_text = ""
+            remaining_fn = getattr(_handler.rate_limiter, "remaining", None)
+            if callable(remaining_fn):
+                try:
+                    remain = await remaining_fn(user_id)  # type: ignore[misc]
+                    if isinstance(remain, int):
+                        remain_text = f" Доступно ещё: {remain}."
+                except Exception:
+                    pass
+
             await message.answer(
-                fallback_text,
-                parse_mode=None
+                "⏳ Лимит вопросов на ближайший час исчерпан. Попробуйте позже." + remain_text,
+                parse_mode=None,
             )
         return
 
@@ -305,7 +324,7 @@ async def handle_legal_query(message: types.Message) -> None:
         # Показываем красивую анимацию обработки
         thinking_steps = BotMessages.thinking_messages()
         progress_msg = await BotAnimations.progress_message(message, thinking_steps, delay=1.0)
-        
+
         # Индикатор «печатает…»
         async with ChatActionSender.typing(bot=message.bot, chat_id=chat_id):
             # 1) Пытаемся получить строгий ответ по LEGAL_SCHEMA_V2
@@ -321,7 +340,9 @@ async def handle_legal_query(message: types.Message) -> None:
                     # Добавим блок «Ссылки из поиска» из citations для повышения проверяемости
                     if citations:
                         md_text += "\n\n*Ссылки из поиска:*\n" + "\n".join(
-                            f"• [{md2(c.get('title') or 'Источник')}]({escape_md2_url(str(c.get('url') or ''))})" for c in citations if c.get('url')
+                            f"• [{md2(c.get('title') or 'Источник')}]({escape_md2_url(str(c.get('url') or ''))})"
+                            for c in citations
+                            if c.get("url")
                         )
                     assistant_summary = (data.get("conclusion") or "")[:1000]
             except Exception as e_json:
@@ -334,8 +355,8 @@ async def handle_legal_query(message: types.Message) -> None:
                     md_text = _schema_to_markdown(result)
                     assistant_summary = (result.get("conclusion") or "")[:1000]
                 else:
-                    answer: str = result.get("answer") or "" if result else ""
-                    laws: List[str] = result.get("laws") or [] if result else []
+                    answer: str = (result.get("answer") or "") if result else ""
+                    laws: List[str] = (result.get("laws") or []) if result else []
                     assistant_summary = answer[:1000] if answer else "Ответ не получен"
                     md_text = build_legal_reply(answer=answer, laws=laws)
 
@@ -348,21 +369,21 @@ async def handle_legal_query(message: types.Message) -> None:
                 await progress_msg.delete()
             except Exception:
                 pass
-        
-        # Отправляем по кускам  
+
+        # Отправляем по кускам
         chunks = chunk_markdown_v2(md_text or "Не удалось получить ответ.", limit=4096)
-        
-        for i, part in enumerate(chunks):
+
+        for part in chunks:
             try:
                 await message.answer(
-                    part, 
-                    parse_mode=_handler.settings.parse_mode
+                    part,
+                    parse_mode=_handler.settings.parse_mode,
                 )
             except TelegramBadRequest:
                 # Фолбэк: если MarkdownV2 сломался — убираем экранирование
                 await message.answer(
-                    strip_md2_escapes(part), 
-                    parse_mode=None
+                    strip_md2_escapes(part),
+                    parse_mode=None,
                 )
 
         log.info("OUT: user=%s chat=%s sent_chunks=%s", user_id, chat_id, len(chunks))
@@ -375,24 +396,23 @@ async def handle_legal_query(message: types.Message) -> None:
         )
     except Exception as e:
         log.exception("LLM handler error: user=%s chat=%s err=%r", user_id, chat_id, e)
-        
+
         # Удаляем прогресс-сообщение в случае ошибки
         if progress_msg:
             try:
                 await progress_msg.delete()
             except Exception:
                 pass
-        
+
         error_text = BotMessages.error_message("general")
-        
+
         try:
             await message.answer(
                 md2(error_text),
-                parse_mode="MarkdownV2"
+                parse_mode="MarkdownV2",
             )
         except Exception:
             await message.answer(
                 "😕 Произошла ошибка при обработке запроса. Попробуйте ещё раз через пару минут.",
-                parse_mode=None
+                parse_mode=None,
             )
-

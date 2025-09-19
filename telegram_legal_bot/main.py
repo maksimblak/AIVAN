@@ -14,18 +14,20 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 
+from telegram_legal_bot.utils.pro_logging import setup_pro_logging
+from telegram_legal_bot.middlewares.request_context import RequestContextMiddleware
+
 # ── Импорты пакета (и фоллбек для плоской структуры) ─────────────────────────
 try:
-    from telegram_legal_bot.config import Settings, load_settings
+    from telegram_legal_bot.config import load_settings
     from telegram_legal_bot.services.openai_service import OpenAIService
     from telegram_legal_bot.handlers.start import router as start_router
     from telegram_legal_bot.handlers.legal_query import (
         router as legal_router,
         setup_context as setup_legal_context,
     )
-
 except ImportError:
-    from config import Settings, load_settings  # type: ignore
+    from config import load_settings  # type: ignore
     try:
         from services.openai_service import OpenAIService  # type: ignore
     except ImportError:
@@ -35,49 +37,6 @@ except ImportError:
         router as legal_router,
         setup_context as setup_legal_context,
     )
-    try:
-        from handlers.ui_demo import router as ui_demo_router  # type: ignore
-    except Exception:
-        ui_demo_router = None  # type: ignore[assignment]
-
-
-# ── Логирование ───────────────────────────────────────────────────────────────
-def _setup_logging(json_mode: bool) -> None:
-    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
-
-    if json_mode:
-        class JsonFormatter(logging.Formatter):
-            def format(self, record: logging.LogRecord) -> str:
-                import json as _json
-                import time as _time
-                payload = {
-                    "t": int(_time.time()),
-                    "lvl": record.levelname,
-                    "msg": record.getMessage(),
-                    "name": record.name,
-                }
-                if record.exc_info:
-                    payload["exc"] = self.formatException(record.exc_info)
-                return _json.dumps(payload, ensure_ascii=False)
-
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(JsonFormatter())
-        root = logging.getLogger()
-        root.handlers.clear()
-        root.addHandler(handler)
-        root.setLevel(level)
-    else:
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-
-    # 🔉 уровни библиотек
-    logging.getLogger("aiogram").setLevel(level)
-    logging.getLogger("httpx").setLevel(logging.INFO)
-    logging.getLogger("openai_service").setLevel(logging.DEBUG)
-    logging.getLogger("legal_query").setLevel(level)
 
 
 # ── Утилиты ───────────────────────────────────────────────────────────────────
@@ -87,7 +46,7 @@ def _build_proxy_url(url: str | None, user: Optional[str], pwd: Optional[str]) -
       - добавляет схему http:// при её отсутствии;
       - при наличии user/password и отсутствии userinfo — внедряет user:pass@;
       - логин/пароль экранируются.
-    Примеры входа: "localhost:8080", "http://host:8080", "socks5://1.2.3.4:1080".
+    Примеры: "localhost:8080", "http://host:8080", "socks5://1.2.3.4:1080".
     """
     if not url:
         return None
@@ -117,8 +76,12 @@ def _get_api_server(base: Optional[str]) -> TelegramAPIServer:
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
 async def main_async() -> None:
-    settings = load_settings()
-    _setup_logging(settings.log_json)
+    # (!) Настройки берём из готового загрузчика
+    settings = load_settings()  # читает ENV/.env и задаёт openai_model и токены
+
+    # Профи-логирование: JSON + контекст (cid/uid/chat); уровень можно через ENV LOG_LEVEL
+    setup_pro_logging(json_mode=getattr(settings, "log_json", True),
+                      level=os.getenv("LOG_LEVEL", "INFO"))
     log = logging.getLogger("main")
 
     # Telegram: корректно задаём API-сервер (official или self-hosted) и HTTP-прокси
@@ -129,7 +92,7 @@ async def main_async() -> None:
         getattr(settings, "telegram_proxy_pass", None),
     )
 
-    # ВАЖНО: proxy передаём через параметр proxy= (а не в api=)
+    # Прокси передаём в session, не в api
     session = AiohttpSession(api=api, proxy=tg_proxy, timeout=70)
 
     default_props = (
@@ -139,11 +102,14 @@ async def main_async() -> None:
     )
 
     bot = Bot(
-        token=settings.telegram_token,
+        token=settings.telegram_token,   # поле так и называется в Settings
         session=session,
         default=default_props,
     )
     dp = Dispatcher()
+
+    # ВКЛЮЧАЕМ контекстное middleware → все логи будут с cid/uid/chat
+    dp.update.outer_middleware(RequestContextMiddleware())
 
     # OpenAI service + контекст хэндлеров
     ai = OpenAIService(settings)
@@ -152,7 +118,6 @@ async def main_async() -> None:
     # Роутеры
     dp.include_router(start_router)
     dp.include_router(legal_router)
-
 
     # Перехват необработанных ошибок, чтобы не ронять процесс
     @dp.errors()
@@ -180,7 +145,6 @@ async def main_async() -> None:
 
 if __name__ == "__main__":
     try:
-        # Не используем uvloop принудительно: совместимость шире
         asyncio.run(main_async())
     except (KeyboardInterrupt, SystemExit):
         pass

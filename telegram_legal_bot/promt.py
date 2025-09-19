@@ -108,19 +108,20 @@ LEGAL_SCHEMA_V2 = {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
-        "question": {"type": "string", "minLength": 5},
-        "conclusion": {"type": "string"},  # краткий вывод (1–3 абзаца)
+        "question": { "type": "string", "minLength": 5 },
+        "conclusion": { "type": "string" },
         "legal_basis": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "act": {"type": "string"},             # ГК РФ, АПК РФ, УК РФ…
-              "article": {"type": "string"},         # ст./ч./п./подп.
-              "quote": {"type": "string", "maxLength": 300},  # ≈ до 25 слов
-              "pinpoint": {"type": "string"}         # напр. «ст. 10 ч. 1 ГК РФ»
+              "act": { "type": "string" },
+              "article": { "type": "string" },
+              "quote": { "type": "string", "maxLength": 300 },
+              "pinpoint": { "type": "string" }
             },
-            "required": ["act", "article"]
+            "required": ["act", "article"],
+            "additionalProperties": False
           }
         },
         "cases": {
@@ -128,55 +129,59 @@ LEGAL_SCHEMA_V2 = {
           "items": {
             "type": "object",
             "properties": {
-              "court": {"type": "string"},
-              "court_region": {"type": "string"},           # субъект РФ/округ (если применимо)
-              "level": {"type": "string", "enum": ["первая", "апелляция", "кассация", "надзор", "ВС"]},
-              "case_no": {"type": "string"},
-              "date": {"type": "string", "format": "date"},
-              "url": {"type": "string", "format": "uri"},
-              "facts": {"type": "string"},                 # краткая фабула
-              "holding": {"type": "string"},               # исход и ключевая позиция суда
-              "norms": {"type": "array", "items": {"type": "string"}},  # перечисление норм
-              "similarity": {"type": "number", "minimum": 0, "maximum": 1} # близость фабулы
+              "court": { "type": "string" },
+              "court_region": { "type": "string" },
+              "level": { "type": "string", "enum": ["первая", "апелляция", "кассация", "надзор", "ВС"] },
+              "case_no": { "type": "string" },
+              "date": { "type": "string", "format": "date" },
+              "url": { "type": "string", "format": "uri" },
+              "facts": { "type": "string" },
+              "holding": { "type": "string" },
+              "norms": { "type": "array", "items": { "type": "string" } },
+              "similarity": { "type": "number", "minimum": 0, "maximum": 1 }
             },
-            "required": ["court", "case_no", "date", "holding", "url"]
+            "required": ["court", "case_no", "date", "holding", "url"],
+            "additionalProperties": False
           }
         },
-        "analysis": {"type": "string"},                    # развернутый разбор
-        "risks": {"type": "array", "items": {"type": "string"}},
-        "next_actions": {"type": "array", "items": {"type": "string"}},
+        "analysis": { "type": "string" },
+        "risks": { "type": "array", "items": { "type": "string" } },
+        "next_actions": { "type": "array", "items": { "type": "string" } },
         "sources": {
           "type": "array",
           "minItems": 3,
           "items": {
             "type": "object",
             "properties": {
-              "title": {"type": "string"},
-              "url": {"type": "string", "format": "uri"},
-              "pin": {"type": "string", "maxLength": 300},
-              "why": {"type": "string", "maxLength": 300}
+              "title": { "type": "string" },
+              "url": { "type": "string", "format": "uri" },
+              "pin": { "type": "string", "maxLength": 300 },
+              "why": { "type": "string", "maxLength": 300 }
             },
-            "required": ["url"]
+            "required": ["url"],
+            "additionalProperties": False
           }
         },
-        "doc_drafts": {                                      # необязательно: черновики документов
+        "doc_drafts": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "doc_type": {"type": "string"},             # иск, жалоба, ходатайство…
-              "title": {"type": "string"},
-              "body_md": {"type": "string"},              # Markdown
-              "placeholders": {"type": "array", "items": {"type": "string"}}
+              "doc_type": { "type": "string" },
+              "title": { "type": "string" },
+              "body_md": { "type": "string" },
+              "placeholders": { "type": "array", "items": { "type": "string" } }
             },
-            "required": ["doc_type", "title", "body_md"]
+            "required": ["doc_type", "title", "body_md"],
+            "additionalProperties": False
           }
         },
-        "clarifications": {"type": "array", "items": {"type": "string"}},  # вопросы к пользователю
-        "confidence": {"type": "string", "enum": ["низкая", "средняя", "высокая"]},
-        "self_check": {"type": "array", "items": {"type": "string"}}     # чек‑лист верификации
+        "clarifications": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "string", "enum": ["низкая", "средняя", "высокая"] },
+        "self_check": { "type": "array", "items": { "type": "string" } }
       },
-      "required": ["question", "conclusion", "legal_basis", "sources"]
+      "required": ["question", "conclusion", "legal_basis", "sources"],
+      "additionalProperties": False
     }
   }
 }
