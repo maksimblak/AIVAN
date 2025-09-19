@@ -151,15 +151,16 @@ class OpenAIService:
         log.info("OpenAI client initialized: proxy_enabled=%s", bool(self._own_httpx))
 
     def _get_model(self) -> str:
-        """Возвращает безопасное имя модели. Фолбэк на gpt-4o при некорректной конфигурации."""
-        try:
-            configured = (getattr(self._s, "openai_model", None) or "").strip()
-        except Exception:
-            configured = ""
-        lowered = configured.lower()
-        if not configured or lowered in {"gpt-5", "gpt5", "gpt-5.0"}:
-            return "gpt-4o"
-        return configured
+        """
+        Возвращает имя модели из настроек.
+        Фоллбек отключён — если модель не задана, кидаем явную ошибку.
+        """
+        m = (getattr(self._s, "openai_model", "") or "").strip()
+        if not m:
+            raise RuntimeError(
+                "OPENAI_MODEL не задан. Укажите доступную модель в переменной окружения OPENAI_MODEL."
+            )
+        return m
 
     async def aclose(self) -> None:
         """Закрыть внутренний httpx-клиент и OpenAI-клиент."""
@@ -242,25 +243,34 @@ class OpenAIService:
             "seed": seed,
         }
 
-        # ✅ ИНИЦИАЛИЗИРУЕМ extra_body + домены + ограничения веб-поиска
+        # --- инструменты и extra_body ---
         extra_body: Dict[str, Any] = {}
+
         if search_domains:
-            # Валидация и очистка доменных имен
-            valid_domains = self._validate_domains(str(search_domains))
-            if valid_domains:
-                extra_body["domains"] = valid_domains
-        # web_search может быть отключен на аккаунте — добавим только если явно включён через tool_choice
-        extra_body["web_search"] = {"recency_days": recency_days, "max_results": max_results}
+            extra_body["search_domains"] = search_domains
+
+        if getattr(self._s, "web_search_enabled", False):
+            extra_body["web_search"] = {
+                "recency_days": int(recency_days),
+                "max_results": int(max_results),
+            }
+
         if extra_body:
             payload["extra_body"] = extra_body
+        else:
+            payload.pop("extra_body", None)
 
-        # Инструменты: добавляем лениво, чтобы уметь удалить при 400 Unknown parameter
         tools: List[Dict[str, Any]] = []
-        tools.append({"type": "web_search"})
+        if getattr(self._s, "web_search_enabled", False):
+            tools.append({"type": "web_search"})
         if file_search_enabled:
             tools.append({"type": "file_search"})
         if tools:
             payload["tools"] = tools
+        else:
+            payload.pop("tools", None)
+
+        payload["tool_choice"] = getattr(self._s, "tool_choice", "auto")
 
         # Вызов с авто-дауншифтом неподдержанных ключей
         optional_keys = {
@@ -409,67 +419,65 @@ class OpenAIService:
     # ──────────────────────────────────────────────────────────────────────
     # Internal: универсальный вызов Responses с авто-удалением ключей
     # ──────────────────────────────────────────────────────────────────────
-    async def _responses_call_with_optional(self, payload: Dict[str, Any], optional_keys: set[str]) -> Any:
+    async def _responses_call_with_optional(self, payload: Dict[str, Any]) -> Any:
         """
-        Вызывает client.responses.create(**payload), удаляя неподдержанные параметры.
-        Обрабатывает как ошибки SDK (TypeError), так и серверные 400 с указанием параметра.
-        Включает защиту от бесконечных циклов.
+        Вызывает Responses API, поэтапно снимая неподдержанные поля.
+        Важно: модель не изменяем. Если модель недоступна — кидаем явную ошибку.
         """
-        # Рабочая копия
-        pl = dict(payload)
-        max_retries = 10  # Защита от бесконечного цикла
-        retry_count = 0
+        max_attempts = 4
+        pl: Dict[str, Any] = dict(payload)
 
-        while retry_count < max_retries:
-            retry_count += 1
+        for attempt in range(1, max_attempts + 1):
             try:
                 return await self._client.responses.create(**pl)
-            except TypeError as e:
-                # пример: unexpected keyword argument 'response_format'
-                m = re.search(r"unexpected keyword argument '([^']+)'", str(e))
-                bad = m.group(1) if m else None
-                if bad and (bad in pl or bad in optional_keys):
-                    log.debug("SDK doesn't support '%s' — removing and retrying... (attempt %d/%d)", 
-                             bad, retry_count, max_retries)
-                    pl.pop(bad, None)
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                low = msg.lower()
+                removed_any = False
+
+                # 1) SDK-уровень: неожиданные аргументы
+                if "response_format" in low:
+                    pl.pop("response_format", None)
+                    removed_any = True
+                if "seed" in low:
+                    pl.pop("seed", None)
+                    removed_any = True
+                if "temperature" in low:
+                    pl.pop("temperature", None)
+                    removed_any = True
+                if "top_p" in low:
+                    pl.pop("top_p", None)
+                    removed_any = True
+                if "max_output_tokens" in low:
+                    pl.pop("max_output_tokens", None)
+                    removed_any = True
+                if "parallel_tool_calls" in low:
+                    pl.pop("parallel_tool_calls", None)
+                    removed_any = True
+
+                # 2) Сервер: инструменты и веб-поиск недоступны
+                if "web_search" in low or ("unknown" in low and "tools" in low):
+                    pl.pop("tools", None)
+                    eb = pl.get("extra_body") or {}
+                    if isinstance(eb, dict):
+                        eb.pop("web_search", None)
+                        if eb:
+                            pl["extra_body"] = eb
+                        else:
+                            pl.pop("extra_body", None)
+                    removed_any = True
+
+                # 3) Модель недоступна/неизвестна — НЕ фолбэчим, а объясняем
+                if ("model" in low) and (
+                    "not found" in low or "does not exist" in low or "unknown" in low
+                ):
+                    raise RuntimeError(
+                        f"Модель '{pl.get('model')}' недоступна на аккаунте/в регионе. Укажите корректную модель через OPENAI_MODEL."
+                    ) from e
+
+                if removed_any and attempt < max_attempts:
                     continue
                 raise
-            except Exception as e:
-                # Безопасная разборка серверного ответа
-                resp = getattr(e, "response", None)
-                err_param = None
-                err_message = ""
-                
-                if resp is not None:
-                    err_param, err_message = self._safe_parse_error_response(resp)
-
-                # Специальная обработка кейса: Unknown parameter: 'web_search'
-                if "unknown parameter" in err_message and "web_search" in err_message:
-                    # Удаляем инструменты и extra_body целиком и пробуем снова
-                    if "tools" in pl:
-                        log.debug("Server reports web_search unknown — removing tools and retrying...")
-                        pl.pop("tools", None)
-                        removed = True
-                    if "extra_body" in pl:
-                        pl.pop("extra_body", None)
-                        removed = True
-                    if removed:
-                        continue
-
-                removed = False
-                for cand in list(optional_keys):
-                    if (err_param == cand) or (cand in pl and f"'{cand}'" in err_message):
-                        log.debug("Server says param '%s' unsupported — removing and retrying... (attempt %d/%d)", 
-                                 cand, retry_count, max_retries)
-                        pl.pop(cand, None)
-                        removed = True
-                if removed:
-                    continue
-                raise
-        
-        # Если достигли максимального количества попыток
-        log.error("Reached maximum retry attempts (%d) for responses API call", max_retries)
-        raise RuntimeError(f"Maximum retry attempts ({max_retries}) exceeded for OpenAI API call")
     
     def _safe_parse_error_response(self, resp: Any) -> tuple[Optional[str], str]:
         """
@@ -624,7 +632,7 @@ class OpenAIService:
             }
             optional_keys.add("response_format")
 
-        resp = await self._responses_call_with_optional(payload, optional_keys)
+        resp = await self._responses_call_with_optional(payload)
         return self._extract_text_from_responses(resp) or ""
 
     # ──────────────────────────────────────────────────────────────────────
@@ -687,6 +695,20 @@ class OpenAIService:
                     err_param, err_message = self._safe_parse_error_response(resp)
 
                 removed = False
+                # Модель недоступна/не найдена — не фолбэчим, объясняем явно
+                if (err_param == "model") or ("model" in err_message and ("not found" in err_message or "does not exist" in err_message or "unknown" in err_message)):
+                    raise RuntimeError(
+                        f"Модель '{kwargs.get('model')}' недоступна. Задайте корректную OPENAI_MODEL."
+                    ) from e
+                
+                # Параметр max_tokens не поддержан — пробуем max_completion_tokens
+                if (err_param == "max_tokens") or ("max_tokens" in err_message and "max_completion_tokens" in err_message):
+                    if "max_tokens" in kwargs:
+                        val = kwargs.pop("max_tokens")
+                        kwargs["max_completion_tokens"] = val
+                        log.debug("Chat: switching 'max_tokens' -> 'max_completion_tokens' and retrying...")
+                        removed = True
+                
                 for cand in list(removable):
                     if (err_param == cand) or (f"'{cand}'" in err_message and cand in kwargs):
                         log.debug("Server says chat param '%s' unsupported — removing and retrying...", cand)

@@ -98,7 +98,7 @@ class Settings:
     telegram_api_base: Optional[str] = None
 
     # OpenAI: базовые параметры генерации
-    openai_model: str = "gpt-5"
+    openai_model: str
     openai_temperature: float = 0.3
     openai_max_tokens: int = 1500
     openai_verbosity: str = "low"             # low|medium|high (для логгирования/уровня трассировки)
@@ -127,7 +127,8 @@ class Settings:
     web_search_recency_days: int = 3650
     web_search_max_results: int = 8
     file_search_enabled: bool = True
-    tool_choice: str = "required"              # "required" | "auto"
+    tool_choice: str = "auto"              # "required" | "auto"
+    web_search_enabled: bool = False
 
 
 def load_settings() -> Settings:
@@ -169,7 +170,7 @@ def load_settings() -> Settings:
     tg_api_base = os.getenv("TELEGRAM_API_BASE") or os.getenv("BOT_API_BASE") or None
 
     # OpenAI base
-    model = os.getenv("OPENAI_MODEL", "gpt-5")
+    openai_model = (os.getenv("OPENAI_MODEL", "") or "").strip()
     temp = _get_float("OPENAI_TEMPERATURE", 0.3)
     oai_max_tokens = _get_int("OPENAI_MAX_TOKENS", 1500)
     verbosity = (os.getenv("OPENAI_VERBOSITY", "low") or "low").lower()
@@ -225,6 +226,11 @@ def load_settings() -> Settings:
     if not (0.0 < top_p <= 1.0):
         top_p = 1.0
 
+    if not openai_model:
+        raise RuntimeError(
+            "OPENAI_MODEL не задан. Укажите доступную модель (например, 'gpt-4o', 'gpt-4.1-mini')."
+        )
+
     return Settings(
         telegram_token=tg_token,
         openai_api_key=oaikey,
@@ -234,7 +240,7 @@ def load_settings() -> Settings:
         telegram_proxy_pass=tg_proxy_pass,
         telegram_api_base=tg_api_base,
 
-        openai_model=model,
+        openai_model=openai_model,
         openai_temperature=temp,
         openai_max_tokens=oai_max_tokens,
         openai_verbosity=verbosity,
@@ -260,4 +266,5 @@ def load_settings() -> Settings:
         web_search_max_results=web_search_max_results,
         file_search_enabled=file_search_enabled,
         tool_choice=tool_choice,
+        web_search_enabled=_get_bool("WEB_SEARCH_ENABLED", False),
     )

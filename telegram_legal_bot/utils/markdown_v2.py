@@ -26,11 +26,10 @@ def format_md2_message(text: str) -> str:
     text = re.sub(r'`([^`]+)`', '__CODE_START__\\1__CODE_END__', text)  # `code`
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', '__LINK_START__\\1__LINK_MID__\\2__LINK_END__', text)  # [text](url)
     
-    # Экранируем все спецсимволы MarkdownV2
+    # Экранируем все спецсимволы MarkdownV2 (не исключая круглые скобки и т.д.)
     special_chars = r'_*[]()~`>#+-=|{}.!\\'
     for char in special_chars:
-        if char not in ['*', '_', '`', '[', ']', '(', ')']:  # Не экранируем символы форматирования
-            text = text.replace(char, '\\' + char)
+        text = text.replace(char, '\\' + char)
     
     # Возвращаем правильное форматирование
     text = text.replace('__BOLD_START__', '*')

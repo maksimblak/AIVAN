@@ -179,8 +179,6 @@ async def cmd_ui_info(msg: types.Message) -> None:
 🚀 **Все для удобства использования!**
         """.strip()
         
-        keyboard = BotKeyboards.main_menu()
-        
         await msg.answer(md2(info_text), parse_mode="MarkdownV2")
         
     except Exception:

@@ -49,30 +49,41 @@ class LegalQueryHandler:
         )
         self._history_lock = asyncio.Lock()
         self._history_cleanup_time = time.time()
+        # Последнее обращение пользователя к истории (для корректной очистки наименее активных)
+        self._last_access: Dict[int, float] = {}
         
         # Максимальное количество пользователей в истории (защита от утечки памяти)
         self.max_users_in_history = 10000
         
     async def _cleanup_history_if_needed(self) -> None:
-        """Периодическая очистка истории для предотвращения утечек памяти."""
+        """Периодическая очистка истории для предотвращения утечек памяти.
+        Запускается редко и сама берёт lock, чтобы не создавать дедлоков.
+        """
         now = time.time()
-        # Очищаем историю каждые 6 часов
-        if now - self._history_cleanup_time > 21600:  # 6 * 60 * 60
-            async with self._history_lock:
-                if len(self._history) > self.max_users_in_history:
-                    # Удаляем половину наименее активных пользователей
-                    users_to_remove = len(self._history) - self.max_users_in_history // 2
-                    # Преобразуем в list, т.к. defaultdict меняется во время итерации
-                    users = list(self._history.keys())[:users_to_remove]
-                    for user_id in users:
-                        del self._history[user_id]
-                    log.info("Cleaned up history for %d users", users_to_remove)
-                self._history_cleanup_time = now
+        # Очищаем историю не чаще, чем раз в 6 часов
+        if now - self._history_cleanup_time <= 21600:  # 6 * 60 * 60
+            return
+        async with self._history_lock:
+            if len(self._history) > self.max_users_in_history:
+                overflow = len(self._history) - self.max_users_in_history
+                # Сортируем по последнему доступу (наименее активные — вперёд)
+                sorted_users = sorted(
+                    self._history.keys(),
+                    key=lambda uid: self._last_access.get(uid, 0.0)
+                )
+                to_remove = sorted_users[:overflow]
+                for uid in to_remove:
+                    self._history.pop(uid, None)
+                    self._last_access.pop(uid, None)
+                log.info("Cleaned up history for %d users", len(to_remove))
+            self._history_cleanup_time = now
     
     async def get_user_history(self, user_id: int) -> List[Dict[str, str]]:
-        """Безопасное получение истории пользователя."""
+        """Безопасное получение истории пользователя без реэнтрантного захвата lock."""
+        # Сначала, вне lock, решаем вопрос с периодической очисткой (сама возьмёт lock внутри)
+        await self._cleanup_history_if_needed()
         async with self._history_lock:
-            await self._cleanup_history_if_needed()
+            self._last_access[user_id] = time.time()
             return list(self._history[user_id])
     
     async def add_to_history(self, user_id: int, user_msg: str, assistant_msg: str) -> None:
@@ -80,6 +91,7 @@ class LegalQueryHandler:
         async with self._history_lock:
             self._history[user_id].append({"role": "user", "content": user_msg})
             self._history[user_id].append({"role": "assistant", "content": assistant_msg[:1000]})
+            self._last_access[user_id] = time.time()
 
 
 # Глобальный экземпляр обработчика (инициализируется в setup_context)
@@ -303,19 +315,29 @@ async def handle_legal_query(message: types.Message) -> None:
             try:
                 rich = await _handler.ai.ask_ivan(text)  # точный режим (без истории)
                 data = rich.get("data") if rich else None
+                citations = rich.get("citations") or []
                 if isinstance(data, dict) and (data.get("conclusion") or data.get("sources") or data.get("cases")):
                     md_text = _schema_to_markdown(data)
+                    # Добавим блок «Ссылки из поиска» из citations для повышения проверяемости
+                    if citations:
+                        md_text += "\n\n*Ссылки из поиска:*\n" + "\n".join(
+                            f"• [{md2(c.get('title') or 'Источник')}]({escape_md2_url(str(c.get('url') or ''))})" for c in citations if c.get('url')
+                        )
                     assistant_summary = (data.get("conclusion") or "")[:1000]
             except Exception as e_json:
                 log.warning("ask_ivan failed, fallback to simple path: %r", e_json)
 
-            # 2) Фолбэк: упрощённый путь (answer + laws) — с краткой историей
+            # 2) Фолбэк: пробуем отрисовать V2 JSON напрямую; если формат другой — используем старый answer/laws
             if not md_text:
                 result = await _handler.ai.generate_legal_answer(text, short_history=short_history)
-                answer: str = result.get("answer") or "" if result else ""
-                laws: List[str] = result.get("laws") or [] if result else []
-                assistant_summary = answer[:1000] if answer else "Ответ не получен"
-                md_text = build_legal_reply(answer=answer, laws=laws)
+                if isinstance(result, dict) and (result.get("conclusion") or result.get("sources") or result.get("cases")):
+                    md_text = _schema_to_markdown(result)
+                    assistant_summary = (result.get("conclusion") or "")[:1000]
+                else:
+                    answer: str = result.get("answer") or "" if result else ""
+                    laws: List[str] = result.get("laws") or [] if result else []
+                    assistant_summary = answer[:1000] if answer else "Ответ не получен"
+                    md_text = build_legal_reply(answer=answer, laws=laws)
 
         # Обновляем короткую историю thread-safe способом
         await _handler.add_to_history(user_id, text, assistant_summary)
