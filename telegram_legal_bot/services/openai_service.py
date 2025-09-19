@@ -22,7 +22,19 @@ except Exception as exc:  # pragma: no cover
 
 from telegram_legal_bot.config import Settings
 
+try:
+    # Вариант, если проект как пакет
+    from telegram_legal_bot.promt import PROMPT as LONG_PROMPT
+except Exception:
 
+    try:
+        # Плоская структура (файл promt.py рядом)
+        from telegram_legal_bot.promt import PROMPT as LONG_PROMPT
+    except Exception as e:
+        raise RuntimeError(
+            "Не найден длинный системный промпт: promt.PROMPT. "
+            "Убедитесь, что файл promt.py есть и содержит переменную PROMPT."
+        ) from e
 
 log = logging.getLogger("openai_service")
 
@@ -110,13 +122,9 @@ class OpenAIService:
         Запрашивает у модели краткий юридический ответ и список норм права.
         Возвращает LegalAdvice(answer, laws). Бросает RuntimeError при неуспехе после ретраев.
         """
-        sys_prompt = (
-            "Ты юридический ассистент для РФ. Отвечай кратко, ясно и корректно. "
-            "Если данных недостаточно, попроси уточнить. Выделяй списки с новой строки. "
-            "Строго соблюдай фактологию, не выдумывай нормы права."
-        )
 
-        messages: List[Dict[str, str]] = [{"role": "system", "content": sys_prompt}]
+
+        messages = [{"role": "system", "content": LONG_PROMPT}]
         if short_history:
             for h in short_history[-5:]:
                 r, c = h.get("role"), h.get("content")
@@ -179,7 +187,7 @@ class OpenAIService:
                     forced_messages = messages.copy()
                     forced_messages[0] = {
                         "role": "system",
-                        "content": sys_prompt + " Всегда возвращай ТОЛЬКО JSON вида {\"answer\": \"...\", \"laws\": [\"...\"]}.",
+                        "content": LONG_PROMPT + " Всегда возвращай ТОЛЬКО JSON вида {\"answer\": \"...\", \"laws\": [\"...\"]}.",
                     }
                     content = await self._responses_create_compat(
                         messages=forced_messages,
