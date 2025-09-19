@@ -161,6 +161,27 @@ class OpenAIService:
     # ──────────────────────────────────────────────────────────────────────
     # Публичные методы
     # ──────────────────────────────────────────────────────────────────────
+    def _extract_url_citations(self, resp: Any) -> List[Dict[str, str]]:
+        cites: List[Dict[str, str]] = []
+        try:
+            output = getattr(resp, "output", None) or []
+            for item in output:
+                content = getattr(item, "content", None) or (
+                    item.get("content") if isinstance(item, dict) else None) or []
+                for seg in content:
+                    annotations = getattr(seg, "annotations", None) or (
+                        seg.get("annotations") if isinstance(seg, dict) else None) or []
+                    for ann in annotations:
+                        atype = getattr(ann, "type", None) or (ann.get("type") if isinstance(ann, dict) else None)
+                        if atype == "url_citation":
+                            title = getattr(ann, "title", None) or (
+                                ann.get("title") if isinstance(ann, dict) else "") or ""
+                            url = getattr(ann, "url", None) or (ann.get("url") if isinstance(ann, dict) else "") or ""
+                            if url:
+                                cites.append({"title": str(title), "url": str(url)})
+        except Exception:
+            pass
+        return cites
 
     async def ask_ivan(
         self,
@@ -220,8 +241,9 @@ class OpenAIService:
                 d.strip() for d in str(search_domains).split(",") if d.strip()
             ]
 
-        # if file_search_enabled:
-        #     payload["tools"].append({"type": "file_search"})
+        if file_search_enabled:
+            pass
+             # payload["tools"].append({"type": "file_search"})
 
         # Вызов с авто-дауншифтом неподдержанных ключей
         optional_keys = {
@@ -240,14 +262,18 @@ class OpenAIService:
 
         # Достаём текст/цитации
         raw_text: Optional[str] = self._extract_text_from_responses(resp)
-        citations = getattr(resp, "citations", None)
-        if citations is None:
-            try:
-                out = getattr(resp, "output", None) or []
-                if out and hasattr(out[0], "citations"):
-                    citations = getattr(out[0], "citations", None)
-            except Exception:
-                citations = None
+        # было:
+        # citations = getattr(resp, "citations", None)
+        # if citations is None:
+        #     try:
+        #         out = getattr(resp, "output", None) or []
+        #         if out and hasattr(out[0], "citations"):
+        #             citations = getattr(out[0], "citations", None)
+        #     except Exception:
+        #         citations = None
+
+        # стало:
+        citations = self._extract_url_citations(resp)
 
         # Парсим JSON, если есть
         if raw_text:

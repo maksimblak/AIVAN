@@ -61,9 +61,9 @@ def _setup_logging(json_mode: bool) -> None:
 
     # 🔉 уровни библиотек
     logging.getLogger("aiogram").setLevel(level)
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # подними до INFO при дебаге
-    # наши
-    logging.getLogger("openai_service").setLevel(level)
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    logging.getLogger("openai_service").setLevel(logging.DEBUG)
+
     logging.getLogger("legal_query").setLevel(level)
 
 
