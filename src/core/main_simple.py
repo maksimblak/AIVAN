@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.types import Message, BotCommand, ErrorEvent
+from aiogram.types import Message, BotCommand, ErrorEvent, LabeledPrice, PreCheckoutQuery
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
 
@@ -22,6 +22,8 @@ from src.bot.openai_gateway import ask_legal
 from src.bot.promt import LEGAL_SYSTEM_PROMPT
 from src.bot.ui_components import Emoji, escape_markdown_v2
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, QuickStatus
+from src.core.db import Database
+from src.core.crypto_pay import create_crypto_invoice
 
 # ============ КОНФИГУРАЦИЯ ============
 
@@ -32,6 +34,26 @@ logger = logging.getLogger("ai-ivan.simple")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 USE_ANIMATION = os.getenv("USE_STATUS_ANIMATION", "1").lower() in ("1", "true", "yes")
 MAX_MESSAGE_LENGTH = 4000
+
+# Подписки и платежи
+DB_PATH = os.getenv("DB_PATH", "data/bot.sqlite3")
+TRIAL_REQUESTS = int(os.getenv("TRIAL_REQUESTS", "10"))
+SUB_DURATION_DAYS = int(os.getenv("SUB_DURATION_DAYS", "30"))
+
+# RUB платеж через Telegram Payments (провайдер-эквайринг)
+RUB_PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN_RUB", "").strip()
+SUB_PRICE_RUB = int(os.getenv("SUBSCRIPTION_PRICE_RUB", "300"))  # руб.
+SUB_PRICE_RUB_KOPEKS = SUB_PRICE_RUB * 100
+
+# Telegram Stars (XTR). В большинстве случаев используется специальный токен "STARS"
+STARS_PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN_STARS", "STARS").strip()
+SUB_PRICE_XTR = int(os.getenv("SUBSCRIPTION_PRICE_XTR", "3000"))  # XTR
+
+# Админы (через запятую Telegram user_id)
+ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(',') if x}
+
+# Глобальная БД
+db: Optional[Database] = None
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
@@ -93,20 +115,50 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
 async def cmd_start(message: Message):
     """Единственная команда - приветствие"""
     user_session = get_user_session(message.from_user.id)
+    # Обеспечим запись в БД
+    if db is not None:
+        await db.ensure_user(message.from_user.id, default_trial=TRIAL_REQUESTS, is_admin=message.from_user.id in ADMIN_IDS)
     user_name = message.from_user.first_name or "Пользователь"
     
-    welcome_text = f"""{Emoji.ROBOT} Привет, **{escape_markdown_v2(user_name)}**\\!
+    # Подробное приветствие
+    welcome_raw = f"""
+╔═══════════════════════════╗
+║  ⚖️ ИИ-Иван ⚖️  ║
+╚═══════════════════════════╝
 
-{Emoji.LAW} **ИИ\\-Иван** — ваш юридический ассистент
+🤖 Привет, {user_name}! Добро пожаловать!
 
-{Emoji.ROBOT} Специализируюсь на российском праве и судебной практике
-{Emoji.SEARCH} Анализирую дела, нахожу релевантную практику  
-{Emoji.DOCUMENT} Готовлю черновики процессуальных документов
+⭐️ Ваш персональный юридический ассистент
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-{Emoji.WARNING} *Важно*: все ответы требуют проверки юристом
+✨ Что я умею:
+🔍 Анализирую судебную практику РФ
+📋 Ищу релевантные дела и решения
+💡 Готовлю черновики процессуальных документов  
+⚖️ Оцениваю правовые риски и перспективы
 
-{Emoji.FIRE} **Просто отправьте мне ваш юридический вопрос\\!**"""
-    
+🔥 Специализации:
+🏠 Гражданское и договорное право
+🏢 Корпоративное право и M&A
+👨‍💼 Трудовое и административное право
+💰 Налоговое право и споры с ФНС
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Примеры вопросов:
+
+📝 "Можно ли расторгнуть договор поставки за просрочку?"
+👨‍💼 "Как правильно уволить сотрудника за нарушения?"
+💰 "Какие риски при доначислении НДС?"
+🏢 "Порядок увеличения уставного капитала ООО"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔥 Готов к работе! Отправьте ваш правовой вопрос
+
+⚠️ Важно: все ответы — аналитические материалы для внутренней проработки и требуют проверки практикующим юристом.
+"""
+
+    welcome_text = escape_markdown_v2(welcome_raw)
     await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2)
     logger.info("User %s started bot", message.from_user.id)
 
@@ -136,6 +188,25 @@ async def process_question(message: Message):
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
     
     try:
+        # Контроль доступа: админ или активная подписка, иначе расходуем триал
+        if db is not None:
+            user = await db.ensure_user(user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS)
+            has_access = False
+            if user.is_admin:
+                has_access = True
+            else:
+                if await db.has_active_subscription(user_id):
+                    has_access = True
+                else:
+                    # Пытаемся списать один бесплатный запрос
+                    if await db.decrement_trial(user_id):
+                        has_access = True
+            if not has_access:
+                await message.answer(
+                    f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nОформите подписку за {SUB_PRICE_RUB}₽ в месяц. Используйте команду /buy",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                return
         # Показываем статус
         if USE_ANIMATION:
             status = AnimatedStatus(message.bot, message.chat.id)
@@ -249,6 +320,131 @@ async def process_question(message: Message):
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
+# ============ ПОДПИСКИ И ПЛАТЕЖИ ============
+
+def _build_payload(method: str, user_id: int) -> str:
+    return f"sub:{method}:{user_id}:{int(datetime.now().timestamp())}"
+
+async def send_rub_invoice(message: Message):
+    if not RUB_PROVIDER_TOKEN:
+        await message.answer(
+            f"{Emoji.WARNING} Оплата картами временно недоступна. Попробуйте Telegram Stars или криптовалюту (/buy)",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+    prices = [LabeledPrice(label="Подписка на 30 дней", amount=SUB_PRICE_RUB_KOPEKS)]
+    payload = _build_payload("rub", message.from_user.id)
+    await message.bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Месячная подписка",
+        description="Доступ к ИИ-Иван: анализ практики, документы, рекомендации. Срок: 30 дней.",
+        payload=payload,
+        provider_token=RUB_PROVIDER_TOKEN,
+        currency="RUB",
+        prices=prices,
+        is_flexible=False,
+    )
+
+async def send_stars_invoice(message: Message):
+    prices = [LabeledPrice(label="Подписка на 30 дней", amount=SUB_PRICE_XTR)]
+    payload = _build_payload("xtr", message.from_user.id)
+    await message.bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Месячная подписка (Telegram Stars)",
+        description="Оплата в Telegram Stars (XTR). Срок подписки: 30 дней.",
+        payload=payload,
+        provider_token=STARS_PROVIDER_TOKEN,
+        currency="XTR",
+        prices=prices,
+        is_flexible=False,
+    )
+
+async def cmd_buy(message: Message):
+    text = (
+        f"{Emoji.MAGIC} **Оплата подписки**\n\n"
+        f"Стоимость: {SUB_PRICE_RUB}₽ / 30 дней\n\n"
+        f"Выберите способ оплаты:" 
+    )
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN_V2)
+    # Отправляем доступные варианты
+    if RUB_PROVIDER_TOKEN:
+        await send_rub_invoice(message)
+    await send_stars_invoice(message)
+    # Крипта: создаем инвойс через CryptoBot, если настроен токен
+    payload = _build_payload("crypto", message.from_user.id)
+    inv = create_crypto_invoice(
+        amount=float(SUB_PRICE_RUB),  # можно привязать к USDT с пересчетом, для простоты — число
+        asset=os.getenv("CRYPTO_ASSET", "USDT"),
+        description="Подписка ИИ-Иван на 30 дней",
+        payload=payload,
+    )
+    if inv.get("ok"):
+        await message.answer(
+            f"{Emoji.DOWNLOAD} Оплата криптовалютой: перейдите по ссылке\n{inv['url']}",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+    else:
+        await message.answer(
+            f"{Emoji.IDEA} Криптовалюта: временно недоступна (настройте CRYPTO_PAY_TOKEN)",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+async def cmd_status(message: Message):
+    if db is None:
+        await message.answer("Статус временно недоступен")
+        return
+    user = await db.ensure_user(message.from_user.id, default_trial=TRIAL_REQUESTS, is_admin=message.from_user.id in ADMIN_IDS)
+    until = user.subscription_until
+    if until and until > 0:
+        until_dt = datetime.fromtimestamp(until)
+        left_days = max(0, (until_dt - datetime.now()).days)
+        sub_text = f"Активна до {until_dt:%Y-%m-%d} (≈{left_days} дн.)"
+    else:
+        sub_text = "Не активна"
+    await message.answer(
+        f"{Emoji.STATS} **Статус**\n\n"
+        f"ID: `{message.from_user.id}`\n"
+        f"Роль: {'админ' if user.is_admin else 'пользователь'}\n"
+        f"Триал: {user.trial_remaining} запрос(ов)\n"
+        f"Подписка: {sub_text}",
+        parse_mode=ParseMode.MARKDOWN_V2,
+    )
+
+async def pre_checkout(pre: PreCheckoutQuery):
+    await pre.answer(ok=True)
+
+async def on_successful_payment(message: Message):
+    try:
+        sp = message.successful_payment
+        if sp is None:
+            return
+        method = 'rub' if sp.currency.upper() == 'RUB' else ('xtr' if sp.currency.upper() == 'XTR' else sp.currency)
+        if db is not None:
+            # Запись транзакции и продление подписки
+            await db.record_transaction(
+                user_id=message.from_user.id,
+                provider=f"telegram_{method}",
+                currency=sp.currency,
+                amount=sp.total_amount,
+                payload=sp.invoice_payload or "",
+                status="success",
+                telegram_payment_charge_id=sp.telegram_payment_charge_id,
+                provider_payment_charge_id=sp.provider_payment_charge_id,
+            )
+            await db.extend_subscription_days(message.from_user.id, SUB_DURATION_DAYS)
+            user = await db.get_user(message.from_user.id)
+            until_text = ""
+            if user and user.subscription_until:
+                until_text = datetime.fromtimestamp(user.subscription_until).strftime("%Y-%m-%d")
+        else:
+            until_text = ""
+        await message.answer(
+            f"{Emoji.SUCCESS} Оплата получена\\! Подписка активирована на {SUB_DURATION_DAYS} дней.\nДо: {until_text}",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+    except Exception:
+        logger.exception("Failed to handle successful payment")
+
 # ============ ОБРАБОТКА ОШИБОК ============
 
 async def error_handler(event: ErrorEvent):
@@ -286,14 +482,25 @@ async def main():
     # Создаем бота и диспетчер
     bot = Bot(BOT_TOKEN, session=session)
     dp = Dispatcher()
+
+    # Инициализация базы данных
+    global db
+    db = Database(DB_PATH)
+    await db.init()
     
-    # Устанавливаем ТОЛЬКО команду /start
+    # Устанавливаем команды
     await bot.set_my_commands([
         BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
+        BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
+        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
     ])
     
     # Регистрируем обработчики
     dp.message.register(cmd_start, Command("start"))
+    dp.message.register(cmd_buy, Command("buy"))
+    dp.message.register(cmd_status, Command("status"))
+    dp.message.register(on_successful_payment, F.successful_payment)
+    dp.pre_checkout_query.register(pre_checkout)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
     
     # Глобальный обработчик ошибок
