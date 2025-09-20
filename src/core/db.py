@@ -88,6 +88,25 @@ class Database:
         except Exception:
             pass
 
+        # Таблица для сохранения оценок ответов
+        await self._exec(
+            """
+            CREATE TABLE IF NOT EXISTS ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                rating INTEGER NOT NULL,
+                feedback_text TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(request_id, user_id)
+            );
+            """
+        )
+
+        await self._exec(
+            "CREATE INDEX IF NOT EXISTS idx_ratings_request ON ratings(request_id, created_at);"
+        )
+
     # ---------------- Internal helpers ----------------
 
     async def _exec(self, query: str, params: tuple[Any, ...] = ()) -> None:
@@ -189,6 +208,35 @@ class Database:
     async def transaction_exists_by_telegram_charge_id(self, charge_id: str) -> bool:
         row = await self._fetchone("SELECT 1 FROM transactions WHERE telegram_payment_charge_id = ?", (charge_id,))
         return bool(row)
+
+    # ---------------- Ratings ----------------
+
+    async def add_rating(
+        self,
+        request_id: int,
+        user_id: int,
+        rating: int,
+        feedback_text: Optional[str] = None,
+    ) -> bool:
+        """Store or update a rating for a specific response.
+
+        A simple implementation that mirrors the advanced database behaviour so that
+        кнопки оценки работают и в облегчённой конфигурации. Используем
+        ``INSERT OR REPLACE`` для обновления существующей оценки пользователя.
+        """
+
+        now = _now_ts()
+        try:
+            await self._exec(
+                """
+                INSERT OR REPLACE INTO ratings (request_id, user_id, rating, feedback_text, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (request_id, user_id, rating, feedback_text, now),
+            )
+            return True
+        except Exception:
+            return False
 
     # ---------------- Lifecycle ----------------
 
