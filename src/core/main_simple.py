@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
+from html import escape as html_escape
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
@@ -227,9 +228,9 @@ async def process_question(message: Message):
                     trial_after = int(user_after.trial_remaining) if user_after else max(0, trial_before - 1)
                     used = max(0, TRIAL_REQUESTS - trial_after)
                     quota_is_trial = True
-                    # Экранируем текст под MarkdownV2 и оборачиваем в жирный
-                    quota_msg_core = escape_markdown_v2(f"Бесплатные запросы: {used}/{TRIAL_REQUESTS}. Осталось: {trial_after}")
-                    quota_msg_to_send = f"{Emoji.STATS} *{quota_msg_core}*"
+                    # Используем HTML-разметку для надежного выделения жирным
+                    quota_msg_core = html_escape(f"Бесплатные запросы: {used}/{TRIAL_REQUESTS}. Осталось: {trial_after}")
+                    quota_msg_to_send = f"{Emoji.STATS} <b>{quota_msg_core}</b>"
                 else:
                     await message.answer(
                         f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
@@ -326,7 +327,7 @@ async def process_question(message: Message):
         # После ответа отправляем отдельное сообщение с квотой триала
         if quota_msg_to_send:
             try:
-                await message.answer(quota_msg_to_send, parse_mode=ParseMode.MARKDOWN_V2)
+                await message.answer(quota_msg_to_send, parse_mode=ParseMode.HTML)
             except Exception:
                 # Резерв без разметки
                 await message.answer(quota_msg_to_send)
