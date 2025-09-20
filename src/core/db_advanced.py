@@ -27,6 +27,10 @@ class UserRecord:
     subscription_until: int
     created_at: int
     updated_at: int
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    last_request_at: int = 0
 
 @dataclass
 class TransactionRecord:
@@ -42,6 +46,17 @@ class TransactionRecord:
     provider_payment_charge_id: Optional[str]
     created_at: int
     updated_at: int
+
+@dataclass
+class RequestRecord:
+    id: int
+    user_id: int
+    request_type: str  # 'legal_question', 'command', etc.
+    tokens_used: int
+    response_time_ms: int
+    success: bool
+    error_type: Optional[str]
+    created_at: int
 
 class ConnectionPool:
     """Пул соединений для SQLite с контролем жизненного цикла"""
@@ -281,7 +296,11 @@ class DatabaseAdvanced:
                     trial_remaining INTEGER NOT NULL DEFAULT 10,
                     subscription_until INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
+                    updated_at INTEGER NOT NULL,
+                    total_requests INTEGER NOT NULL DEFAULT 0,
+                    successful_requests INTEGER NOT NULL DEFAULT 0,
+                    failed_requests INTEGER NOT NULL DEFAULT 0,
+                    last_request_at INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
@@ -306,18 +325,63 @@ class DatabaseAdvanced:
                 """
             )
             
-            # Создание оптимизированных индексов
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    request_type TEXT NOT NULL DEFAULT 'legal_question',
+                    tokens_used INTEGER NOT NULL DEFAULT 0,
+                    response_time_ms INTEGER NOT NULL DEFAULT 0,
+                    success BOOLEAN NOT NULL DEFAULT 1,
+                    error_type TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+                """
+            )
+            
+            # Миграции для существующих БД - СНАЧАЛА!
+            try:
+                # Добавляем новые поля в таблицу users, если их нет
+                migrations = [
+                    "ALTER TABLE users ADD COLUMN total_requests INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN successful_requests INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN failed_requests INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN last_request_at INTEGER NOT NULL DEFAULT 0;",
+                ]
+                
+                for migration in migrations:
+                    try:
+                        await conn.execute(migration)
+                        logger.info(f"Applied migration: {migration}")
+                    except Exception:
+                        # Колонка уже существует, игнорируем
+                        pass
+                        
+                await conn.commit()
+            except Exception as e:
+                logger.warning(f"Migration warning: {e}")
+            
+            # Создание оптимизированных индексов - ПОСЛЕ миграций!
             indexes = [
                 "CREATE INDEX IF NOT EXISTS idx_users_admin ON users(is_admin) WHERE is_admin = 1;",
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_until) WHERE subscription_until > 0;",
+                "CREATE INDEX IF NOT EXISTS idx_users_requests ON users(total_requests);",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);",
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_tg_charge ON transactions(telegram_payment_charge_id) WHERE telegram_payment_charge_id IS NOT NULL;",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_provider ON transactions(provider);",
+                "CREATE INDEX IF NOT EXISTS idx_requests_user_created ON requests(user_id, created_at);",
+                "CREATE INDEX IF NOT EXISTS idx_requests_type ON requests(request_type);",
+                "CREATE INDEX IF NOT EXISTS idx_requests_success ON requests(success);",
             ]
             
             for index_sql in indexes:
-                await conn.execute(index_sql)
+                try:
+                    await conn.execute(index_sql)
+                except Exception as e:
+                    logger.warning(f"Failed to create index: {index_sql} - {e}")
             
             await conn.commit()
         
@@ -356,8 +420,9 @@ class DatabaseAdvanced:
                 await conn.execute(
                     """
                     INSERT OR IGNORE INTO users 
-                    (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at)
-                    VALUES (?, ?, ?, 0, ?, ?)
+                    (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                     total_requests, successful_requests, failed_requests, last_request_at)
+                    VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0)
                     """,
                     (user_id, 1 if is_admin else 0, default_trial, now, now)
                 )
@@ -371,7 +436,9 @@ class DatabaseAdvanced:
                 
                 # Получаем итоговую запись
                 cursor = await conn.execute(
-                    "SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at FROM users WHERE user_id = ?",
+                    """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                       total_requests, successful_requests, failed_requests, last_request_at 
+                       FROM users WHERE user_id = ?""",
                     (user_id,)
                 )
                 row = await cursor.fetchone()
@@ -392,7 +459,9 @@ class DatabaseAdvanced:
         async with self.pool.acquire() as conn:
             try:
                 cursor = await conn.execute(
-                    "SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at FROM users WHERE user_id = ?",
+                    """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                       total_requests, successful_requests, failed_requests, last_request_at 
+                       FROM users WHERE user_id = ?""",
                     (user_id,)
                 )
                 row = await cursor.fetchone()
@@ -539,6 +608,126 @@ class DatabaseAdvanced:
             except Exception as e:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in transaction_exists_by_telegram_charge_id: {str(e)}")
+    
+    # ============ Методы для работы со статистикой запросов ============
+    
+    async def record_request(
+        self,
+        user_id: int,
+        request_type: str = 'legal_question',
+        tokens_used: int = 0,
+        response_time_ms: int = 0,
+        success: bool = True,
+        error_type: Optional[str] = None
+    ) -> None:
+        """Запись запроса пользователя в статистику"""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                
+                # Записываем детальную статистику запроса
+                await conn.execute(
+                    """INSERT INTO requests 
+                       (user_id, request_type, tokens_used, response_time_ms, success, error_type, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, request_type, tokens_used, response_time_ms, success, error_type, now)
+                )
+                
+                # Обновляем счетчики в таблице пользователей
+                if success:
+                    await conn.execute(
+                        """UPDATE users SET 
+                           total_requests = total_requests + 1,
+                           successful_requests = successful_requests + 1,
+                           last_request_at = ?,
+                           updated_at = ?
+                           WHERE user_id = ?""",
+                        (now, now, user_id)
+                    )
+                else:
+                    await conn.execute(
+                        """UPDATE users SET 
+                           total_requests = total_requests + 1,
+                           failed_requests = failed_requests + 1,
+                           last_request_at = ?,
+                           updated_at = ?
+                           WHERE user_id = ?""",
+                        (now, now, user_id)
+                    )
+                
+                self.query_count += 2 if self.enable_metrics else 0
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in record_request: {str(e)}")
+    
+    async def get_user_statistics(self, user_id: int, days: int = 30) -> Dict[str, Any]:
+        """Получение статистики пользователя за определенный период"""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                period_start = now - (days * 86400)  # days в секундах
+                
+                # Общая статистика пользователя
+                user_cursor = await conn.execute(
+                    """SELECT total_requests, successful_requests, failed_requests, last_request_at,
+                       trial_remaining, subscription_until, is_admin 
+                       FROM users WHERE user_id = ?""",
+                    (user_id,)
+                )
+                user_row = await user_cursor.fetchone()
+                await user_cursor.close()
+                
+                if not user_row:
+                    return {"error": "User not found"}
+                
+                # Статистика за период
+                period_cursor = await conn.execute(
+                    """SELECT 
+                       COUNT(*) as period_requests,
+                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as period_successful,
+                       SUM(tokens_used) as period_tokens,
+                       AVG(response_time_ms) as avg_response_time
+                       FROM requests 
+                       WHERE user_id = ? AND created_at >= ?""",
+                    (user_id, period_start)
+                )
+                period_row = await period_cursor.fetchone()
+                await period_cursor.close()
+                
+                # Статистика по типам запросов за период
+                types_cursor = await conn.execute(
+                    """SELECT request_type, COUNT(*) as count
+                       FROM requests 
+                       WHERE user_id = ? AND created_at >= ?
+                       GROUP BY request_type""",
+                    (user_id, period_start)
+                )
+                types_rows = await types_cursor.fetchall()
+                await types_cursor.close()
+                
+                self.query_count += 3 if self.enable_metrics else 0
+                
+                return {
+                    "user_id": user_id,
+                    "total_requests": user_row[0],
+                    "successful_requests": user_row[1],
+                    "failed_requests": user_row[2],
+                    "last_request_at": user_row[3],
+                    "trial_remaining": user_row[4],
+                    "subscription_until": user_row[5],
+                    "is_admin": bool(user_row[6]),
+                    "period_days": days,
+                    "period_requests": period_row[0] if period_row else 0,
+                    "period_successful": period_row[1] if period_row else 0,
+                    "period_tokens": period_row[2] if period_row else 0,
+                    "avg_response_time_ms": round(period_row[3]) if period_row and period_row[3] else 0,
+                    "request_types": {row[0]: row[1] for row in types_rows} if types_rows else {}
+                }
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in get_user_statistics: {str(e)}")
     
     async def get_stats(self) -> Dict[str, Any]:
         """Получение статистики базы данных"""

@@ -7,8 +7,12 @@ from __future__ import annotations
 import asyncio
 import os
 import logging
+import time
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.db_advanced import DatabaseAdvanced
 from html import escape as html_escape
 
 from dotenv import load_dotenv
@@ -74,7 +78,7 @@ DYNAMIC_PRICE_XTR = convert_rub_to_xtr(
 ADMIN_IDS = set(config.admin_ids)
 
 # Глобальная БД/лимитер
-db: Optional[Database] = None
+db: Optional[Union[Database, DatabaseAdvanced]] = None
 rate_limiter: Optional[RateLimiter] = None
 access_service: Optional[AccessService] = None
 openai_service: Optional[OpenAIService] = None
@@ -223,14 +227,14 @@ async def process_question(message: Message):
         error_msg = "\n• ".join(validation_result.errors)
         if validation_result.severity == ValidationSeverity.CRITICAL:
             await message.answer(
-                f"{Emoji.ERROR} **Критическая ошибка валидации**\n\n• {error_msg}\n\n_Обратитесь к администратору_",
-                parse_mode=ParseMode.MARKDOWN_V2
+                f"{Emoji.ERROR} <b>Критическая ошибка валидации</b>\n\n• {error_msg}\n\n<i>Обратитесь к администратору</i>",
+                parse_mode=ParseMode.HTML
             )
             return
         else:
             await message.answer(
-                f"{Emoji.WARNING} **Ошибка в запросе**\n\n• {error_msg}",
-                parse_mode=ParseMode.MARKDOWN_V2
+                f"{Emoji.WARNING} <b>Ошибка в запросе</b>\n\n• {error_msg}",
+                parse_mode=ParseMode.HTML
             )
             return
     
@@ -244,8 +248,8 @@ async def process_question(message: Message):
     
     if not question_text:
         await message.answer(
-            f"{Emoji.WARNING} **Пустой запрос**\n\nПожалуйста, отправьте текст юридического вопроса\\.",
-            parse_mode=ParseMode.MARKDOWN_V2
+            f"{Emoji.WARNING} <b>Пустой запрос</b>\n\nПожалуйста, отправьте текст юридического вопроса.",
+            parse_mode=ParseMode.HTML
         )
         return
 
@@ -261,8 +265,8 @@ async def process_question(message: Message):
             allowed = await rate_limiter.allow(user_id)
             if not allowed:
                 await message.answer(
-                    f"{Emoji.WARNING} **Слишком много запросов**\n\nПопробуйте позже.",
-                    parse_mode=ParseMode.MARKDOWN_V2,
+                    f"{Emoji.WARNING} <b>Слишком много запросов</b>\n\nПопробуйте позже.",
+                    parse_mode=ParseMode.HTML,
                 )
                 return
         # Индикатор печатания во время обработки
@@ -274,8 +278,8 @@ async def process_question(message: Message):
             decision = await access_service.check_and_consume(user_id)
             if not decision.allowed:
                 await message.answer(
-                    f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
-                    parse_mode=ParseMode.MARKDOWN_V2,
+                    f"{Emoji.WARNING} <b>Лимит бесплатных запросов исчерпан</b>\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
+                    parse_mode=ParseMode.HTML,
                 )
                 return
             if decision.is_admin:
@@ -312,9 +316,14 @@ async def process_question(message: Message):
                 if openai_service is None:
                     raise SystemException("OpenAI service not initialized", error_context)
                 
+                request_start_time = time.time()
                 try:
                     result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+                    request_success = True
+                    request_error_type = None
                 except Exception as e:
+                    request_success = False
+                    request_error_type = type(e).__name__
                     # Специфичная обработка ошибок OpenAI
                     if "rate limit" in str(e).lower() or "quota" in str(e).lower():
                         raise OpenAIException(str(e), error_context, is_quota_error=True)
@@ -343,28 +352,26 @@ async def process_question(message: Message):
             logger.error("OpenAI error for user %s: %s", user_id, error_text)
             
             await message.answer(
-                f"""{Emoji.ERROR} **Произошла ошибка**
+                f"""{Emoji.ERROR} <b>Произошла ошибка</b>
 
-Не удалось получить ответ\\. Попробуйте ещё раз чуть позже\\.
+Не удалось получить ответ. Попробуйте ещё раз чуть позже.
 
-{Emoji.HELP} *Подсказка*: Проверьте формулировку вопроса
+{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса
 
-`{error_text[:100]}`""",
-                parse_mode=ParseMode.MARKDOWN_V2
+<code>{error_text[:100]}</code>""",
+                parse_mode=ParseMode.HTML
             )
             return
         
-        # Форматируем ответ
-        # Сначала экранируем текст модели для MarkdownV2, затем добавляем служебные части
-        safe_model_text = escape_markdown_v2(result["text"])
-        response_text = safe_model_text
+        # Форматируем ответ для HTML
+        response_text = result["text"]
         
         # Добавляем footer с напоминанием
-        footer = f"\n\n{Emoji.WARNING} _Данная информация носит консультационный характер и требует проверки практикующим юристом\\._"
+        footer = f"\n\n{Emoji.WARNING} <i>Данная информация носит консультационный характер и требует проверки практикующим юристом.</i>"
         response_text += footer
         
         # Добавляем информацию о времени ответа
-        time_info = f"\n\n{Emoji.CLOCK} _Время ответа: {timer.get_duration_text()}_"
+        time_info = f"\n\n{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
         response_text += time_info
         
         # Добавляем информацию о квоте/подписке (кроме случая триала — его отправим отдельным сообщением)
@@ -375,15 +382,11 @@ async def process_question(message: Message):
         
         for i, chunk in enumerate(chunks):
             try:
-                await message.answer(chunk, parse_mode=ParseMode.MARKDOWN_V2)
+                await message.answer(chunk, parse_mode=ParseMode.HTML)
             except Exception as e:
-                logger.warning("Failed to send with markdown, retrying with escaped text: %s", e)
-                try:
-                    await message.answer(escape_markdown_v2(chunk), parse_mode=ParseMode.MARKDOWN_V2)
-                except Exception as e2:
-                    logger.warning("Second markdown attempt failed: %s", e2)
-                    # Последний резерв: отправляем без разметки
-                    await message.answer(chunk)
+                logger.warning("Failed to send with HTML, retrying without formatting: %s", e)
+                # Резерв: отправляем без разметки
+                await message.answer(chunk)
             
             # Небольшая задержка между сообщениями
             if i < len(chunks) - 1:
@@ -400,6 +403,21 @@ async def process_question(message: Message):
         # Обновляем статистику
         user_session.add_question_stats(timer.duration)
         
+        # Записываем статистику в базу данных (если это продвинутая версия БД)
+        if hasattr(db, 'record_request') and 'request_start_time' in locals():
+            try:
+                request_time_ms = int((time.time() - request_start_time) * 1000)
+                await db.record_request(
+                    user_id=user_id,
+                    request_type='legal_question',
+                    tokens_used=0,  # Пока не подсчитываем токены
+                    response_time_ms=request_time_ms,
+                    success=result.get("ok", False),
+                    error_type=None if result.get("ok", False) else "openai_error"
+                )
+            except Exception as db_error:
+                logger.warning("Failed to record request statistics: %s", db_error)
+        
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         
     except Exception as e:
@@ -415,6 +433,22 @@ async def process_question(message: Message):
         else:
             logger.exception("Error processing question for user %s (no error handler)", user_id)
             user_message = "Произошла ошибка. Попробуйте позже."
+        
+        # Записываем статистику неудачного запроса (если это продвинутая версия БД)
+        if hasattr(db, 'record_request'):
+            try:
+                request_time_ms = int((time.time() - request_start_time) * 1000) if 'request_start_time' in locals() else 0
+                error_type = request_error_type if 'request_error_type' in locals() else type(e).__name__
+                await db.record_request(
+                    user_id=user_id,
+                    request_type='legal_question',
+                    tokens_used=0,
+                    response_time_ms=request_time_ms,
+                    success=False,
+                    error_type=str(error_type)
+                )
+            except Exception as db_error:
+                logger.warning("Failed to record failed request statistics: %s", db_error)
         
         # Очищаем статус в случае ошибки
         try:
@@ -546,14 +580,82 @@ async def cmd_status(message: Message):
         sub_text = f"Активна до {until_dt:%Y-%m-%d} (≈{left_days} дн.)"
     else:
         sub_text = "Не активна"
+    
+    # Используем HTML для простоты
     await message.answer(
-        f"{Emoji.STATS} **Статус**\n\n"
-        f"ID: `{message.from_user.id}`\n"
+        f"{Emoji.STATS} <b>Статус</b>\n\n"
+        f"ID: <code>{message.from_user.id}</code>\n"
         f"Роль: {'админ' if user.is_admin else 'пользователь'}\n"
         f"Триал: {user.trial_remaining} запрос(ов)\n"
         f"Подписка: {sub_text}",
-        parse_mode=ParseMode.MARKDOWN_V2,
+        parse_mode=ParseMode.HTML,
     )
+
+async def cmd_mystats(message: Message):
+    """Показать детальную статистику пользователя"""
+    if db is None:
+        await message.answer("Статистика временно недоступна")
+        return
+    
+    try:
+        user_id = message.from_user.id
+        user = await db.ensure_user(user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS)
+        
+        # Получаем детальную статистику
+        stats = await db.get_user_statistics(user_id, days=30)
+        
+        # Форматируем даты
+        def format_timestamp(ts):
+            if not ts or ts == 0:
+                return "Никогда"
+            return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+        
+        def format_subscription_status(until_ts):
+            if not until_ts or until_ts == 0:
+                return "❌ Не активна"
+            
+            until_dt = datetime.fromtimestamp(until_ts)
+            if until_dt < datetime.now():
+                return "❌ Истекла"
+            
+            days_left = (until_dt - datetime.now()).days
+            return f"✅ До {until_dt.strftime('%d.%m.%Y')} ({days_left} дн.)"
+        
+        # Формируем сообщение с HTML разметкой (проще, чем экранирование символов в MarkdownV2)
+        status_text = f"""📊 <b>Моя статистика</b>
+
+👤 <b>Профиль</b>
+• ID: <code>{user_id}</code>
+• Статус: {'👑 Администратор' if stats['is_admin'] else '👤 Пользователь'}
+• Регистрация: {format_timestamp(user.created_at)}
+
+💰 <b>Баланс и доступ</b>
+• Пробные запросы: {stats['trial_remaining']} из {TRIAL_REQUESTS}
+• Подписка: {format_subscription_status(stats['subscription_until'])}
+
+📈 <b>Общая статистика</b>
+• Всего запросов: {stats['total_requests']}
+• Успешных: {stats['successful_requests']} ✅
+• Неудачных: {stats['failed_requests']} ❌
+• Последний запрос: {format_timestamp(stats['last_request_at'])}
+
+📅 <b>За последние 30 дней</b>
+• Запросов: {stats['period_requests']}
+• Успешных: {stats['period_successful']}
+• Потрачено токенов: {stats['period_tokens']}
+• Среднее время ответа: {stats['avg_response_time_ms']} мс"""
+
+        if stats['request_types']:
+            status_text += f"\n\n📊 <b>Типы запросов (30 дней)</b>\n"
+            for req_type, count in stats['request_types'].items():
+                emoji = "⚖️" if req_type == "legal_question" else "🤖"
+                status_text += f"• {emoji} {req_type}: {count}\n"
+
+        await message.answer(status_text, parse_mode=ParseMode.HTML)
+        
+    except Exception as e:
+        logger.error(f"Error in cmd_mystats: {e}")
+        await message.answer("❌ Ошибка получения статистики. Попробуйте позже.")
 
 async def pre_checkout(pre: PreCheckoutQuery):
     try:
@@ -692,6 +794,9 @@ async def main():
     set_system_status("starting")
     
     logger.info("🚀 Starting advanced AI-Ivan with full feature set")
+    
+    # Инициализация глобальных переменных
+    global db, openai_service, rate_limiter, access_service, session_store, crypto_provider, error_handler
     
     # Выбираем тип базы данных
     use_advanced_db = os.getenv("USE_ADVANCED_DB", "1") == "1"
@@ -873,12 +978,14 @@ async def main():
         BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
         BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
         BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
+        BotCommand(command="mystats", description=f"📊 Моя статистика"),
     ])
     
     # Регистрируем обработчики
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_buy, Command("buy"))
     dp.message.register(cmd_status, Command("status"))
+    dp.message.register(cmd_mystats, Command("mystats"))
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))

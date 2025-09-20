@@ -60,7 +60,7 @@ class InputValidator:
     SQL_INJECTION_PATTERNS = [
         r'(?i)\b(union|select|insert|update|delete|drop|create|alter|exec|execute)\b',
         r'(?i)[\'"]\s*;\s*--',
-        r'(?i)[\'"]\s*or\s+[\'"]\w*[\'"]\s*=\s*[\'"]\w*[\'"',
+        r'(?i)[\'"]\s*or\s+[\'"]\w*[\'"]\s*=\s*[\'"]\w*[\'"]',
         r'(?i)[\'"]\s*or\s+\d+\s*=\s*\d+',
         r'(?i)[\'"]\s*;\s*(drop|delete|truncate)',
     ]
