@@ -227,7 +227,9 @@ async def process_question(message: Message):
                     trial_after = int(user_after.trial_remaining) if user_after else max(0, trial_before - 1)
                     used = max(0, TRIAL_REQUESTS - trial_after)
                     quota_is_trial = True
-                    quota_msg_to_send = f"{Emoji.STATS} **Бесплатные запросы: {used}/{TRIAL_REQUESTS}. Осталось: {trial_after}**"
+                    # Экранируем текст под MarkdownV2 и оборачиваем в жирный
+                    quota_msg_core = escape_markdown_v2(f"Бесплатные запросы: {used}/{TRIAL_REQUESTS}. Осталось: {trial_after}")
+                    quota_msg_to_send = f"{Emoji.STATS} *{quota_msg_core}*"
                 else:
                     await message.answer(
                         f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
