@@ -273,7 +273,7 @@ class ErrorHandler:
         log_data = {
             "error_type": custom_exc.error_type.value,
             "severity": custom_exc.severity.value,
-            "message": custom_exc.message,
+            "error_message": custom_exc.message,
             "user_message": custom_exc.user_message,
             "recoverable": custom_exc.recoverable,
             "timestamp": custom_exc.timestamp.isoformat(),

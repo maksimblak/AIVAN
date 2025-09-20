@@ -58,6 +58,15 @@ class RequestRecord:
     error_type: Optional[str]
     created_at: int
 
+@dataclass
+class RatingRecord:
+    id: int
+    request_id: int
+    user_id: int
+    rating: int  # 1 = like, -1 = dislike
+    feedback_text: Optional[str]
+    created_at: int
+
 class ConnectionPool:
     """Пул соединений для SQLite с контролем жизненного цикла"""
     
@@ -341,6 +350,21 @@ class DatabaseAdvanced:
                 """
             )
             
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ratings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    rating INTEGER NOT NULL, -- 1 = like, -1 = dislike
+                    feedback_text TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+                """
+            )
+            
             # Миграции для существующих БД - СНАЧАЛА!
             try:
                 # Добавляем новые поля в таблицу users, если их нет
@@ -375,6 +399,9 @@ class DatabaseAdvanced:
                 "CREATE INDEX IF NOT EXISTS idx_requests_user_created ON requests(user_id, created_at);",
                 "CREATE INDEX IF NOT EXISTS idx_requests_type ON requests(request_type);",
                 "CREATE INDEX IF NOT EXISTS idx_requests_success ON requests(success);",
+                "CREATE INDEX IF NOT EXISTS idx_ratings_request ON ratings(request_id);",
+                "CREATE INDEX IF NOT EXISTS idx_ratings_user ON ratings(user_id);",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ratings_user_request ON ratings(user_id, request_id);",
             ]
             
             for index_sql in indexes:
@@ -619,19 +646,21 @@ class DatabaseAdvanced:
         response_time_ms: int = 0,
         success: bool = True,
         error_type: Optional[str] = None
-    ) -> None:
-        """Запись запроса пользователя в статистику"""
+    ) -> int:
+        """Запись запроса пользователя в статистику. Возвращает ID записи."""
         async with self.pool.acquire() as conn:
             try:
                 now = int(time.time())
                 
                 # Записываем детальную статистику запроса
-                await conn.execute(
+                cursor = await conn.execute(
                     """INSERT INTO requests 
                        (user_id, request_type, tokens_used, response_time_ms, success, error_type, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (user_id, request_type, tokens_used, response_time_ms, success, error_type, now)
                 )
+                
+                request_id = cursor.lastrowid
                 
                 # Обновляем счетчики в таблице пользователей
                 if success:
@@ -656,6 +685,7 @@ class DatabaseAdvanced:
                     )
                 
                 self.query_count += 2 if self.enable_metrics else 0
+                return request_id
                 
             except Exception as e:
                 self.error_count += 1 if self.enable_metrics else 0
@@ -728,6 +758,175 @@ class DatabaseAdvanced:
             except Exception as e:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in get_user_statistics: {str(e)}")
+    
+    # ============ Методы для работы с рейтингами ============
+    
+    async def add_rating(
+        self,
+        request_id: int,
+        user_id: int,
+        rating: int,  # 1 = like, -1 = dislike
+        feedback_text: Optional[str] = None
+    ) -> bool:
+        """Добавление/обновление рейтинга для запроса"""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                
+                # Используем INSERT OR REPLACE для обновления существующего рейтинга
+                await conn.execute(
+                    """INSERT OR REPLACE INTO ratings 
+                       (request_id, user_id, rating, feedback_text, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (request_id, user_id, rating, feedback_text, now)
+                )
+                
+                self.query_count += 1 if self.enable_metrics else 0
+                return True
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in add_rating: {e}")
+                return False
+    
+    async def get_rating(self, request_id: int, user_id: int) -> Optional[RatingRecord]:
+        """Получение рейтинга пользователя для конкретного запроса"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT id, request_id, user_id, rating, feedback_text, created_at 
+                       FROM ratings WHERE request_id = ? AND user_id = ?""",
+                    (request_id, user_id)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                
+                self.query_count += 1 if self.enable_metrics else 0
+                return RatingRecord(*row) if row else None
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_rating: {e}")
+                return None
+    
+    async def get_request_ratings_summary(self, request_id: int) -> Dict[str, Any]:
+        """Получение суммарной статистики рейтингов для запроса"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT 
+                       COUNT(*) as total_ratings,
+                       SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as likes,
+                       SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as dislikes,
+                       AVG(rating) as avg_rating
+                       FROM ratings WHERE request_id = ?""",
+                    (request_id,)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                
+                self.query_count += 1 if self.enable_metrics else 0
+                
+                if row:
+                    return {
+                        "total_ratings": row[0],
+                        "likes": row[1] or 0,
+                        "dislikes": row[2] or 0,
+                        "avg_rating": row[3] or 0.0
+                    }
+                return {"total_ratings": 0, "likes": 0, "dislikes": 0, "avg_rating": 0.0}
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_request_ratings_summary: {e}")
+                return {"total_ratings": 0, "likes": 0, "dislikes": 0, "avg_rating": 0.0}
+    
+    async def get_ratings_statistics(self, days: int = 30) -> Dict[str, Any]:
+        """Получение общей статистики рейтингов за период"""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                period_start = now - (days * 86400)
+                
+                cursor = await conn.execute(
+                    """SELECT 
+                       COUNT(*) as total_ratings,
+                       SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as total_likes,
+                       SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as total_dislikes,
+                       AVG(rating) as avg_rating,
+                       COUNT(CASE WHEN feedback_text IS NOT NULL THEN 1 END) as feedback_count
+                       FROM ratings WHERE created_at >= ?""",
+                    (period_start,)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                
+                self.query_count += 1 if self.enable_metrics else 0
+                
+                if row:
+                    return {
+                        "period_days": days,
+                        "total_ratings": row[0] or 0,
+                        "total_likes": row[1] or 0,
+                        "total_dislikes": row[2] or 0,
+                        "avg_rating": row[3] or 0.0,
+                        "feedback_count": row[4] or 0,
+                        "like_rate": (row[1] or 0) / max(row[0] or 1, 1) * 100
+                    }
+                return {
+                    "period_days": days,
+                    "total_ratings": 0,
+                    "total_likes": 0,
+                    "total_dislikes": 0,
+                    "avg_rating": 0.0,
+                    "feedback_count": 0,
+                    "like_rate": 0.0
+                }
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_ratings_statistics: {e}")
+                return {}
+    
+    async def get_low_rated_requests(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Получение запросов с низкими рейтингами для анализа"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT 
+                       r.id, r.user_id, r.request_type, r.created_at,
+                       AVG(rt.rating) as avg_rating,
+                       COUNT(rt.rating) as rating_count
+                       FROM requests r 
+                       JOIN ratings rt ON r.id = rt.request_id
+                       WHERE r.success = 1
+                       GROUP BY r.id
+                       HAVING avg_rating < 0
+                       ORDER BY avg_rating ASC, rating_count DESC
+                       LIMIT ?""",
+                    (limit,)
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                
+                self.query_count += 1 if self.enable_metrics else 0
+                
+                return [
+                    {
+                        "request_id": row[0],
+                        "user_id": row[1],
+                        "request_type": row[2],
+                        "created_at": row[3],
+                        "avg_rating": row[4],
+                        "rating_count": row[5]
+                    }
+                    for row in rows
+                ]
+                
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_low_rated_requests: {e}")
+                return []
     
     async def get_stats(self) -> Dict[str, Any]:
         """Получение статистики базы данных"""

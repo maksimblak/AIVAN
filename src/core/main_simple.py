@@ -18,7 +18,7 @@ from html import escape as html_escape
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.types import Message, BotCommand, ErrorEvent, LabeledPrice, PreCheckoutQuery
+from aiogram.types import Message, BotCommand, ErrorEvent, LabeledPrice, PreCheckoutQuery, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
 
@@ -100,6 +100,8 @@ class UserSession:
         self.total_response_time = 0.0
         self.last_question_time: Optional[datetime] = None
         self.created_at = datetime.now()
+        # Для системы рейтинга
+        self.pending_feedback_request_id: Optional[int] = None
         
     def add_question_stats(self, response_time: float):
         """Добавить статистику вопроса"""
@@ -211,6 +213,15 @@ async def process_question(message: Message):
     user_session = get_user_session(user_id)
     question_text = (message.text or "").strip()
     quota_msg_to_send: Optional[str] = None
+    
+    # Проверяем, не ждем ли мы комментарий для рейтинга
+    # Добавляем атрибут для старых сессий, если его нет
+    if not hasattr(user_session, 'pending_feedback_request_id'):
+        user_session.pending_feedback_request_id = None
+        
+    if user_session.pending_feedback_request_id is not None:
+        await handle_pending_feedback(message, user_session)
+        return
     quota_is_trial: bool = False
     
     # Проверяем, что это не команда
@@ -252,7 +263,7 @@ async def process_question(message: Message):
             parse_mode=ParseMode.HTML
         )
         return
-
+    
     # Запускаем таймер
     timer = ResponseTimer()
     timer.start()
@@ -404,10 +415,11 @@ async def process_question(message: Message):
         user_session.add_question_stats(timer.duration)
         
         # Записываем статистику в базу данных (если это продвинутая версия БД)
+        request_id = None
         if hasattr(db, 'record_request') and 'request_start_time' in locals():
             try:
                 request_time_ms = int((time.time() - request_start_time) * 1000)
-                await db.record_request(
+                request_id = await db.record_request(
                     user_id=user_id,
                     request_type='legal_question',
                     tokens_used=0,  # Пока не подсчитываем токены
@@ -417,6 +429,24 @@ async def process_question(message: Message):
                 )
             except Exception as db_error:
                 logger.warning("Failed to record request statistics: %s", db_error)
+        
+        # Отправляем кнопки для рейтинга (если есть request_id)
+        if request_id and result.get("ok", False):
+            rating_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="👍 Полезно", callback_data=f"rate_like_{request_id}"),
+                    InlineKeyboardButton(text="👎 Не помогло", callback_data=f"rate_dislike_{request_id}")
+                ]
+            ])
+            
+            try:
+                await message.answer(
+                    "💬 <b>Оцените качество ответа:</b>",
+                    reply_markup=rating_keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as rating_error:
+                logger.warning("Failed to send rating buttons: %s", rating_error)
         
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         
@@ -439,6 +469,7 @@ async def process_question(message: Message):
             try:
                 request_time_ms = int((time.time() - request_start_time) * 1000) if 'request_start_time' in locals() else 0
                 error_type = request_error_type if 'request_error_type' in locals() else type(e).__name__
+                # Для неудачных запросов request_id не нужен
                 await db.record_request(
                     user_id=user_id,
                     request_type='legal_question',
@@ -463,15 +494,13 @@ async def process_question(message: Message):
         # Отправляем пользователю понятное сообщение об ошибке
         try:
             await message.answer(
-                f"""{Emoji.ERROR} **Ошибка обработки запроса**
-
-{escape_markdown_v2(user_message)}
-
-{Emoji.HELP} *Рекомендации:*
-• Переформулируйте вопрос
-• Попробуйте через несколько минут
-• Обратитесь в поддержку если проблема повторяется""",
-                parse_mode=ParseMode.MARKDOWN_V2
+                f"❌ <b>Ошибка обработки запроса</b>\n\n"
+                f"{user_message}\n\n"
+                f"💡 <b>Рекомендации:</b>\n"
+                f"• Переформулируйте вопрос\n"
+                f"• Попробуйте через несколько минут\n"
+                f"• Обратитесь в поддержку если проблема повторяется",
+                parse_mode=ParseMode.HTML
             )
         except Exception as send_error:
             # Последний резерв - отправляем простое сообщение
@@ -657,6 +686,181 @@ async def cmd_mystats(message: Message):
         logger.error(f"Error in cmd_mystats: {e}")
         await message.answer("❌ Ошибка получения статистики. Попробуйте позже.")
 
+# ============ СИСТЕМА РЕЙТИНГА ============
+
+async def handle_pending_feedback(message: Message, user_session: UserSession):
+    """Обработка текстового комментария для рейтинга"""
+    if not message.text or not user_session.pending_feedback_request_id:
+        return
+    
+    request_id = user_session.pending_feedback_request_id
+    user_id = message.from_user.id
+    feedback_text = message.text.strip()
+    
+    # Очищаем pending состояние
+    user_session.pending_feedback_request_id = None
+    
+    try:
+        # Обновляем рейтинг с комментарием
+        if hasattr(db, 'add_rating'):
+            success = await db.add_rating(request_id, user_id, -1, feedback_text)
+            
+            if success:
+                await message.answer(
+                    "✅ <b>Спасибо за развернутый отзыв!</b>\n\n"
+                    "Ваш комментарий поможет нам улучшить качество ответов.",
+                    parse_mode=ParseMode.HTML
+                )
+                logger.info(f"Received feedback for request {request_id} from user {user_id}")
+            else:
+                await message.answer("❌ Ошибка сохранения комментария")
+        else:
+            await message.answer("❌ Система обратной связи недоступна")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_pending_feedback: {e}")
+        await message.answer("❌ Произошла ошибка при сохранении комментария")
+
+async def handle_rating_callback(callback: CallbackQuery):
+    """Обработчик нажатий на кнопки рейтинга"""
+    if not callback.data or not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+    
+    user_id = callback.from_user.id
+    
+    try:
+        # Парсим callback_data: "rate_like_123" или "rate_dislike_123"
+        parts = callback.data.split("_")
+        if len(parts) != 3:
+            await callback.answer("❌ Неверный формат данных")
+            return
+            
+        action = parts[1]  # "like" или "dislike"  
+        request_id = int(parts[2])
+        
+        rating_value = 1 if action == "like" else -1
+        
+        # Сохраняем рейтинг в БД
+        if hasattr(db, 'add_rating'):
+            success = await db.add_rating(request_id, user_id, rating_value)
+            
+            if success:
+                if action == "like":
+                    await callback.answer("✅ Спасибо за оценку! Рады, что ответ был полезен.")
+                    # Обновляем сообщение
+                    await callback.message.edit_text(
+                        "💬 <b>Спасибо за оценку!</b> ✅ Отмечено как полезное",
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await callback.answer("📝 Спасибо за обратную связь!")
+                    # Предлагаем оставить комментарий
+                    feedback_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📝 Написать комментарий", callback_data=f"feedback_{request_id}")],
+                        [InlineKeyboardButton(text="❌ Пропустить", callback_data=f"skip_feedback_{request_id}")]
+                    ])
+                    
+                    await callback.message.edit_text(
+                        "💬 <b>Что можно улучшить?</b>\n\n"
+                        "Ваша обратная связь поможет нам стать лучше:",
+                        reply_markup=feedback_keyboard,
+                        parse_mode=ParseMode.HTML
+                    )
+            else:
+                await callback.answer("❌ Ошибка сохранения оценки")
+        else:
+            await callback.answer("❌ Система рейтинга недоступна")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_rating_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+async def handle_feedback_callback(callback: CallbackQuery):
+    """Обработчик запроса обратной связи"""
+    if not callback.data or not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+    
+    try:
+        parts = callback.data.split("_")
+        if len(parts) < 2:
+            await callback.answer("❌ Неверный формат данных")
+            return
+            
+        action = parts[0]  # "feedback" или "skip"
+        request_id = int(parts[1])
+        
+        if action == "skip":
+            await callback.message.edit_text(
+                "💬 <b>Спасибо за оценку!</b> 👎 Отмечено для улучшения",
+                parse_mode=ParseMode.HTML
+            )
+            await callback.answer("✅ Спасибо за обратную связь!")
+        elif action == "feedback":
+            # Сохраняем состояние для получения текстового сообщения
+            user_session = get_user_session(callback.from_user.id)
+            # Добавляем атрибут для старых сессий, если его нет
+            if not hasattr(user_session, 'pending_feedback_request_id'):
+                user_session.pending_feedback_request_id = None
+            user_session.pending_feedback_request_id = request_id
+            
+            await callback.message.edit_text(
+                "💬 <b>Напишите ваш комментарий:</b>\n\n"
+                "<i>Что можно улучшить в ответе? Отправьте текстовое сообщение.</i>",
+                parse_mode=ParseMode.HTML
+            )
+            await callback.answer("✏️ Напишите комментарий следующим сообщением")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_feedback_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+async def cmd_ratings_stats(message: Message):
+    """Команда для просмотра статистики рейтингов (только для админов)"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Команда доступна только администраторам")
+        return
+    
+    if not hasattr(db, 'get_ratings_statistics'):
+        await message.answer("❌ Статистика рейтингов недоступна")
+        return
+    
+    try:
+        # Получаем статистику за разные периоды
+        stats_7d = await db.get_ratings_statistics(7)
+        stats_30d = await db.get_ratings_statistics(30)
+        
+        # Получаем плохо оцененные запросы
+        low_rated = await db.get_low_rated_requests(5)
+        
+        stats_text = f"""📊 <b>Статистика рейтингов</b>
+
+📅 <b>За 7 дней:</b>
+• Всего оценок: {stats_7d.get('total_ratings', 0)}
+• 👍 Лайков: {stats_7d.get('total_likes', 0)}
+• 👎 Дизлайков: {stats_7d.get('total_dislikes', 0)}
+• 📈 Рейтинг лайков: {stats_7d.get('like_rate', 0):.1f}%
+• 💬 С комментариями: {stats_7d.get('feedback_count', 0)}
+
+📅 <b>За 30 дней:</b>
+• Всего оценок: {stats_30d.get('total_ratings', 0)}
+• 👍 Лайков: {stats_30d.get('total_likes', 0)}
+• 👎 Дизлайков: {stats_30d.get('total_dislikes', 0)}
+• 📈 Рейтинг лайков: {stats_30d.get('like_rate', 0):.1f}%
+• 💬 С комментариями: {stats_30d.get('feedback_count', 0)}"""
+
+        if low_rated:
+            stats_text += f"\n\n⚠️ <b>Запросы для улучшения:</b>\n"
+            for req in low_rated[:3]:
+                stats_text += f"• ID {req['request_id']}: рейтинг {req['avg_rating']:.1f} ({req['rating_count']} оценок)\n"
+
+        await message.answer(stats_text, parse_mode=ParseMode.HTML)
+        
+    except Exception as e:
+        logger.error(f"Error in cmd_ratings_stats: {e}")
+        await message.answer("❌ Ошибка получения статистики рейтингов")
+
 async def pre_checkout(pre: PreCheckoutQuery):
     try:
         payload = pre.invoice_payload or ""
@@ -810,7 +1014,7 @@ async def main():
         )
     else:
         logger.info("Using legacy database")
-        db = Database(DB_PATH)
+    db = Database(DB_PATH)
     
     await db.init()
 
@@ -979,6 +1183,7 @@ async def main():
         BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
         BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
         BotCommand(command="mystats", description=f"📊 Моя статистика"),
+        BotCommand(command="ratings", description=f"📈 Статистика рейтингов (админ)"),
     ])
     
     # Регистрируем обработчики
@@ -986,6 +1191,12 @@ async def main():
     dp.message.register(cmd_buy, Command("buy"))
     dp.message.register(cmd_status, Command("status"))
     dp.message.register(cmd_mystats, Command("mystats"))
+    dp.message.register(cmd_ratings_stats, Command("ratings"))
+    
+    # Обработчики callback'ов для рейтинга
+    dp.callback_query.register(handle_rating_callback, F.data.startswith("rate_"))
+    dp.callback_query.register(handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_")))
+    
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
