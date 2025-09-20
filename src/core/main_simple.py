@@ -430,12 +430,16 @@ async def process_question(message: Message):
             except Exception as db_error:
                 logger.warning("Failed to record request statistics: %s", db_error)
         
-        # Отправляем кнопки для рейтинга (если есть request_id)
-        if request_id and result.get("ok", False):
+        # Отправляем кнопки для рейтинга (если ответ успешен)
+        if result.get("ok", False):
+            # Используем реальный request_id если есть, иначе генерируем фейковый
+            display_request_id = request_id if request_id else int(time.time() * 1000) % 1000000  # Фейковый ID
+            logger.info(f"Sending rating buttons with display_request_id={display_request_id} (db_request_id={request_id})")
+            
             rating_keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="👍 Полезно", callback_data=f"rate_like_{request_id}"),
-                    InlineKeyboardButton(text="👎 Не помогло", callback_data=f"rate_dislike_{request_id}")
+                    InlineKeyboardButton(text="👍 Полезно", callback_data=f"rate_like_{display_request_id}"),
+                    InlineKeyboardButton(text="👎 Не помогло", callback_data=f"rate_dislike_{display_request_id}")
                 ]
             ])
             
