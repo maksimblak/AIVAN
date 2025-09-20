@@ -224,10 +224,8 @@ def format_legal_response(text: str, category: Optional[str] = None) -> str:
         header = f"{category_info['emoji']} **{escape_markdown_v2(category_info['name'])}**\n\n"
         text = header + text
     
-    # Footer с напоминанием
-    footer = f"\n\n{Emoji.WARNING} _Данная информация носит консультационный характер и требует проверки практикующим юристом\\._"
-    
-    return text + footer
+
+    return text
 
 def create_progress_message(stage: int, total: int = 4) -> str:
     """Создает сообщение с прогрессом"""
