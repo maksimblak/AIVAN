@@ -21,7 +21,7 @@ from src.bot.logging_setup import setup_logging
 from src.bot.openai_gateway import ask_legal
 from src.bot.promt import LEGAL_SYSTEM_PROMPT
 from src.bot.ui_components import Emoji, escape_markdown_v2
-from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, QuickStatus
+from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, QuickStatus, TypingContext
 from src.core.db import Database
 from src.core.crypto_pay import create_crypto_invoice
 
@@ -188,6 +188,9 @@ async def process_question(message: Message):
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
     
     try:
+        # Индикатор печатания во время обработки
+        async with TypingContext(message.bot, message.chat.id):
+            pass
         # Контроль доступа: админ или активная подписка, иначе расходуем триал
         if db is not None:
             user = await db.ensure_user(user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS)
@@ -207,7 +210,7 @@ async def process_question(message: Message):
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
                 return
-        # Показываем статус
+        # Показываем статус + индикатор печатания
         if USE_ANIMATION:
             status = AnimatedStatus(message.bot, message.chat.id)
             await status.start()
@@ -216,15 +219,17 @@ async def process_question(message: Message):
             await status.start("Обрабатываю ваш вопрос\\.\\.\\.")
         
         try:
-            # Имитируем этапы обработки для лучшего UX
-            if not USE_ANIMATION and hasattr(status, 'update_stage'):
-                await asyncio.sleep(0.5)
-                await status.update_stage(1, f"{Emoji.SEARCH} Анализирую ваш вопрос\\.\\.\\.")
-                await asyncio.sleep(1)
-                await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику\\.\\.\\.")
-            
-            # Основной запрос к ИИ
-            result = await ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+            # Включаем typing на время этапов и вызова ИИ
+            async with TypingContext(message.bot, message.chat.id):
+                # Имитируем этапы обработки для лучшего UX
+                if not USE_ANIMATION and hasattr(status, 'update_stage'):
+                    await asyncio.sleep(0.5)
+                    await status.update_stage(1, f"{Emoji.SEARCH} Анализирую ваш вопрос\\.\\.\\.")
+                    await asyncio.sleep(1)
+                    await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику\\.\\.\\.")
+                
+                # Основной запрос к ИИ
+                result = await ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
             
             if not USE_ANIMATION and hasattr(status, 'update_stage'):
                 await status.update_stage(3, f"{Emoji.DOCUMENT} Формирую структурированный ответ\\.\\.\\.")
