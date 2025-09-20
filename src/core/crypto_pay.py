@@ -5,7 +5,6 @@ from typing import Any, Optional
 import asyncio
 import httpx
 
-
 async def create_crypto_invoice_async(*, amount: float, asset: str, description: str, payload: str, expires_in: int = 3600, retries: int = 3) -> dict[str, Any]:
     """Create a crypto invoice via Crypto Pay API (CryptoBot) asynchronously.
 
