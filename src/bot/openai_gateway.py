@@ -100,8 +100,7 @@ async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
     max_out = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
     verb = os.getenv("OPENAI_VERBOSITY", "medium").lower()
     effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").lower()
-    tool_choice = os.getenv("TOOL_CHOICE", "").lower()
-    disable_web = _bool(os.getenv("DISABLE_WEB", "0"), False)
+
 
     base = dict(
         model=model,

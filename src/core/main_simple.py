@@ -7,13 +7,12 @@ from __future__ import annotations
 import asyncio
 import os
 import logging
-import re
 from datetime import datetime
 from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ParseMode, ChatAction
+from aiogram.enums import ParseMode
 from aiogram.types import Message, BotCommand, ErrorEvent
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
@@ -89,102 +88,6 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     
     return chunks
 
-# ============ ФОРМАТИРОВАНИЕ ОТВЕТОВ ============
-
-def format_legal_response(text: str) -> str:
-    """Преобразует ответ от OpenAI в красивый маркдаун для Telegram"""
-    if not text:
-        return text
-        
-    lines = text.split('\n')
-    formatted_lines = []
-    in_list = False
-    
-    for line in lines:
-        line = line.strip()
-        
-        if not line:
-            formatted_lines.append('')
-            in_list = False
-            continue
-            
-        # Не экранируем здесь - будем экранировать только нужные части
-        # escaped_line = escape_markdown_v2(line)
-        
-        # Обрабатываем нумерованные пункты (1), 2), 3) и т.д.)
-        if re.match(r'^\d+\)\s+', line):
-            # Выделяем заголовок жирным и добавляем эмодзи
-            parts = line.split(')', 1)
-            if len(parts) == 2:
-                number = parts[0]
-                title = parts[1].strip()
-                # Экранируем только специальные символы, но не буквы
-                safe_number = escape_markdown_v2(number + ')')
-                safe_title = escape_markdown_v2(title)
-                formatted_line = f"\n{Emoji.DOCUMENT} **{safe_number}** **{safe_title}**"
-                formatted_lines.append(formatted_line)
-                in_list = False
-                continue
-        
-        # Обрабатываем маркированные списки (- item)
-        if line.startswith('- '):
-            content = line[2:].strip()
-            
-            # Определяем тип пункта по ключевым словам
-            emoji = Emoji.SUCCESS
-            if any(word in content.lower() for word in ['высок', 'положител', 'благоприят']):
-                emoji = Emoji.SUCCESS
-            elif any(word in content.lower() for word in ['средн', 'умерен']):
-                emoji = Emoji.WARNING  
-            elif any(word in content.lower() for word in ['низк', 'отрицател', 'неблагоприят']):
-                emoji = Emoji.ERROR
-            elif any(word in content.lower() for word in ['шаг', 'этап', 'действи']):
-                emoji = Emoji.IDEA
-            elif any(word in content.lower() for word in ['документ', 'справк', 'акт']):
-                emoji = Emoji.DOCUMENT
-            elif any(word in content.lower() for word in ['анализ', 'проверк', 'оценк']):
-                emoji = Emoji.SEARCH
-            
-            # Более аккуратное экранирование для списков
-            safe_content = escape_markdown_v2(content)
-            formatted_line = f"{emoji} **{safe_content}**"
-            formatted_lines.append(formatted_line)
-            in_list = True
-            continue
-        
-        # Обрабатываем заголовки разделов (содержат ключевые слова)
-        if any(keyword in line.lower() for keyword in [
-            'резюме', 'анализ', 'позиция', 'рекомендаци', 'стратеги', 
-            'оценка', 'шанс', 'готов подготовить', 'могу:', 'для этого'
-        ]):
-            # Добавляем эмодзи в зависимости от типа заголовка
-            if 'резюме' in line.lower():
-                emoji = f"{Emoji.DOCUMENT} "
-            elif 'анализ' in line.lower():
-                emoji = f"{Emoji.SEARCH} "
-            elif 'позиция' in line.lower():
-                emoji = f"{Emoji.LAW} "
-            elif 'рекомендаци' in line.lower() or 'стратеги' in line.lower():
-                emoji = f"{Emoji.IDEA} "
-            elif 'оценка' in line.lower() or 'шанс' in line.lower():
-                emoji = f"{Emoji.MAGIC} "
-            else:
-                emoji = f"{Emoji.FIRE} "
-                
-            formatted_line = f"\n{emoji}**{escape_markdown_v2(line.upper())}**"
-            formatted_lines.append(formatted_line)
-            in_list = False
-            continue
-        
-        # Обычный текст
-        if in_list:
-            # Если мы в списке, добавляем небольшой отступ
-            formatted_lines.append(f"  _{escape_markdown_v2(line)}_")
-        else:
-            formatted_lines.append(escape_markdown_v2(line))
-    
-    return '\n'.join(formatted_lines)
-
 # ============ КОМАНДЫ ============
 
 async def cmd_start(message: Message):
@@ -192,59 +95,22 @@ async def cmd_start(message: Message):
     user_session = get_user_session(message.from_user.id)
     user_name = message.from_user.first_name or "Пользователь"
     
-    # Красивое приветствие с улучшенным дизайном
-    welcome_text = f"""╔═══════════════════════════╗
-║  {Emoji.LAW} **ИИ\\-Иван** {Emoji.LAW}  ║
-╚═══════════════════════════╝
+    welcome_text = f"""{Emoji.ROBOT} Привет, **{escape_markdown_v2(user_name)}**\\!
 
-{Emoji.ROBOT} Привет, **{escape_markdown_v2(user_name)}**\\! Добро пожаловать\\!
+{Emoji.LAW} **ИИ\\-Иван** — ваш юридический ассистент
 
-{Emoji.STAR} **Ваш персональный юридический ассистент**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{Emoji.ROBOT} Специализируюсь на российском праве и судебной практике
+{Emoji.SEARCH} Анализирую дела, нахожу релевантную практику  
+{Emoji.DOCUMENT} Готовлю черновики процессуальных документов
 
-{Emoji.MAGIC} **Что я умею:**
-{Emoji.SEARCH} Анализирую судебную практику РФ
-{Emoji.DOCUMENT} Ищу релевантные дела и решения
-{Emoji.IDEA} Готовлю черновики процессуальных документов  
-{Emoji.LAW} Оцениваю правовые риски и перспективы
+{Emoji.WARNING} *Важно*: все ответы требуют проверки юристом
 
-{Emoji.FIRE} **Специализации:**
-{Emoji.CIVIL} Гражданское и договорное право
-{Emoji.CORPORATE} Корпоративное право и M&A
-{Emoji.LABOR} Трудовое и административное право
-{Emoji.TAX} Налоговое право и споры с ФНС
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{Emoji.IDEA} **Примеры вопросов:**
-
-{Emoji.CONTRACT} *"Можно ли расторгнуть договор поставки за просрочку?"*
-{Emoji.LABOR} *"Как правильно уволить сотрудника за нарушения?"*
-{Emoji.TAX} *"Какие риски при доначислении НДС?"*
-{Emoji.CORPORATE} *"Порядок увеличения уставного капитала ООО"*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-{Emoji.FIRE} **Готов к работе\\! Отправьте ваш правовой вопрос**
-
-{Emoji.WARNING} *Важно: все ответы — аналитические материалы для внутренней проработки и требуют проверки практикующим юристом\\.*"""
+{Emoji.FIRE} **Просто отправьте мне ваш юридический вопрос\\!**"""
     
     await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2)
     logger.info("User %s started bot", message.from_user.id)
 
 # ============ ОБРАБОТКА ВОПРОСОВ ============
-
-async def _keep_typing(bot: Bot, chat_id: int):
-    """Периодически отправляет статус 'печатает' во время обработки запроса"""
-    try:
-        while True:
-            await asyncio.sleep(4)  # Обновляем статус каждые 4 секунды
-            await bot.send_chat_action(chat_id, ChatAction.TYPING)
-    except asyncio.CancelledError:
-        # Задача была отменена - это нормально
-        pass
-    except Exception as e:
-        # Игнорируем ошибки статуса печатания, это не критично
-        logger.debug("Error updating typing status: %s", e)
 
 async def process_question(message: Message):
     """Главный обработчик юридических вопросов"""
@@ -258,27 +124,10 @@ async def process_question(message: Message):
     
     if not question_text:
         await message.answer(
-            f"""╔═══════════════════════════╗
-║  {Emoji.WARNING} **Пустое сообщение** {Emoji.WARNING}  ║  
-╚═══════════════════════════╝
-
-Я не получил текст вашего вопроса\\!
-
-{Emoji.FIRE} **Напишите юридический вопрос**, например:
-
-{Emoji.CONTRACT} _"Можно ли расторгнуть договор за просрочку оплаты?"_
-{Emoji.LABOR} _"Как правильно оформить увольнение сотрудника?"_  
-{Emoji.CORPORATE} _"Какие документы нужны для смены директора ООО?"_
-{Emoji.TAX} _"Когда можно применить льготу по налогу на прибыль?"_
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{Emoji.ROBOT} **ИИ\\-Иван** ждёт ваш правовой вопрос\\!""",
+            f"{Emoji.WARNING} **Пустой запрос**\n\nПожалуйста, отправьте текст юридического вопроса\\.",
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
-    
-    # Сразу показываем статус "печатает"
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     
     # Запускаем таймер
     timer = ResponseTimer()
@@ -303,19 +152,8 @@ async def process_question(message: Message):
                 await asyncio.sleep(1)
                 await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику\\.\\.\\.")
             
-            # Запускаем задачу периодического обновления статуса "печатает"
-            typing_task = asyncio.create_task(_keep_typing(message.bot, message.chat.id))
-            
-            try:
-                # Основной запрос к ИИ
-                result = await ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
-            finally:
-                # Останавливаем периодическое обновление статуса
-                typing_task.cancel()
-                try:
-                    await typing_task
-                except asyncio.CancelledError:
-                    pass
+            # Основной запрос к ИИ
+            result = await ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
             
             if not USE_ANIMATION and hasattr(status, 'update_stage'):
                 await status.update_stage(3, f"{Emoji.DOCUMENT} Формирую структурированный ответ\\.\\.\\.")
@@ -337,46 +175,29 @@ async def process_question(message: Message):
             logger.error("OpenAI error for user %s: %s", user_id, error_text)
             
             await message.answer(
-                f"""╔══════════════════════════╗
-║  {Emoji.ERROR} **Ошибка обработки** {Emoji.ERROR}  ║
-╚══════════════════════════╝
+                f"""{Emoji.ERROR} **Произошла ошибка**
 
-К сожалению, не удалось обработать ваш запрос\\.
+Не удалось получить ответ\\. Попробуйте ещё раз чуть позже\\.
 
-{Emoji.IDEA} **Что можно попробовать:**
-{Emoji.SUCCESS} Переформулируйте вопрос более конкретно
-{Emoji.SUCCESS} Укажите юрисдикцию и временные рамки  
-{Emoji.SUCCESS} Попробуйте через 1\\-2 минуты
+{Emoji.HELP} *Подсказка*: Проверьте формулировку вопроса
 
-{Emoji.HELP} **Пример хорошего вопроса:**
-_"Можно ли в Московской области расторгнуть договор аренды коммерческой недвижимости досрочно при задержке платежей на 30 дней?"_
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{Emoji.ROBOT} **ИИ\\-Иван** готов к новому вопросу\\!
-
-_Техническая информация:_ `{error_text[:80]}\\.\\.\\._""",
+`{error_text[:100]}`""",
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return
         
-        # Форматируем ответ с красивым маркдауном
-        raw_response = result["text"]
-        formatted_response = format_legal_response(raw_response)
+        # Форматируем ответ
+        # Сначала экранируем текст модели для MarkdownV2, затем добавляем служебные части
+        safe_model_text = escape_markdown_v2(result["text"])
+        response_text = safe_model_text
         
-        # Добавляем красивый footer с рамкой
-        footer = f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{Emoji.ROBOT} **ИИ\\-Иван** \\| {Emoji.CLOCK} _Время ответа: {timer.get_duration_text()}_
-
-{Emoji.WARNING} **Важное напоминание:**
-_Данная информация — аналитические материалы для внутренней работы\\. Обязательно требует проверки и анализа практикующим юристом перед применением\\._
-
-{Emoji.STAR} _Для новых вопросов просто отправьте сообщение\\!_"""
+        # Добавляем footer с напоминанием
+        footer = f"\n\n{Emoji.WARNING} _Данная информация носит консультационный характер и требует проверки практикующим юристом\\._"
+        response_text += footer
         
-        response_text = formatted_response + footer
-        
-        # Показываем статус "печатает" перед отправкой ответа
-        await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+        # Добавляем информацию о времени ответа
+        time_info = f"\n\n{Emoji.CLOCK} _Время ответа: {timer.get_duration_text()}_"
+        response_text += time_info
         
         # Разбиваем на части и отправляем
         chunks = chunk_text(response_text)
@@ -385,15 +206,17 @@ _Данная информация — аналитические материа
             try:
                 await message.answer(chunk, parse_mode=ParseMode.MARKDOWN_V2)
             except Exception as e:
-                logger.warning("Failed to send with markdown: %s", e)
-                # Fallback: отправляем без разметки, но с эмодзи
-                clean_chunk = chunk.replace('\\', '').replace('**', '').replace('_', '').replace('`', '')
-                await message.answer(clean_chunk)
+                logger.warning("Failed to send with markdown, retrying with escaped text: %s", e)
+                try:
+                    await message.answer(escape_markdown_v2(chunk), parse_mode=ParseMode.MARKDOWN_V2)
+                except Exception as e2:
+                    logger.warning("Second markdown attempt failed: %s", e2)
+                    # Последний резерв: отправляем без разметки
+                    await message.answer(chunk)
             
-            # Небольшая задержка между сообщениями и статус "печатает" для следующей части
+            # Небольшая задержка между сообщениями
             if i < len(chunks) - 1:
                 await asyncio.sleep(0.1)
-                await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
         
         # Обновляем статистику
         user_session.add_question_stats(timer.duration)
@@ -414,24 +237,15 @@ _Данная информация — аналитические материа
             pass
         
         await message.answer(
-            f"""╔══════════════════════════════╗
-║  {Emoji.ERROR} **Системная ошибка** {Emoji.ERROR}  ║
-╚══════════════════════════════╝
+            f"""{Emoji.ERROR} **Произошла ошибка**
 
-Произошла техническая ошибка при обработке\\. 
+К сожалению, не удалось обработать ваш запрос\\.
 
-{Emoji.IDEA} **Рекомендации:**
-{Emoji.SUCCESS} Попробуйте переформулировать вопрос
-{Emoji.SUCCESS} Подождите 1\\-2 минуты и повторите
-{Emoji.SUCCESS} Упростите формулировку
+{Emoji.HELP} *Попробуйте:*
+• Переформулировать вопрос
+• Повторить через минуту
 
-{Emoji.MAGIC} **Или задайте новый вопрос:**
-_"Какие основания для расторжения трудового договора?"_
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{Emoji.ROBOT} **ИИ\\-Иван** остаётся в вашем распоряжении\\!
-
-_Debug:_ `{str(e)[:60]}\\.\\.\\._""",
+`{str(e)[:100]}`""",
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
