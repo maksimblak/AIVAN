@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Telegram bot for legal consultations powered by OpenAI GPT"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
-packages = [{ include = "telegram_legal_bot" }]
+packages = [
+    # Устанавливаем модуль с точкой входа по layout src/
+    { include = "telegram_legal_bot", from = "src" },
+    # Параллельно публикуем текущий модуль "src" (используется в импортах: src.core)
+    { include = "src", from = "." }
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"

@@ -82,7 +82,7 @@ async def _make_async_client() -> AsyncOpenAI:
 
     transport = httpx.AsyncHTTPTransport(http2=http2, verify=verify)
     client = httpx.AsyncClient(
-        timeout=httpx.Timeout(60.0, connect=15.0),
+        timeout=httpx.Timeout(connect=20.0, read=180.0, write=120.0, pool=60.0),
         proxies=proxy,
         transport=transport,
         event_hooks={"request": [on_req], "response": [on_resp]},
@@ -111,9 +111,9 @@ async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
         text={"verbosity": verb},
         reasoning={"effort": effort},
         max_output_tokens=max_out,
-        tools=[{"type": "web_search"}],
-        tool_choice="auto",
     )
+    if not _bool(os.getenv("DISABLE_WEB", "0"), False):
+        base |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
 
     async with await _make_async_client() as oai:

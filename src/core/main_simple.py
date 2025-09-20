@@ -23,7 +23,9 @@ from src.bot.promt import LEGAL_SYSTEM_PROMPT
 from src.bot.ui_components import Emoji, escape_markdown_v2
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, QuickStatus, TypingContext
 from src.core.db import Database
-from src.core.crypto_pay import create_crypto_invoice
+from src.core.crypto_pay import create_crypto_invoice_async
+from src.telegram_legal_bot.config import load_config
+from src.telegram_legal_bot.ratelimit import RateLimiter
 
 # ============ КОНФИГУРАЦИЯ ============
 
@@ -31,29 +33,31 @@ load_dotenv()
 setup_logging()
 logger = logging.getLogger("ai-ivan.simple")
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-USE_ANIMATION = os.getenv("USE_STATUS_ANIMATION", "1").lower() in ("1", "true", "yes")
+config = load_config()
+BOT_TOKEN = config.telegram_bot_token
+USE_ANIMATION = config.use_status_animation
 MAX_MESSAGE_LENGTH = 4000
 
 # Подписки и платежи
-DB_PATH = os.getenv("DB_PATH", "data/bot.sqlite3")
-TRIAL_REQUESTS = int(os.getenv("TRIAL_REQUESTS", "10"))
-SUB_DURATION_DAYS = int(os.getenv("SUB_DURATION_DAYS", "30"))
+DB_PATH = config.db_path
+TRIAL_REQUESTS = config.trial_requests
+SUB_DURATION_DAYS = config.sub_duration_days
 
 # RUB платеж через Telegram Payments (провайдер-эквайринг)
-RUB_PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN_RUB", "").strip()
-SUB_PRICE_RUB = int(os.getenv("SUBSCRIPTION_PRICE_RUB", "300"))  # руб.
+RUB_PROVIDER_TOKEN = config.telegram_provider_token_rub
+SUB_PRICE_RUB = config.subscription_price_rub  # руб.
 SUB_PRICE_RUB_KOPEKS = SUB_PRICE_RUB * 100
 
-# Telegram Stars (XTR). В большинстве случаев используется специальный токен "STARS"
-STARS_PROVIDER_TOKEN = os.getenv("TELEGRAM_PROVIDER_TOKEN_STARS", "STARS").strip()
-SUB_PRICE_XTR = int(os.getenv("SUBSCRIPTION_PRICE_XTR", "3000"))  # XTR
+# Telegram Stars (XTR)
+STARS_PROVIDER_TOKEN = config.telegram_provider_token_stars
+SUB_PRICE_XTR = config.subscription_price_xtr  # XTR
 
-# Админы (через запятую Telegram user_id)
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(',') if x}
+# Админы
+ADMIN_IDS = set(config.admin_ids)
 
-# Глобальная БД
+# Глобальная БД/лимитер
 db: Optional[Database] = None
+rate_limiter: Optional[RateLimiter] = None
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
@@ -154,8 +158,6 @@ async def cmd_start(message: Message):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔥 Готов к работе! Отправьте ваш правовой вопрос
-
-⚠️ Важно: все ответы — аналитические материалы для внутренней проработки и требуют проверки практикующим юристом.
 """
 
     welcome_text = escape_markdown_v2(welcome_raw)
@@ -169,6 +171,8 @@ async def process_question(message: Message):
     user_id = message.from_user.id
     user_session = get_user_session(user_id)
     question_text = (message.text or "").strip()
+    quota_msg_to_send: Optional[str] = None
+    quota_is_trial: bool = False
     
     # Проверяем, что это не команда
     if question_text.startswith('/'):
@@ -188,28 +192,48 @@ async def process_question(message: Message):
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
     
     try:
+        # Global rate limit per user
+        if rate_limiter is not None:
+            allowed = await rate_limiter.allow(user_id)
+            if not allowed:
+                await message.answer(
+                    f"{Emoji.WARNING} **Слишком много запросов**\n\nПопробуйте позже.",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                return
         # Индикатор печатания во время обработки
         async with TypingContext(message.bot, message.chat.id):
             pass
         # Контроль доступа: админ или активная подписка, иначе расходуем триал
+        quota_text = ""
         if db is not None:
             user = await db.ensure_user(user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS)
             has_access = False
-            if user.is_admin:
+            is_admin_user = bool(user.is_admin)
+            has_subscription = await db.has_active_subscription(user_id)
+            if is_admin_user:
                 has_access = True
+                quota_text = escape_markdown_v2(f"\n\n{Emoji.STATS} Админ: безлимитный доступ")
+            elif has_subscription:
+                has_access = True
+                until_dt = datetime.fromtimestamp(user.subscription_until)
+                quota_text = escape_markdown_v2(f"\n\n{Emoji.CALENDAR} Подписка активна до: {until_dt:%Y-%m-%d}")
             else:
-                if await db.has_active_subscription(user_id):
+                # Пытаемся списать один бесплатный запрос
+                trial_before = int(user.trial_remaining)
+                if await db.decrement_trial(user_id):
                     has_access = True
+                    user_after = await db.get_user(user_id)
+                    trial_after = int(user_after.trial_remaining) if user_after else max(0, trial_before - 1)
+                    used = max(0, TRIAL_REQUESTS - trial_after)
+                    quota_is_trial = True
+                    quota_msg_to_send = f"{Emoji.STATS} **Бесплатные запросы: {used}/{TRIAL_REQUESTS}. Осталось: {trial_after}**"
                 else:
-                    # Пытаемся списать один бесплатный запрос
-                    if await db.decrement_trial(user_id):
-                        has_access = True
-            if not has_access:
-                await message.answer(
-                    f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nОформите подписку за {SUB_PRICE_RUB}₽ в месяц. Используйте команду /buy",
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
-                return
+                    await message.answer(
+                        f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    return
         # Показываем статус + индикатор печатания
         if USE_ANIMATION:
             status = AnimatedStatus(message.bot, message.chat.id)
@@ -275,6 +299,9 @@ async def process_question(message: Message):
         time_info = f"\n\n{Emoji.CLOCK} _Время ответа: {timer.get_duration_text()}_"
         response_text += time_info
         
+        # Добавляем информацию о квоте/подписке (кроме случая триала — его отправим отдельным сообщением)
+        if 'quota_text' in locals() and quota_text and not quota_is_trial:
+            response_text += quota_text
         # Разбиваем на части и отправляем
         chunks = chunk_text(response_text)
         
@@ -293,6 +320,14 @@ async def process_question(message: Message):
             # Небольшая задержка между сообщениями
             if i < len(chunks) - 1:
                 await asyncio.sleep(0.1)
+
+        # После ответа отправляем отдельное сообщение с квотой триала
+        if quota_msg_to_send:
+            try:
+                await message.answer(quota_msg_to_send, parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception:
+                # Резерв без разметки
+                await message.answer(quota_msg_to_send)
         
         # Обновляем статистику
         user_session.add_question_stats(timer.duration)
@@ -377,8 +412,8 @@ async def cmd_buy(message: Message):
     await send_stars_invoice(message)
     # Крипта: создаем инвойс через CryptoBot, если настроен токен
     payload = _build_payload("crypto", message.from_user.id)
-    inv = create_crypto_invoice(
-        amount=float(SUB_PRICE_RUB),  # можно привязать к USDT с пересчетом, для простоты — число
+    inv = await create_crypto_invoice_async(
+        amount=float(SUB_PRICE_RUB),
         asset=os.getenv("CRYPTO_ASSET", "USDT"),
         description="Подписка ИИ-Иван на 30 дней",
         payload=payload,
@@ -492,6 +527,15 @@ async def main():
     global db
     db = Database(DB_PATH)
     await db.init()
+
+    # Инициализация rate limiter
+    global rate_limiter
+    rate_limiter = RateLimiter(
+        redis_url=config.redis_url,
+        max_requests=config.rate_limit_requests,
+        window_seconds=config.rate_limit_window_seconds,
+    )
+    await rate_limiter.init()
     
     # Устанавливаем команды
     await bot.set_my_commands([
@@ -525,6 +569,10 @@ async def main():
         raise
     finally:
         await bot.session.close()
+        if db is not None:
+            await db.close()
+        if rate_limiter is not None:
+            await rate_limiter.close()
 
 if __name__ == "__main__":
     try:

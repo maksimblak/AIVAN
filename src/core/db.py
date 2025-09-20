@@ -75,6 +75,9 @@ class Database:
             """
         )
 
+        # Helpful indexes for queries and reporting
+        await self._exec("CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);")
+
     # ---------------- Internal helpers ----------------
 
     async def _exec(self, query: str, params: tuple[Any, ...] = ()) -> None:
@@ -171,5 +174,17 @@ class Database:
             "UPDATE transactions SET status = 'success', provider_payment_charge_id = COALESCE(?, provider_payment_charge_id), updated_at = ? WHERE telegram_payment_charge_id = ?",
             (provider_payment_charge_id, now, telegram_payment_charge_id),
         )
+
+    # ---------------- Lifecycle ----------------
+
+    async def close(self) -> None:
+        """Close the underlying connection."""
+        if self._conn is not None:
+            conn = self._conn
+            self._conn = None
+            try:
+                await asyncio.to_thread(conn.close)
+            except Exception:
+                pass
 
 
