@@ -31,6 +31,13 @@ from src.core.access import AccessService
 from src.core.openai_service import OpenAIService
 from src.core.session_store import SessionStore
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
+from src.core.validation import InputValidator, ValidationError, ValidationSeverity
+from src.core.exceptions import (
+    ErrorHandler, ErrorContext, ErrorType, ErrorSeverity as ExceptionSeverity,
+    ValidationException, DatabaseException, OpenAIException, TelegramException,
+    NetworkException, PaymentException, AuthException, RateLimitException,
+    SystemException, handle_exceptions, safe_execute
+)
 
 # ============ КОНФИГУРАЦИЯ ============
 
@@ -73,6 +80,7 @@ access_service: Optional[AccessService] = None
 openai_service: Optional[OpenAIService] = None
 session_store: Optional[SessionStore] = None
 crypto_provider: Optional[CryptoPayProvider] = None
+error_handler: Optional[ErrorHandler] = None
 
 # Политика сессий
 USER_SESSIONS_MAX = int(getattr(config, 'user_sessions_max', 10000) or 10000)
@@ -185,6 +193,17 @@ async def cmd_start(message: Message):
 async def process_question(message: Message):
     """Главный обработчик юридических вопросов"""
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    message_id = message.message_id
+    
+    # Создаем контекст для обработки ошибок
+    error_context = ErrorContext(
+        user_id=user_id,
+        chat_id=chat_id,
+        message_id=message_id,
+        function_name="process_question"
+    )
+    
     user_session = get_user_session(user_id)
     question_text = (message.text or "").strip()
     quota_msg_to_send: Optional[str] = None
@@ -194,13 +213,42 @@ async def process_question(message: Message):
     if question_text.startswith('/'):
         return
     
+    # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+    if error_handler is None:
+        raise SystemException("Error handler not initialized", error_context)
+        
+    validation_result = InputValidator.validate_question(question_text, user_id)
+    
+    if not validation_result.is_valid:
+        error_msg = "\n• ".join(validation_result.errors)
+        if validation_result.severity == ValidationSeverity.CRITICAL:
+            await message.answer(
+                f"{Emoji.ERROR} **Критическая ошибка валидации**\n\n• {error_msg}\n\n_Обратитесь к администратору_",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+        else:
+            await message.answer(
+                f"{Emoji.WARNING} **Ошибка в запросе**\n\n• {error_msg}",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+    
+    # Используем очищенные данные
+    question_text = validation_result.cleaned_data
+    
+    # Показываем предупреждения если есть
+    if validation_result.warnings:
+        warning_msg = "\n• ".join(validation_result.warnings)
+        logger.warning(f"Validation warnings for user {user_id}: {warning_msg}")
+    
     if not question_text:
         await message.answer(
             f"{Emoji.WARNING} **Пустой запрос**\n\nПожалуйста, отправьте текст юридического вопроса\\.",
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
-    
+
     # Запускаем таймер
     timer = ResponseTimer()
     timer.start()
@@ -262,8 +310,18 @@ async def process_question(message: Message):
                 # Основной запрос к ИИ
                 # Через сервисный слой, для лёгкого мокинга и замены имплементации
                 if openai_service is None:
-                    raise RuntimeError("OpenAI service not initialized")
-                result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+                    raise SystemException("OpenAI service not initialized", error_context)
+                
+                try:
+                    result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+                except Exception as e:
+                    # Специфичная обработка ошибок OpenAI
+                    if "rate limit" in str(e).lower() or "quota" in str(e).lower():
+                        raise OpenAIException(str(e), error_context, is_quota_error=True)
+                    elif "timeout" in str(e).lower() or "network" in str(e).lower():
+                        raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
+                    else:
+                        raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
             
             if not USE_ANIMATION and hasattr(status, 'update_stage'):
                 await status.update_stage(3, f"{Emoji.DOCUMENT} Формирую структурированный ответ\\.\\.\\.")
@@ -345,7 +403,18 @@ async def process_question(message: Message):
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         
     except Exception as e:
-        logger.exception("Error processing question for user %s", user_id)
+        # Обрабатываем все исключения через централизованный обработчик
+        if error_handler is not None:
+            try:
+                custom_exc = await error_handler.handle_exception(e, error_context)
+                user_message = custom_exc.user_message
+            except Exception:
+                # Fallback если обработчик ошибок сам падает
+                logger.exception("Error handler failed for user %s", user_id)
+                user_message = "Произошла системная ошибка. Попробуйте позже."
+        else:
+            logger.exception("Error processing question for user %s (no error handler)", user_id)
+            user_message = "Произошла ошибка. Попробуйте позже."
         
         # Очищаем статус в случае ошибки
         try:
@@ -357,18 +426,26 @@ async def process_question(message: Message):
         except:
             pass
         
-        await message.answer(
-            f"""{Emoji.ERROR} **Произошла ошибка**
+        # Отправляем пользователю понятное сообщение об ошибке
+        try:
+            await message.answer(
+                f"""{Emoji.ERROR} **Ошибка обработки запроса**
 
-К сожалению, не удалось обработать ваш запрос\\.
+{escape_markdown_v2(user_message)}
 
-{Emoji.HELP} *Попробуйте:*
-• Переформулировать вопрос
-• Повторить через минуту
-
-`{str(e)[:100]}`""",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+{Emoji.HELP} *Рекомендации:*
+• Переформулируйте вопрос
+• Попробуйте через несколько минут
+• Обратитесь в поддержку если проблема повторяется""",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        except Exception as send_error:
+            # Последний резерв - отправляем простое сообщение
+            logger.error(f"Failed to send error message to user {user_id}: {send_error}")
+            try:
+                await message.answer("Произошла ошибка. Попробуйте позже.")
+            except:
+                pass  # Ничего больше не можем сделать
 
 # ============ ПОДПИСКИ И ПЛАТЕЖИ ============
 
@@ -422,7 +499,7 @@ async def cmd_buy(message: Message):
     )
     text = (
         f"{Emoji.MAGIC} **Оплата подписки**\n\n"
-        f"Стоимость: {SUB_PRICE_RUB}₽ ({dynamic_xtr} Звезд (XTR)) за 30 дней\n\n"
+        f"Стоимость: {SUB_PRICE_RUB} ₽ \\({dynamic_xtr} ⭐\\) за 30 дней\n\n"
         f"Выберите способ оплаты:" 
     )
     await message.answer(text, parse_mode=ParseMode.MARKDOWN_V2)
@@ -593,10 +670,57 @@ async def main():
     bot = Bot(BOT_TOKEN, session=session)
     dp = Dispatcher()
 
-    # Инициализация базы данных
-    global db
-    db = Database(DB_PATH)
+    # Инициализация системы метрик
+    from src.core.metrics import init_metrics, set_system_status, get_metrics_collector
+    from src.core.cache import create_cache_backend, ResponseCache
+    from src.core.background_tasks import (
+        BackgroundTaskManager, DatabaseCleanupTask, CacheCleanupTask, 
+        SessionCleanupTask, HealthCheckTask, MetricsCollectionTask
+    )
+    from src.core.health import (
+        HealthChecker, DatabaseHealthCheck, OpenAIHealthCheck, 
+        SessionStoreHealthCheck, RateLimiterHealthCheck, SystemResourcesHealthCheck
+    )
+    from src.core.scaling import ServiceRegistry, LoadBalancer, SessionAffinity, ScalingManager
+    
+    # Инициализируем метрики (если доступны)
+    prometheus_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
+    metrics_collector = init_metrics(
+        enable_prometheus=os.getenv("ENABLE_PROMETHEUS", "1") == "1",
+        prometheus_port=prometheus_port
+    )
+    set_system_status("starting")
+    
+    logger.info("🚀 Starting advanced AI-Ivan with full feature set")
+    
+    # Выбираем тип базы данных
+    use_advanced_db = os.getenv("USE_ADVANCED_DB", "1") == "1"
+    if use_advanced_db:
+        from src.core.db_advanced import DatabaseAdvanced
+        logger.info("Using advanced database with connection pooling")
+        db = DatabaseAdvanced(
+            DB_PATH,
+            max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "5")),
+            enable_metrics=True
+        )
+    else:
+        logger.info("Using legacy database")
+        db = Database(DB_PATH)
+    
     await db.init()
+
+    # Инициализация кеша
+    cache_backend = await create_cache_backend(
+        redis_url=config.redis_url,
+        fallback_to_memory=True,
+        memory_max_size=int(os.getenv("CACHE_MAX_SIZE", "1000"))
+    )
+    
+    response_cache = ResponseCache(
+        backend=cache_backend,
+        default_ttl=int(os.getenv("CACHE_TTL", "3600")),
+        enable_compression=os.getenv("CACHE_COMPRESSION", "1") == "1"
+    )
 
     # Инициализация rate limiter
     global rate_limiter
@@ -610,12 +734,139 @@ async def main():
     # Инициализация сервисов
     global access_service
     access_service = AccessService(db=db, trial_limit=TRIAL_REQUESTS, admin_ids=ADMIN_IDS)
+    
     global openai_service
-    openai_service = OpenAIService()
+    openai_service = OpenAIService(
+        cache=response_cache,
+        enable_cache=os.getenv("ENABLE_OPENAI_CACHE", "1") == "1"
+    )
+    
     global session_store
     session_store = SessionStore(max_size=USER_SESSIONS_MAX, ttl_seconds=USER_SESSION_TTL_SECONDS)
+    
     global crypto_provider
     crypto_provider = CryptoPayProvider(asset=os.getenv("CRYPTO_ASSET", "USDT"))
+    
+    # Инициализация обработчика ошибок
+    global error_handler
+    error_handler = ErrorHandler(logger=logger)
+    
+    # Регистрируем recovery handlers для критических ошибок
+    async def database_recovery_handler(exc):
+        """Обработчик восстановления БД"""
+        if db is not None:
+            try:
+                await db.init()
+                logger.info("Database recovery completed")
+            except Exception as recovery_error:
+                logger.error(f"Database recovery failed: {recovery_error}")
+    
+    error_handler.register_recovery_handler(ErrorType.DATABASE, database_recovery_handler)
+    
+    # Инициализация компонентов для масштабирования
+    scaling_components = None
+    if os.getenv("ENABLE_SCALING", "0") == "1":
+        try:
+            service_registry = ServiceRegistry(
+                redis_url=config.redis_url,
+                heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "15.0"))
+            )
+            await service_registry.initialize()
+            await service_registry.start_background_tasks()
+            
+            load_balancer = LoadBalancer(service_registry)
+            
+            session_affinity = SessionAffinity(
+                redis_client=getattr(cache_backend, '_redis', None),
+                ttl=int(os.getenv("SESSION_AFFINITY_TTL", "3600"))
+            )
+            
+            scaling_manager = ScalingManager(
+                service_registry=service_registry,
+                load_balancer=load_balancer,
+                session_affinity=session_affinity
+            )
+            
+            scaling_components = {
+                "service_registry": service_registry,
+                "load_balancer": load_balancer,
+                "session_affinity": session_affinity,
+                "scaling_manager": scaling_manager
+            }
+            
+            logger.info("🔄 Scaling components initialized")
+            
+        except Exception as e:
+            logger.warning(f"Failed to initialize scaling components: {e}")
+    
+    # Инициализация health checks
+    health_checker = HealthChecker(
+        check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "30.0"))
+    )
+    
+    # Регистрируем health checks
+    health_checker.register_check(DatabaseHealthCheck(db))
+    health_checker.register_check(OpenAIHealthCheck(openai_service))
+    health_checker.register_check(SessionStoreHealthCheck(session_store))
+    health_checker.register_check(RateLimiterHealthCheck(rate_limiter))
+    
+    # Системные ресурсы если доступны
+    if os.getenv("ENABLE_SYSTEM_MONITORING", "1") == "1":
+        health_checker.register_check(SystemResourcesHealthCheck())
+    
+    # Запускаем фоновые health checks
+    await health_checker.start_background_checks()
+    
+    # Инициализация фоновых задач
+    task_manager = BackgroundTaskManager(error_handler)
+    
+    # Регистрируем задачи
+    if use_advanced_db:
+        task_manager.register_task(DatabaseCleanupTask(
+            db, 
+            interval_seconds=float(os.getenv("DB_CLEANUP_INTERVAL", "3600")),  # 1 час
+            max_old_transactions_days=int(os.getenv("DB_CLEANUP_DAYS", "90"))
+        ))
+    
+    task_manager.register_task(CacheCleanupTask(
+        [openai_service],
+        interval_seconds=float(os.getenv("CACHE_CLEANUP_INTERVAL", "300"))  # 5 минут
+    ))
+    
+    task_manager.register_task(SessionCleanupTask(
+        session_store,
+        interval_seconds=float(os.getenv("SESSION_CLEANUP_INTERVAL", "600"))  # 10 минут
+    ))
+    
+    # Health check как фоновая задача
+    all_components = {
+        "database": db,
+        "openai_service": openai_service,
+        "rate_limiter": rate_limiter,
+        "session_store": session_store,
+        "error_handler": error_handler,
+        "health_checker": health_checker
+    }
+    
+    if scaling_components:
+        all_components.update(scaling_components)
+    
+    task_manager.register_task(HealthCheckTask(
+        all_components,
+        interval_seconds=float(os.getenv("HEALTH_CHECK_TASK_INTERVAL", "120"))  # 2 минуты
+    ))
+    
+    # Метрики если включены
+    if metrics_collector and metrics_collector.enable_prometheus:
+        task_manager.register_task(MetricsCollectionTask(
+            all_components,
+            interval_seconds=float(os.getenv("METRICS_COLLECTION_INTERVAL", "30"))  # 30 секунд
+        ))
+    
+    # Запускаем все фоновые задачи
+    await task_manager.start_all()
+    
+    logger.info(f"🔧 Started {len(task_manager.tasks)} background tasks")
     
     # Устанавливаем команды
     await bot.set_my_commands([
@@ -633,26 +884,102 @@ async def main():
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
     
     # Глобальный обработчик ошибок
-    dp.error.register(error_handler)
+    async def telegram_error_handler(event: ErrorEvent):
+        """Обработчик ошибок для aiogram с интеграцией ErrorHandler"""
+        if error_handler:
+            try:
+                context = ErrorContext(
+                    function_name="telegram_error_handler",
+                    additional_data={
+                        "update": str(event.update) if event.update else None,
+                        "exception_type": type(event.exception).__name__
+                    }
+                )
+                await error_handler.handle_exception(event.exception, context)
+            except Exception as handler_error:
+                logger.error(f"Error handler failed: {handler_error}")
+        
+        logger.exception("Critical error in bot: %s", event.exception)
     
-    # Запускаем бота
-    logger.info("🤖 ИИ-Иван (простая версия) запущен!")
-    logger.info("📊 Анимация статусов: %s", "включена" if USE_ANIMATION else "отключена")
-    logger.info("💡 Доступные команды: /start")
+    dp.error.register(telegram_error_handler)
+    
+    # Обновляем статус системы
+    set_system_status("running")
+    
+    # Логируем информацию о запуске
+    startup_info = [
+        "🤖 Advanced AI-Ivan successfully started!",
+        f"📊 Animation: {'enabled' if USE_ANIMATION else 'disabled'}",
+        f"🗄️ Database: {'advanced' if use_advanced_db else 'legacy'}",
+        f"🔄 Cache: {cache_backend.__class__.__name__}",
+        f"📈 Metrics: {'enabled' if metrics_collector and metrics_collector.enable_prometheus else 'disabled'}",
+        f"🏥 Health checks: {len(health_checker.checks)} registered",
+        f"⚙️ Background tasks: {len(task_manager.tasks)} running",
+        f"🔄 Scaling: {'enabled' if scaling_components else 'disabled'}"
+    ]
+    
+    for info in startup_info:
+        logger.info(info)
+    
+    if prometheus_port:
+        logger.info(f"📊 Prometheus metrics available at http://localhost:{prometheus_port}/metrics")
     
     try:
+        # Запускаем polling
+        logger.info("🚀 Starting bot polling...")
         await dp.start_polling(bot)
+        
     except KeyboardInterrupt:
-        logger.info("🤖 ИИ-Иван остановлен пользователем")
+        logger.info("🛑 AI-Ivan stopped by user")
+        set_system_status("stopping")
+        
     except Exception as e:
-        logger.exception("Fatal error: %s", e)
+        logger.exception("💥 Fatal error in main loop: %s", e)
+        set_system_status("stopping")
         raise
+        
     finally:
-        await bot.session.close()
-        if db is not None:
-            await db.close()
-        if rate_limiter is not None:
-            await rate_limiter.close()
+        logger.info("🔧 Shutting down services...")
+        set_system_status("stopping")
+        
+        # Останавливаем все фоновые задачи
+        try:
+            await task_manager.stop_all()
+        except Exception as e:
+            logger.error(f"Error stopping background tasks: {e}")
+        
+        # Останавливаем health checks
+        try:
+            await health_checker.stop_background_checks()
+        except Exception as e:
+            logger.error(f"Error stopping health checks: {e}")
+        
+        # Останавливаем компоненты масштабирования
+        if scaling_components:
+            try:
+                await scaling_components["service_registry"].stop_background_tasks()
+            except Exception as e:
+                logger.error(f"Error stopping scaling components: {e}")
+        
+        # Закрываем основные сервисы
+        services_to_close = [
+            ("Bot session", lambda: bot.session.close()),
+            ("Database", lambda: db.close() if db else None),
+            ("Rate limiter", lambda: rate_limiter.close() if rate_limiter else None),
+            ("OpenAI service", lambda: openai_service.close() if openai_service else None),
+            ("Response cache", lambda: response_cache.close() if response_cache else None)
+        ]
+        
+        for service_name, close_func in services_to_close:
+            try:
+                result = close_func()
+                if result and hasattr(result, '__await__'):
+                    await result
+                logger.debug(f"✅ {service_name} closed")
+            except Exception as e:
+                logger.error(f"❌ Error closing {service_name}: {e}")
+        
+        logger.info("👋 AI-Ivan shutdown complete")
 
 if __name__ == "__main__":
     try:
