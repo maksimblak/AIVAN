@@ -1,0 +1,46 @@
+from __future__ import annotations
+import os
+import json
+from typing import Any, Optional
+
+import requests
+
+
+def create_crypto_invoice(*, amount: float, asset: str, description: str, payload: str, expires_in: int = 3600) -> dict[str, Any]:
+    """Create a crypto invoice via Crypto Pay API (CryptoBot).
+
+    Requires CRYPTO_PAY_TOKEN in env. Returns { ok, url?, error? }.
+    Docs: https://help.crypt.bot/crypto-pay-api
+    """
+    token = os.getenv("CRYPTO_PAY_TOKEN", "").strip()
+    if not token:
+        return {"ok": False, "error": "CRYPTO_PAY_TOKEN is not set"}
+
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {
+        "Content-Type": "application/json",
+        # Some docs refer to 'X-Token', others to 'Crypto-Pay-API-Token'. X-Token works currently.
+        "X-Token": token,
+    }
+    data = {
+        "amount": amount,
+        "asset": asset,
+        "description": description,
+        "payload": payload,
+        "expires_in": expires_in,
+    }
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(data), timeout=20)
+        resp.raise_for_status()
+        j = resp.json()
+        if not j.get("ok"):
+            return {"ok": False, "error": str(j)}
+        result = j.get("result") or {}
+        pay_url = result.get("pay_url") or result.get("bot_invoice_url") or result.get("invoice_url")
+        if not pay_url:
+            return {"ok": False, "error": "no_pay_url"}
+        return {"ok": True, "url": pay_url, "raw": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
