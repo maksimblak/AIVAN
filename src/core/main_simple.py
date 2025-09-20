@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from html import escape as html_escape
 
@@ -27,6 +27,10 @@ from src.core.db import Database
 from src.core.crypto_pay import create_crypto_invoice_async
 from src.telegram_legal_bot.config import load_config
 from src.telegram_legal_bot.ratelimit import RateLimiter
+from src.core.access import AccessService
+from src.core.openai_service import OpenAIService
+from src.core.session_store import SessionStore
+from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
 
 # ============ КОНФИГУРАЦИЯ ============
 
@@ -52,6 +56,12 @@ SUB_PRICE_RUB_KOPEKS = SUB_PRICE_RUB * 100
 # Telegram Stars (XTR)
 STARS_PROVIDER_TOKEN = config.telegram_provider_token_stars
 SUB_PRICE_XTR = config.subscription_price_xtr  # XTR
+# Динамическая цена в XTR, рассчитанная на старте по курсу (если задан RUB_PER_XTR)
+DYNAMIC_PRICE_XTR = convert_rub_to_xtr(
+    amount_rub=float(SUB_PRICE_RUB),
+    rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+    default_xtr=SUB_PRICE_XTR,
+)
 
 # Админы
 ADMIN_IDS = set(config.admin_ids)
@@ -59,6 +69,14 @@ ADMIN_IDS = set(config.admin_ids)
 # Глобальная БД/лимитер
 db: Optional[Database] = None
 rate_limiter: Optional[RateLimiter] = None
+access_service: Optional[AccessService] = None
+openai_service: Optional[OpenAIService] = None
+session_store: Optional[SessionStore] = None
+crypto_provider: Optional[CryptoPayProvider] = None
+
+# Политика сессий
+USER_SESSIONS_MAX = int(getattr(config, 'user_sessions_max', 10000) or 10000)
+USER_SESSION_TTL_SECONDS = int(getattr(config, 'user_session_ttl_seconds', 3600) or 3600)
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
@@ -77,13 +95,10 @@ class UserSession:
         self.total_response_time += response_time
         self.last_question_time = datetime.now()
 
-user_sessions: Dict[int, UserSession] = {}
-
 def get_user_session(user_id: int) -> UserSession:
-    """Получить или создать сессию пользователя"""
-    if user_id not in user_sessions:
-        user_sessions[user_id] = UserSession(user_id)
-    return user_sessions[user_id]
+    if session_store is None:
+        raise RuntimeError("Session store not initialized")
+    return session_store.get_or_create(user_id)
 
 # ============ УТИЛИТЫ ============
 
@@ -205,38 +220,27 @@ async def process_question(message: Message):
         # Индикатор печатания во время обработки
         async with TypingContext(message.bot, message.chat.id):
             pass
-        # Контроль доступа: админ или активная подписка, иначе расходуем триал
+        # Контроль доступа через сервис доступа (ООП)
         quota_text = ""
-        if db is not None:
-            user = await db.ensure_user(user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS)
-            has_access = False
-            is_admin_user = bool(user.is_admin)
-            has_subscription = await db.has_active_subscription(user_id)
-            if is_admin_user:
-                has_access = True
+        if access_service is not None:
+            decision = await access_service.check_and_consume(user_id)
+            if not decision.allowed:
+                await message.answer(
+                    f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                return
+            if decision.is_admin:
                 quota_text = escape_markdown_v2(f"\n\n{Emoji.STATS} Админ: безлимитный доступ")
-            elif has_subscription:
-                has_access = True
-                until_dt = datetime.fromtimestamp(user.subscription_until)
+            elif decision.has_subscription and decision.subscription_until:
+                until_dt = datetime.fromtimestamp(decision.subscription_until)
                 quota_text = escape_markdown_v2(f"\n\n{Emoji.CALENDAR} Подписка активна до: {until_dt:%Y-%m-%d}")
-            else:
-                # Пытаемся списать один бесплатный запрос
-                trial_before = int(user.trial_remaining)
-                if await db.decrement_trial(user_id):
-                    has_access = True
-                    user_after = await db.get_user(user_id)
-                    trial_after = int(user_after.trial_remaining) if user_after else max(0, trial_before - 1)
-                    used = max(0, TRIAL_REQUESTS - trial_after)
-                    quota_is_trial = True
-                    # Используем HTML-разметку для надежного выделения жирным
-                    quota_msg_core = html_escape(f"Бесплатные запросы: {used}/{TRIAL_REQUESTS}. Осталось: {trial_after}")
-                    quota_msg_to_send = f"{Emoji.STATS} <b>{quota_msg_core}</b>"
-                else:
-                    await message.answer(
-                        f"{Emoji.WARNING} **Лимит бесплатных запросов исчерпан**\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                    )
-                    return
+            elif decision.trial_used is not None and decision.trial_remaining is not None:
+                quota_is_trial = True
+                quota_msg_core = html_escape(
+                    f"Бесплатные запросы: {decision.trial_used}/{TRIAL_REQUESTS}. Осталось: {decision.trial_remaining}"
+                )
+                quota_msg_to_send = f"{Emoji.STATS} <b>{quota_msg_core}</b>"
         # Показываем статус + индикатор печатания
         if USE_ANIMATION:
             status = AnimatedStatus(message.bot, message.chat.id)
@@ -256,7 +260,10 @@ async def process_question(message: Message):
                     await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику\\.\\.\\.")
                 
                 # Основной запрос к ИИ
-                result = await ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+                # Через сервисный слой, для лёгкого мокинга и замены имплементации
+                if openai_service is None:
+                    raise RuntimeError("OpenAI service not initialized")
+                result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
             
             if not USE_ANIMATION and hasattr(status, 'update_stage'):
                 await status.update_stage(3, f"{Emoji.DOCUMENT} Формирую структурированный ответ\\.\\.\\.")
@@ -389,7 +396,12 @@ async def send_rub_invoice(message: Message):
     )
 
 async def send_stars_invoice(message: Message):
-    prices = [LabeledPrice(label="Подписка на 30 дней", amount=SUB_PRICE_XTR)]
+    dynamic_xtr = convert_rub_to_xtr(
+        amount_rub=float(SUB_PRICE_RUB),
+        rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+        default_xtr=SUB_PRICE_XTR,
+    )
+    prices = [LabeledPrice(label="Подписка на 30 дней", amount=dynamic_xtr)]
     payload = _build_payload("xtr", message.from_user.id)
     await message.bot.send_invoice(
         chat_id=message.chat.id,
@@ -403,21 +415,34 @@ async def send_stars_invoice(message: Message):
     )
 
 async def cmd_buy(message: Message):
+    dynamic_xtr = convert_rub_to_xtr(
+        amount_rub=float(SUB_PRICE_RUB),
+        rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+        default_xtr=SUB_PRICE_XTR,
+    )
     text = (
         f"{Emoji.MAGIC} **Оплата подписки**\n\n"
-        f"Стоимость: {SUB_PRICE_RUB}₽ / 30 дней\n\n"
+        f"Стоимость: {SUB_PRICE_RUB}₽ ({dynamic_xtr} Звезд (XTR)) за 30 дней\n\n"
         f"Выберите способ оплаты:" 
     )
     await message.answer(text, parse_mode=ParseMode.MARKDOWN_V2)
     # Отправляем доступные варианты
     if RUB_PROVIDER_TOKEN:
         await send_rub_invoice(message)
-    await send_stars_invoice(message)
+    try:
+        await send_stars_invoice(message)
+    except Exception as e:
+        logger.warning("Failed to send stars invoice: %s", e)
+        await message.answer(
+            f"{Emoji.WARNING} Telegram Stars временно недоступны. Попробуйте другой способ оплаты.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
     # Крипта: создаем инвойс через CryptoBot, если настроен токен
     payload = _build_payload("crypto", message.from_user.id)
-    inv = await create_crypto_invoice_async(
-        amount=float(SUB_PRICE_RUB),
-        asset=os.getenv("CRYPTO_ASSET", "USDT"),
+    if crypto_provider is None:
+        raise RuntimeError("Crypto provider not initialized")
+    inv = await crypto_provider.create_invoice(
+        amount_rub=float(SUB_PRICE_RUB),
         description="Подписка ИИ-Иван на 30 дней",
         payload=payload,
     )
@@ -454,21 +479,63 @@ async def cmd_status(message: Message):
     )
 
 async def pre_checkout(pre: PreCheckoutQuery):
-    await pre.answer(ok=True)
+    try:
+        payload = pre.invoice_payload or ""
+        parts = payload.split(":")
+        method = parts[1] if len(parts) >= 2 else ""
+        if method == "xtr":
+            expected_currency = "XTR"
+            expected_amount = convert_rub_to_xtr(
+                amount_rub=float(SUB_PRICE_RUB),
+                rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+                default_xtr=SUB_PRICE_XTR,
+            )
+        elif method == "rub":
+            expected_currency = "RUB"
+            expected_amount = SUB_PRICE_RUB_KOPEKS
+        else:
+            expected_currency = pre.currency.upper()
+            expected_amount = pre.total_amount
+
+        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(expected_amount):
+            await pre.answer(ok=False, error_message="Некорректные параметры оплаты")
+            return
+
+        await pre.answer(ok=True)
+    except Exception:
+        await pre.answer(ok=False, error_message="Ошибка проверки оплаты, попробуйте позже")
 
 async def on_successful_payment(message: Message):
     try:
         sp = message.successful_payment
         if sp is None:
             return
-        method = 'rub' if sp.currency.upper() == 'RUB' else ('xtr' if sp.currency.upper() == 'XTR' else sp.currency)
+        currency_up = sp.currency.upper()
+        if currency_up == 'RUB':
+            method = 'rub'
+            provider_name = 'telegram_rub'
+            amount_minor = sp.total_amount
+        elif currency_up == 'XTR':
+            method = 'xtr'
+            provider_name = 'telegram_stars'
+            amount_minor = sp.total_amount
+        else:
+            method = currency_up.lower()
+            provider_name = f'telegram_{method}'
+            amount_minor = sp.total_amount
+
+        if db is not None and sp.telegram_payment_charge_id:
+            exists = await db.transaction_exists_by_telegram_charge_id(sp.telegram_payment_charge_id)
+            if exists:
+                return
         if db is not None:
             # Запись транзакции и продление подписки
             await db.record_transaction(
                 user_id=message.from_user.id,
-                provider=f"telegram_{method}",
+                provider=provider_name,
                 currency=sp.currency,
                 amount=sp.total_amount,
+                amount_minor_units=amount_minor,
                 payload=sp.invoice_payload or "",
                 status="success",
                 telegram_payment_charge_id=sp.telegram_payment_charge_id,
@@ -539,6 +606,16 @@ async def main():
         window_seconds=config.rate_limit_window_seconds,
     )
     await rate_limiter.init()
+
+    # Инициализация сервисов
+    global access_service
+    access_service = AccessService(db=db, trial_limit=TRIAL_REQUESTS, admin_ids=ADMIN_IDS)
+    global openai_service
+    openai_service = OpenAIService()
+    global session_store
+    session_store = SessionStore(max_size=USER_SESSIONS_MAX, ttl_seconds=USER_SESSION_TTL_SECONDS)
+    global crypto_provider
+    crypto_provider = CryptoPayProvider(asset=os.getenv("CRYPTO_ASSET", "USDT"))
     
     # Устанавливаем команды
     await bot.set_my_commands([

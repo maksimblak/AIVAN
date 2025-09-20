@@ -64,6 +64,7 @@ class Database:
                 provider TEXT NOT NULL,
                 currency TEXT NOT NULL,
                 amount INTEGER NOT NULL,
+                amount_minor_units INTEGER,
                 payload TEXT,
                 status TEXT NOT NULL,
                 telegram_payment_charge_id TEXT,
@@ -77,6 +78,15 @@ class Database:
 
         # Helpful indexes for queries and reporting
         await self._exec("CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);")
+        await self._exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_tg_charge ON transactions(telegram_payment_charge_id);")
+
+        # Backfill schema for existing DBs: ensure amount_minor_units column exists
+        await self._exec("PRAGMA table_info(transactions);")
+        # SQLite can't conditionally add columns without checking, so try-catch
+        try:
+            await self._exec("ALTER TABLE transactions ADD COLUMN amount_minor_units INTEGER;")
+        except Exception:
+            pass
 
     # ---------------- Internal helpers ----------------
 
@@ -147,18 +157,19 @@ class Database:
 
     # ---------------- Transactions ----------------
 
-    async def record_transaction(self, *, user_id: int, provider: str, currency: str, amount: int, payload: str, status: str, telegram_payment_charge_id: Optional[str] = None, provider_payment_charge_id: Optional[str] = None) -> None:
+    async def record_transaction(self, *, user_id: int, provider: str, currency: str, amount: int, payload: str, status: str, telegram_payment_charge_id: Optional[str] = None, provider_payment_charge_id: Optional[str] = None, amount_minor_units: Optional[int] = None) -> None:
         now = _now_ts()
         await self._exec(
             """
-            INSERT INTO transactions (user_id, provider, currency, amount, payload, status, telegram_payment_charge_id, provider_payment_charge_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO transactions (user_id, provider, currency, amount, amount_minor_units, payload, status, telegram_payment_charge_id, provider_payment_charge_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
                 provider,
                 currency,
                 amount,
+                amount_minor_units if amount_minor_units is not None else amount,
                 payload,
                 status,
                 telegram_payment_charge_id,
@@ -174,6 +185,10 @@ class Database:
             "UPDATE transactions SET status = 'success', provider_payment_charge_id = COALESCE(?, provider_payment_charge_id), updated_at = ? WHERE telegram_payment_charge_id = ?",
             (provider_payment_charge_id, now, telegram_payment_charge_id),
         )
+
+    async def transaction_exists_by_telegram_charge_id(self, charge_id: str) -> bool:
+        row = await self._fetchone("SELECT 1 FROM transactions WHERE telegram_payment_charge_id = ?", (charge_id,))
+        return bool(row)
 
     # ---------------- Lifecycle ----------------
 

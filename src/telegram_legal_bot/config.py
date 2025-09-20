@@ -34,6 +34,15 @@ def _parse_int_list(val: Optional[str]) -> List[int]:
     return out
 
 
+def _parse_float(val: Optional[str]) -> Optional[float]:
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+
 @dataclass
 class Config:
     telegram_bot_token: str
@@ -58,6 +67,7 @@ class Config:
     redis_url: Optional[str]
     rate_limit_requests: int
     rate_limit_window_seconds: int
+    rub_per_xtr: Optional[float]
 
 
 _cached_config: Optional[Config] = None
@@ -96,6 +106,7 @@ def load_config() -> Config:
         redis_url=os.getenv("REDIS_URL", "").strip() or None,
         rate_limit_requests=_parse_int(os.getenv("RATE_LIMIT_REQUESTS", "10"), 10),
         rate_limit_window_seconds=_parse_int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"), 60),
+        rub_per_xtr=_parse_float(os.getenv("RUB_PER_XTR")),
     )
 
     _cached_config = cfg

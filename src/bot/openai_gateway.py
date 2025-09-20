@@ -4,6 +4,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse, quote
 
 import httpx
+import logging
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -60,11 +61,13 @@ async def _make_async_client() -> AsyncOpenAI:
     async def on_req(request: httpx.Request):
         request.extensions["start"] = time.perf_counter()
 
+    logger = logging.getLogger("http.client")
+
     async def on_resp(response: httpx.Response):
         start = response.request.extensions.get("start")
         dur = (time.perf_counter() - start) if start else None
         try:
-            print(
+            logger.info(
                 json.dumps(
                     {
                         "event": "http",
