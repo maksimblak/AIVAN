@@ -377,9 +377,7 @@ async def process_question(message: Message):
         # Форматируем ответ для HTML
         response_text = result["text"]
         
-        # Добавляем footer с напоминанием
-        footer = f"\n\n{Emoji.WARNING} <i>Данная информация носит консультационный характер и требует проверки практикующим юристом.</i>"
-        response_text += footer
+
         
         # Добавляем информацию о времени ответа
         time_info = f"\n\n{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"

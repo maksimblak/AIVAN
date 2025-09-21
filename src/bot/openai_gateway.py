@@ -99,7 +99,7 @@ async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
 
     Возвращает dict: { ok: bool, text?: str, usage?: Any, error?: str }
     """
-    model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-5")
     max_out = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
     verb = os.getenv("OPENAI_VERBOSITY", "medium").lower()
     effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").lower()

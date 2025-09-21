@@ -102,7 +102,7 @@ def show_config():
     
     print("\n⚙️ Конфигурация:")
     
-    model = os.getenv('OPENAI_MODEL', 'gpt-5-mini')
+    model = os.getenv('OPENAI_MODEL', 'gpt-5')
     print(f"   🤖 OpenAI модель: {model}")
     
     animation = os.getenv('USE_STATUS_ANIMATION', '1')
