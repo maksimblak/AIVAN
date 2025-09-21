@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -11,7 +11,8 @@ class UserSession:
     questions_count: int = 0
     total_response_time: float = 0.0
     last_question_time: Optional[datetime] = None
-    created_at: datetime = datetime.now()
+    created_at: datetime = field(default_factory=datetime.now)
+    pending_feedback_request_id: Optional[int] = None
 
     def add_question_stats(self, response_time: float) -> None:
         self.questions_count += 1
@@ -55,5 +56,3 @@ class SessionStore:
             for i in range(excess):
                 uid, _ = items_sorted[i]
                 self._sessions.pop(uid, None)
-
-
