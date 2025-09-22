@@ -183,7 +183,25 @@ def render_legal_html(raw: str) -> str:
     if '<' in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
         return sanitize_telegram_html(raw)
 
-    lines = raw.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    def _auto_paragraph_breaks(text: str) -> str:
+        # Normalize spaces
+        t = re.sub(r"\s+", " ", text)
+        # Insert breaks before numbered items like "1) ", "2) "
+        t = re.sub(r"(?<!\n)(?=\b\d+\)\s)", "\n", t)
+        # Insert breaks before section markers like "Вариант A/B/C/..."
+        t = re.sub(r"(?<!\n)(?=\bВариант\s+[A-Za-zА-ЯЁ])", "\n", t)
+        # Insert breaks before "Коротко" blocks
+        t = re.sub(r"(?<!\n)(?=\bКоротко\b)", "\n", t)
+        # Break after sentence end before a dash bullet
+        t = re.sub(r"(?<=[\.!?])\s+(?=—\s)", "\n", t)
+        # Ensure double break after explicit headings like ")" at line end handled later
+        return t
+
+    text = raw.replace('\r\n', '\n').replace('\r', '\n')
+    if '\n' not in text or len(text) > 800 and text.count('\n') < 3:
+        text = _auto_paragraph_breaks(text)
+
+    lines = text.split('\n')
     out: list[str] = []
     for line in lines:
         stripped = line.strip()
@@ -206,8 +224,9 @@ def render_legal_html(raw: str) -> str:
         )
         if is_heading:
             html_line = f"<b>{html_line}</b>"
-
-        out.append(html_line + "<br>")
+            out.append(html_line + "<br><br>")
+        else:
+            out.append(html_line + "<br>")
 
     # collapse excessive <br>
     html_result = ''.join(out)
