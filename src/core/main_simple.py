@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, Union, TYPE_CHECKING
 if TYPE_CHECKING:
     from src.core.db_advanced import DatabaseAdvanced
 from html import escape as html_escape
+import re
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
@@ -127,6 +128,92 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     
     return chunks
 
+def _md_links_to_anchors(line: str) -> str:
+    """Convert markdown links [text](url) into safe HTML anchors.
+
+    Both link text and URL are escaped; only http/https URLs are allowed.
+    """
+    pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+    result_parts: list[str] = []
+    last = 0
+    for m in pattern.finditer(line):
+        # escape non-link part
+        result_parts.append(html_escape(line[last:m.start()]))
+        text = html_escape(m.group(1))
+        url = html_escape(m.group(2), quote=True)
+        result_parts.append(f'<a href="{url}">{text}</a>')
+        last = m.end()
+    # tail
+    result_parts.append(html_escape(line[last:]))
+    return ''.join(result_parts)
+
+def sanitize_telegram_html(raw: str) -> str:
+    """Allow only Telegram-supported HTML tags; escape the rest.
+
+    Allowed: b, i, u, s, code, pre, a[href=http/https], br
+    """
+    if not raw:
+        return ""
+    # Start from fully escaped text
+    esc = html_escape(raw, quote=True)
+    # Restore <br>, <br/>, <br />
+    esc = re.sub(r"&lt;br\s*/?&gt;", "<br>", esc, flags=re.IGNORECASE)
+    # Restore simple tags exactly
+    for tag in ("b", "i", "u", "s", "code", "pre"):
+        esc = re.sub(fr"&lt;{tag}&gt;", fr"<{tag}>", esc, flags=re.IGNORECASE)
+        esc = re.sub(fr"&lt;/{tag}&gt;", fr"</{tag}>", esc, flags=re.IGNORECASE)
+    # Restore anchors with http(s) only; keep entities like &amp; inside href
+    esc = re.sub(r"&lt;a href=&quot;(https?://[^&quot;]+)&quot;&gt;", r'<a href="\1">', esc, flags=re.IGNORECASE)
+    esc = re.sub(r"&lt;/a&gt;", "</a>", esc, flags=re.IGNORECASE)
+    return esc
+
+def render_legal_html(raw: str) -> str:
+    """Beautify plain model text into simple, safe HTML similar to sample.
+
+    - Escapes HTML by default
+    - Converts [text](url) markdown links to <a>
+    - Bolds headings (lines ending with ':' or starting with 'N) ' or 'TL;DR')
+    - Normalizes bullets (leading '-', '—', '•') to an em dash '— '
+    - Replaces newlines with <br>
+    """
+    if not raw:
+        return ""
+
+    # If looks like HTML from the model, sanitize and keep structure
+    if '<' in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
+        return sanitize_telegram_html(raw)
+
+    lines = raw.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "":
+            out.append("<br>")
+            continue
+
+        # bullets
+        if re.match(r"^\s*[-•—]\s+", line):
+            line = re.sub(r"^\s*[-•—]\s+", "— ", line)
+
+        # transform md links and escape other parts
+        html_line = _md_links_to_anchors(line)
+
+        # headings
+        is_heading = (
+            stripped.endswith(":") or
+            re.match(r"^\s*\d+\)\s+", stripped) is not None or
+            stripped.upper().startswith("TL;DR")
+        )
+        if is_heading:
+            html_line = f"<b>{html_line}</b>"
+
+        out.append(html_line + "<br>")
+
+    # collapse excessive <br>
+    html_result = ''.join(out)
+    html_result = re.sub(r"(?:<br>\s*){3,}", "<br><br>", html_result)
+    return html_result
+
 async def _send_html_chunks(message: Message, html_text: str) -> None:
     """Send long HTML-safe text split into Telegram-sized chunks."""
     chunks = chunk_text(html_text)
@@ -134,8 +221,15 @@ async def _send_html_chunks(message: Message, html_text: str) -> None:
         try:
             await message.answer(chunk, parse_mode=ParseMode.HTML)
         except Exception as e:
-            logger.warning("Failed to send with HTML, retrying without formatting: %s", e)
-            await message.answer(chunk)
+            logger.warning("Failed to send HTML chunk, trying to sanitize and retry: %s", e)
+            # Retry with strict sanitization
+            try:
+                fixed = sanitize_telegram_html(chunk)
+                await message.answer(fixed, parse_mode=ParseMode.HTML)
+            except Exception as e2:
+                logger.warning("Sanitized HTML still failed, fallback to plain: %s", e2)
+                # Final fallback: plain text without tags
+                await message.answer(re.sub(r"<[^>]+>", "", chunk))
         if i < len(chunks) - 1:
             await asyncio.sleep(0.1)
 
@@ -398,7 +492,7 @@ async def process_question(message: Message):
             return
         
         # Форматируем ответ для HTML
-        response_text = html_escape(result["text"])  # escape to keep HTML parse_mode safe
+        response_text = render_legal_html(result.get("text", ""))
         
 
         
