@@ -107,6 +107,23 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_ratings_request ON ratings(request_id, created_at);"
         )
 
+        # Lightweight requests table to support ratings linkage in legacy DB
+        await self._exec(
+            """
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                request_type TEXT NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                response_time_ms INTEGER NOT NULL DEFAULT 0,
+                success INTEGER NOT NULL DEFAULT 1,
+                error_type TEXT,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
+            """
+        )
+
     # ---------------- Internal helpers ----------------
 
     async def _exec(self, query: str, params: tuple[Any, ...] = ()) -> None:
@@ -210,6 +227,29 @@ class Database:
         return bool(row)
 
     # ---------------- Ratings ----------------
+
+    async def record_request(
+        self,
+        user_id: int,
+        request_type: str = 'legal_question',
+        tokens_used: int = 0,
+        response_time_ms: int = 0,
+        success: bool = True,
+        error_type: Optional[str] = None,
+    ) -> int:
+        """Insert a request row and return its id (legacy DB implementation)."""
+        now = _now_ts()
+        async with self._lock:
+            def _insert() -> int:
+                cur = self._conn.execute(  # type: ignore[union-attr]
+                    """
+                    INSERT INTO requests (user_id, request_type, tokens_used, response_time_ms, success, error_type, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, request_type, tokens_used, response_time_ms, 1 if success else 0, error_type, now),
+                )
+                return int(cur.lastrowid)
+            return await asyncio.to_thread(_insert)
 
     async def add_rating(
         self,

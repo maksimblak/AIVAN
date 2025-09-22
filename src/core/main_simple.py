@@ -1,4 +1,4 @@
-"""
+﻿"""
 Простая версия Telegram бота ИИ-Иван
 Только /start и обработка вопросов, никаких кнопок и лишних команд
 """
@@ -33,7 +33,7 @@ from src.telegram_legal_bot.config import load_config
 from src.telegram_legal_bot.ratelimit import RateLimiter
 from src.core.access import AccessService
 from src.core.openai_service import OpenAIService
-from src.core.session_store import SessionStore
+from src.core.session_store import SessionStore, UserSession
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
 from src.core.validation import InputValidator, ValidationError, ValidationSeverity
 from src.core.exceptions import (
@@ -92,23 +92,6 @@ USER_SESSION_TTL_SECONDS = int(getattr(config, 'user_session_ttl_seconds', 3600)
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
-class UserSession:
-    """Простая сессия пользователя"""
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        self.questions_count = 0
-        self.total_response_time = 0.0
-        self.last_question_time: Optional[datetime] = None
-        self.created_at = datetime.now()
-        # Для системы рейтинга
-        self.pending_feedback_request_id: Optional[int] = None
-        
-    def add_question_stats(self, response_time: float):
-        """Добавить статистику вопроса"""
-        self.questions_count += 1
-        self.total_response_time += response_time
-        self.last_question_time = datetime.now()
-
 def get_user_session(user_id: int) -> UserSession:
     if session_store is None:
         raise RuntimeError("Session store not initialized")
@@ -144,6 +127,80 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     
     return chunks
 
+async def _send_html_chunks(message: Message, html_text: str) -> None:
+    """Send long HTML-safe text split into Telegram-sized chunks."""
+    chunks = chunk_text(html_text)
+    for i, chunk in enumerate(chunks):
+        try:
+            await message.answer(chunk, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.warning("Failed to send with HTML, retrying without formatting: %s", e)
+            await message.answer(chunk)
+        if i < len(chunks) - 1:
+            await asyncio.sleep(0.1)
+
+async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> Optional[str]:
+    result = InputValidator.validate_question(text, user_id)
+    if not result.is_valid:
+        bullet = "\n\u0007 "
+        error_msg = bullet.join(result.errors)
+        if result.severity == ValidationSeverity.CRITICAL:
+            await message.answer(
+                f"{Emoji.ERROR} <b>Критическая ошибка валидации</b>\n\n\u0007 {error_msg}\n\n<i>Попробуйте переформулировать запрос</i>",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await message.answer(
+                f"{Emoji.WARNING} <b>Ошибка в запросе</b>\n\n\u0007 {error_msg}",
+                parse_mode=ParseMode.HTML,
+            )
+        return None
+
+    if result.warnings:
+        bullet = "\n\u0007 "
+        logger.warning("Validation warnings for user %s: %s", user_id, bullet.join(result.warnings))
+
+    cleaned = (result.cleaned_data or "").strip()
+    if not cleaned:
+        await message.answer(
+            f"{Emoji.WARNING} <b>Пустой запрос</b>\n\nПожалуйста, опишите вопрос подробнее.",
+            parse_mode=ParseMode.HTML,
+        )
+        return None
+    return cleaned
+
+async def _rate_limit_guard(user_id: int, message: Message) -> bool:
+    if rate_limiter is None:
+        return True
+    allowed = await rate_limiter.allow(user_id)
+    if allowed:
+        return True
+    await message.answer(
+        f"{Emoji.WARNING} <b>Превышен лимит запросов</b>\n\nПопробуйте позже.",
+        parse_mode=ParseMode.HTML,
+    )
+    return False
+
+async def _start_status_indicator(message: Message):
+    if USE_ANIMATION:
+        status = AnimatedStatus(message.bot, message.chat.id)
+        await status.start()
+        return status
+    status = ProgressStatus(message.bot, message.chat.id)
+    await status.start("Обрабатываю ваш запрос...")
+    return status
+
+async def _stop_status_indicator(status) -> None:
+    if status is None:
+        return
+    try:
+        if hasattr(status, 'complete'):
+            await status.complete()
+        else:
+            await status.stop()
+    except Exception:
+        pass
+
 # ============ КОМАНДЫ ============
 
 async def cmd_start(message: Message):
@@ -163,7 +220,7 @@ async def cmd_start(message: Message):
 🤖 Привет, {user_name}! Добро пожаловать!
 
 ⭐️ Ваш персональный юридический ассистент
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ✨ Что я умею:
 🔍 Анализирую судебную практику РФ
@@ -177,7 +234,7 @@ async def cmd_start(message: Message):
 👨‍💼 Трудовое и административное право
 💰 Налоговое право и споры с ФНС
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 Примеры вопросов:
 
 📝 "Можно ли расторгнуть договор поставки за просрочку?"
@@ -185,7 +242,7 @@ async def cmd_start(message: Message):
 💰 "Какие риски при доначислении НДС?"
 🏢 "Порядок увеличения уставного капитала ООО"
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔥 Готов к работе! Отправьте ваш правовой вопрос
 """
@@ -231,40 +288,12 @@ async def process_question(message: Message):
     # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
     if error_handler is None:
         raise SystemException("Error handler not initialized", error_context)
-        
-    validation_result = InputValidator.validate_question(question_text, user_id)
-    
-    if not validation_result.is_valid:
-        error_msg = "\n• ".join(validation_result.errors)
-        if validation_result.severity == ValidationSeverity.CRITICAL:
-            await message.answer(
-                f"{Emoji.ERROR} <b>Критическая ошибка валидации</b>\n\n• {error_msg}\n\n<i>Обратитесь к администратору</i>",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        else:
-            await message.answer(
-                f"{Emoji.WARNING} <b>Ошибка в запросе</b>\n\n• {error_msg}",
-                parse_mode=ParseMode.HTML
-            )
-            return
-    
-    # Используем очищенные данные
-    question_text = validation_result.cleaned_data
-    
-    # Показываем предупреждения если есть
-    if validation_result.warnings:
-        warning_msg = "\n• ".join(validation_result.warnings)
-        logger.warning(f"Validation warnings for user {user_id}: {warning_msg}")
-    
-    if not question_text:
-        await message.answer(
-            f"{Emoji.WARNING} <b>Пустой запрос</b>\n\nПожалуйста, отправьте текст юридического вопроса.",
-            parse_mode=ParseMode.HTML
-        )
+    cleaned = await _validate_question_or_reply(message, question_text, user_id)
+    if not cleaned:
         return
-    
-    # Запускаем таймер
+    question_text = cleaned
+
+    # Timer
     timer = ResponseTimer()
     timer.start()
     
@@ -272,15 +301,9 @@ async def process_question(message: Message):
     
     try:
         # Global rate limit per user
-        if rate_limiter is not None:
-            allowed = await rate_limiter.allow(user_id)
-            if not allowed:
-                await message.answer(
-                    f"{Emoji.WARNING} <b>Слишком много запросов</b>\n\nПопробуйте позже.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-        # Индикатор печатания во время обработки
+        if not await _rate_limit_guard(user_id, message):
+            return
+        # 'Индикатор печатания во время обработки
         async with TypingContext(message.bot, message.chat.id):
             pass
         # Контроль доступа через сервис доступа (ООП)
@@ -294,10 +317,10 @@ async def process_question(message: Message):
                 )
                 return
             if decision.is_admin:
-                quota_text = escape_markdown_v2(f"\n\n{Emoji.STATS} Админ: безлимитный доступ")
+                quota_text = f"\n\n{Emoji.STATS} <b>Статус: безлимитный доступ</b>"
             elif decision.has_subscription and decision.subscription_until:
                 until_dt = datetime.fromtimestamp(decision.subscription_until)
-                quota_text = escape_markdown_v2(f"\n\n{Emoji.CALENDAR} Подписка активна до: {until_dt:%Y-%m-%d}")
+                quota_text = f"\n\n{Emoji.CALENDAR} <b>Подписка активна до:</b> {until_dt:%Y-%m-%d}"
             elif decision.trial_used is not None and decision.trial_remaining is not None:
                 quota_is_trial = True
                 quota_msg_core = html_escape(
@@ -375,33 +398,36 @@ async def process_question(message: Message):
             return
         
         # Форматируем ответ для HTML
-        response_text = result["text"]
+        response_text = html_escape(result["text"])  # escape to keep HTML parse_mode safe
         
 
         
         # Добавляем информацию о времени ответа
         time_info = f"\n\n{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
-        response_text += time_info
+        # response_text += time_info  # send separately below to preserve HTML
         
         # Добавляем информацию о квоте/подписке (кроме случая триала — его отправим отдельным сообщением)
         if 'quota_text' in locals() and quota_text and not quota_is_trial:
-            response_text += quota_text
+            pass  # send separately after chunks
         # Разбиваем на части и отправляем
-        chunks = chunk_text(response_text)
+        await _send_html_chunks(message, response_text)
         
-        for i, chunk in enumerate(chunks):
-            try:
-                await message.answer(chunk, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                logger.warning("Failed to send with HTML, retrying without formatting: %s", e)
-                # Резерв: отправляем без разметки
-                await message.answer(chunk)
-            
-            # Небольшая задержка между сообщениями
-            if i < len(chunks) - 1:
-                await asyncio.sleep(0.1)
+        # Резерв: отправляем без разметки
 
         # После ответа отправляем отдельное сообщение с квотой триала
+        # send time info separately to avoid HTML breakage
+        try:
+            await message.answer(time_info, parse_mode=ParseMode.HTML)
+        except Exception:
+            await message.answer(time_info)
+
+        # if non-trial quota footer is present, send it separately
+        if 'quota_text' in locals() and quota_text and not quota_is_trial:
+            try:
+                await message.answer(quota_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                await message.answer(quota_text)
+
         if quota_msg_to_send:
             try:
                 await message.answer(quota_msg_to_send, parse_mode=ParseMode.HTML)
@@ -429,7 +455,7 @@ async def process_question(message: Message):
                 logger.warning("Failed to record request statistics: %s", db_error)
         
         # Отправляем кнопки для рейтинга (если ответ успешен)
-        if result.get("ok", False):
+        if result.get("ok", False) and request_id is not None:
             # Используем реальный request_id если есть, иначе генерируем фейковый
             display_request_id = request_id if request_id else int(time.time() * 1000) % 1000000  # Фейковый ID
             logger.info(f"Sending rating buttons with display_request_id={display_request_id} (db_request_id={request_id})")
@@ -942,7 +968,7 @@ async def on_successful_payment(message: Message):
 
 # ============ ОБРАБОТКА ОШИБОК ============
 
-async def error_handler(event: ErrorEvent):
+async def log_only_aiogram_error(event: ErrorEvent):
     """Глобальный обработчик ошибок"""
     logger.exception("Critical error in bot: %s", event.exception)
 
