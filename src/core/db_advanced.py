@@ -575,47 +575,83 @@ class DatabaseAdvanced:
                 raise DatabaseException(f"Database error in extend_subscription_days: {str(e)}")
     
     async def record_transaction(
-        self, 
-        *, 
-        user_id: int, 
-        provider: str, 
-        currency: str, 
-        amount: int, 
-        payload: str, 
+        self,
+        *,
+        user_id: int,
+        provider: str,
+        currency: str,
+        amount: int,
+        payload: str,
         status: str,
-        telegram_payment_charge_id: Optional[str] = None, 
-        provider_payment_charge_id: Optional[str] = None, 
+        telegram_payment_charge_id: Optional[str] = None,
+        provider_payment_charge_id: Optional[str] = None,
         amount_minor_units: Optional[int] = None
     ) -> int:
         """Запись транзакции с возвратом ID"""
+        # Проверяем существование транзакции перед записью для idempotency
+        if telegram_payment_charge_id:
+            if await self.transaction_exists_by_telegram_charge_id(telegram_payment_charge_id):
+                # Возвращаем ID существующей транзакции
+                async with self.pool.acquire() as conn:
+                    try:
+                        cursor = await conn.execute(
+                            "SELECT id FROM transactions WHERE telegram_payment_charge_id = ?",
+                            (telegram_payment_charge_id,)
+                        )
+                        row = await cursor.fetchone()
+                        await cursor.close()
+
+                        if row:
+                            logger.info(f"Transaction with charge_id {telegram_payment_charge_id} already exists, returning existing ID: {row[0]}")
+                            return row[0]
+                    except Exception as e:
+                        logger.warning(f"Error retrieving existing transaction ID: {e}")
+
         async with self.pool.acquire() as conn:
             try:
                 now = int(time.time())
                 cursor = await conn.execute(
                     """
-                    INSERT INTO transactions 
-                    (user_id, provider, currency, amount, amount_minor_units, payload, status, 
+                    INSERT INTO transactions
+                    (user_id, provider, currency, amount, amount_minor_units, payload, status,
                      telegram_payment_charge_id, provider_payment_charge_id, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        user_id, provider, currency, amount, 
+                        user_id, provider, currency, amount,
                         amount_minor_units if amount_minor_units is not None else amount,
                         payload, status, telegram_payment_charge_id, provider_payment_charge_id,
                         now, now
                     )
                 )
-                
+
                 transaction_id = cursor.lastrowid
                 await cursor.close()
-                
+
                 self.transaction_count += 1 if self.enable_metrics else 0
                 self.query_count += 1 if self.enable_metrics else 0
-                
+
+                logger.info(f"Created new transaction with ID: {transaction_id}, charge_id: {telegram_payment_charge_id}")
                 return transaction_id
-                
+
             except Exception as e:
                 self.error_count += 1 if self.enable_metrics else 0
+                # Если ошибка UNIQUE constraint, проверяем ещё раз
+                if "UNIQUE constraint failed" in str(e) and telegram_payment_charge_id:
+                    logger.warning(f"UNIQUE constraint failed for charge_id {telegram_payment_charge_id}, checking existing transaction")
+                    if await self.transaction_exists_by_telegram_charge_id(telegram_payment_charge_id):
+                        # Возвращаем ID существующей транзакции
+                        cursor = await conn.execute(
+                            "SELECT id FROM transactions WHERE telegram_payment_charge_id = ?",
+                            (telegram_payment_charge_id,)
+                        )
+                        row = await cursor.fetchone()
+                        await cursor.close()
+
+                        if row:
+                            logger.info(f"Returning existing transaction ID after constraint error: {row[0]}")
+                            return row[0]
+
                 raise DatabaseException(f"Database error in record_transaction: {str(e)}")
     
     async def transaction_exists_by_telegram_charge_id(self, charge_id: str) -> bool:
