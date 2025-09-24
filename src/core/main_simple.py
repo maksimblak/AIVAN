@@ -29,9 +29,13 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    Document,
+    ContentType,
 )
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from src.bot.logging_setup import setup_logging
 from src.bot.promt import LEGAL_SYSTEM_PROMPT, JUDICIAL_PRACTICE_SEARCH_PROMPT
@@ -60,6 +64,7 @@ from src.core.exceptions import (
     RateLimitException,
     SystemException,
 )
+from src.documents.base import ProcessingError
 
 SAFE_LIMIT = 3900  # чуть меньше телеграмного 4096 (запас на теги)
 # ============ КОНФИГУРАЦИЯ ============
@@ -105,10 +110,17 @@ openai_service: Optional[OpenAIService] = None
 session_store: Optional[SessionStore] = None
 crypto_provider: Optional[CryptoPayProvider] = None
 error_handler: Optional[ErrorHandler] = None
+document_manager: Optional[Any] = None  # DocumentManager будет инициализирован позже
 
 # Политика сессий
 USER_SESSIONS_MAX = int(getattr(config, "user_sessions_max", 10000) or 10000)
 USER_SESSION_TTL_SECONDS = int(getattr(config, "user_session_ttl_seconds", 3600) or 3600)
+
+# ============ СОСТОЯНИЯ ДЛЯ РАБОТЫ С ДОКУМЕНТАМИ ============
+
+class DocumentProcessingStates(StatesGroup):
+    waiting_for_document = State()
+    processing_document = State()
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
@@ -546,7 +558,10 @@ async def cmd_start(message: Message):
             InlineKeyboardButton(text="📋 Консультация", callback_data="general_consultation")
         ],
         [
-            InlineKeyboardButton(text="📄 Документы", callback_data="prepare_documents"),
+            InlineKeyboardButton(text="📄 Подготовка документов", callback_data="prepare_documents"),
+            InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing")
+        ],
+        [
             InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info")
         ]
     ])
@@ -1322,6 +1337,215 @@ async def handle_help_info_callback(callback: CallbackQuery):
         await callback.answer("❌ Произошла ошибка при получении справки")
 
 
+# ============ ОБРАБОТЧИКИ СИСТЕМЫ ДОКУМЕНТООБОРОТА ============
+
+async def handle_document_processing(callback: CallbackQuery):
+    """Обработка кнопки работы с документами"""
+    try:
+        operations = document_manager.get_supported_operations()
+
+        buttons = []
+        for op_key, op_info in operations.items():
+            emoji = op_info.get("emoji", "📄")
+            name = op_info.get("name", op_key)
+            buttons.append([InlineKeyboardButton(
+                text=f"{emoji} {name}",
+                callback_data=f"doc_operation_{op_key}"
+            )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
+
+        message_text = """
+🗂️ **Работа с документами**
+
+Выберите операцию для работы с документами:
+
+📋 **Саммаризация** - краткая выжимка документа
+⚠️ **Анализ рисков** - поиск проблемных мест
+💬 **Чат с документом** - задавайте вопросы по тексту
+🔒 **Обезличивание** - удаление персональных данных
+🌍 **Перевод** - перевод на другие языки
+👁️ **OCR** - распознавание сканированных документов
+
+Поддерживаемые форматы: PDF, DOCX, DOC, TXT, изображения
+        """
+
+        await callback.message.edit_text(
+            message_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        await callback.answer()
+
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}")
+        logger.error(f"Ошибка в handle_document_processing: {e}", exc_info=True)
+
+
+async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора операции с документом"""
+    try:
+        operation = callback.data.replace("doc_operation_", "")
+        operation_info = document_manager.get_operation_info(operation)
+
+        if not operation_info:
+            await callback.answer("Неизвестная операция")
+            return
+
+        # Сохраняем выбранную операцию в состояние
+        await state.update_data(document_operation=operation)
+
+        emoji = operation_info.get("emoji", "📄")
+        name = operation_info.get("name", operation)
+        description = operation_info.get("description", "")
+        formats = ", ".join(operation_info.get("formats", []))
+
+        message_text = f"""
+{emoji} **{name}**
+
+{description}
+
+**Поддерживаемые форматы:** {formats}
+
+📎 **Загрузите документ** для обработки или отправьте файл.
+        """
+
+        await callback.message.edit_text(
+            message_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад к операциям", callback_data="document_processing")]
+            ])
+        )
+        await callback.answer()
+
+        # Переходим в состояние ожидания документа
+        await state.set_state(DocumentProcessingStates.waiting_for_document)
+
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}")
+        logger.error(f"Ошибка в handle_document_operation: {e}", exc_info=True)
+
+
+async def handle_back_to_menu(callback: CallbackQuery, state: FSMContext):
+    """Возврат в главное меню"""
+    try:
+        # Очищаем состояние FSM
+        await state.clear()
+
+        # Отправляем главное меню
+        await cmd_start(callback.message)
+        await callback.answer()
+
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}")
+        logger.error(f"Ошибка в handle_back_to_menu: {e}", exc_info=True)
+
+
+async def handle_document_upload(message: Message, state: FSMContext):
+    """Обработка загружённого документа"""
+    try:
+        if not message.document:
+            await message.answer("❌ Ошибка: документ не найден")
+            return
+
+        # Получаем данные из состояния
+        data = await state.get_data()
+        operation = data.get("document_operation")
+
+        if not operation:
+            await message.answer("❌ Операция не выбрана. Начните заново с /start")
+            await state.clear()
+            return
+
+        # Переходим в состояние обработки
+        await state.set_state(DocumentProcessingStates.processing_document)
+
+        # Информация о файле
+        file_name = message.document.file_name or "unknown"
+        file_size = message.document.file_size or 0
+        mime_type = message.document.mime_type or "application/octet-stream"
+
+        # Проверяем размер файла (максимум 50MB)
+        max_size = 50 * 1024 * 1024
+        if file_size > max_size:
+            await message.answer(f"❌ Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ")
+            await state.clear()
+            return
+
+        # Показываем статус обработки
+        status_msg = await message.answer(
+            f"📄 Обрабатываем документ **{file_name}**...\n\n"
+            f"⏳ Операция: {document_manager.get_operation_info(operation)['name']}\n"
+            f"📊 Размер: {file_size // 1024} КБ",
+            parse_mode="Markdown"
+        )
+
+        try:
+            # Скачиваем файл
+            file_info = await message.bot.get_file(message.document.file_id)
+            file_path = file_info.file_path
+
+            if not file_path:
+                raise ProcessingError("Не удалось получить путь к файлу", "FILE_ERROR")
+
+            file_content = await message.bot.download_file(file_path)
+
+            # Обрабатываем документ
+            result = await document_manager.process_document(
+                user_id=message.from_user.id,
+                file_content=file_content.read(),
+                original_name=file_name,
+                mime_type=mime_type,
+                operation=operation
+            )
+
+            # Удаляем статусное сообщение
+            try:
+                await status_msg.delete()
+            except:
+                pass
+
+            if result.success:
+                # Форматируем результат для Telegram
+                formatted_result = document_manager.format_result_for_telegram(result, operation)
+
+                # Отправляем результат
+                await message.answer(
+                    formatted_result,
+                    parse_mode="Markdown"
+                )
+
+                logger.info(f"Successfully processed document {file_name} for user {message.from_user.id}")
+            else:
+                await message.answer(
+                    f"❌ **Ошибка обработки документа**\n\n{result.message}",
+                    parse_mode="Markdown"
+                )
+
+        except Exception as e:
+            # Удаляем статусное сообщение в случае ошибки
+            try:
+                await status_msg.delete()
+            except:
+                pass
+
+            await message.answer(
+                f"❌ **Ошибка обработки документа**\n\n{str(e)}",
+                parse_mode="Markdown"
+            )
+            logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
+
+        finally:
+            # Очищаем состояние
+            await state.clear()
+
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка: {str(e)}")
+        logger.error(f"Error in handle_document_upload: {e}", exc_info=True)
+        await state.clear()
+
+
 async def cmd_ratings_stats(message: Message):
     """Команда для просмотра статистики рейтингов (только для админов)"""
     if message.from_user.id not in ADMIN_IDS:
@@ -1523,7 +1747,7 @@ async def main():
     logger.info("🚀 Starting AI-Ivan (simple)")
 
     # Инициализация глобальных переменных
-    global db, openai_service, rate_limiter, access_service, session_store, crypto_provider, error_handler
+    global db, openai_service, rate_limiter, access_service, session_store, crypto_provider, error_handler, document_manager
 
     # Выбираем тип базы данных
     use_advanced_db = os.getenv("USE_ADVANCED_DB", "1") == "1"
@@ -1571,6 +1795,11 @@ async def main():
     session_store = SessionStore(max_size=USER_SESSIONS_MAX, ttl_seconds=USER_SESSION_TTL_SECONDS)
     crypto_provider = CryptoPayProvider(asset=os.getenv("CRYPTO_ASSET", "USDT"))
     error_handler = ErrorHandler(logger=logger)
+
+    # Инициализация системы документооборота
+    from src.documents import DocumentManager
+    document_manager = DocumentManager(openai_service=openai_service)
+    logger.info("📄 Document processing system initialized")
 
     # Регистрируем recovery handler для БД
     async def database_recovery_handler(exc):
@@ -1704,6 +1933,12 @@ async def main():
     dp.callback_query.register(handle_general_consultation_callback, F.data == "general_consultation")
     dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
     dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
+
+    # Обработчики системы документооборота
+    dp.callback_query.register(handle_document_processing, F.data == "document_processing")
+    dp.callback_query.register(handle_document_operation, F.data.startswith("doc_operation_"))
+    dp.callback_query.register(handle_back_to_menu, F.data == "back_to_menu")
+    dp.message.register(handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document)
 
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)
