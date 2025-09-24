@@ -20,13 +20,23 @@ import re
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.types import Message, BotCommand, ErrorEvent, LabeledPrice, PreCheckoutQuery, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    BotCommand,
+    ErrorEvent,
+    LabeledPrice,
+    PreCheckoutQuery,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
 
 from src.bot.logging_setup import setup_logging
 from src.bot.promt import LEGAL_SYSTEM_PROMPT
 from src.bot.ui_components import Emoji, escape_markdown_v2
+from src.bot.stream_manager import StreamManager, StreamingCallback
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
 from src.core.db import Database
 from src.telegram_legal_bot.config import load_config
@@ -37,11 +47,20 @@ from src.core.session_store import SessionStore, UserSession
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
 from src.core.validation import InputValidator, ValidationSeverity
 from src.core.exceptions import (
-    ErrorHandler, ErrorContext, ErrorType,
-    ValidationException, DatabaseException, OpenAIException, TelegramException,
-    NetworkException, PaymentException, AuthException, RateLimitException,
-    SystemException
+    ErrorHandler,
+    ErrorContext,
+    ErrorType,
+    ValidationException,
+    DatabaseException,
+    OpenAIException,
+    TelegramException,
+    NetworkException,
+    PaymentException,
+    AuthException,
+    RateLimitException,
+    SystemException,
 )
+
 SAFE_LIMIT = 3900  # чуть меньше телеграмного 4096 (запас на теги)
 # ============ КОНФИГУРАЦИЯ ============
 
@@ -52,6 +71,7 @@ logger = logging.getLogger("ai-ivan.simple")
 config = load_config()
 BOT_TOKEN = config.telegram_bot_token
 USE_ANIMATION = config.use_status_animation
+USE_STREAMING = os.getenv("USE_STREAMING", "1").lower() in ("1", "true", "yes", "on")
 MAX_MESSAGE_LENGTH = 4000
 
 # Подписки и платежи
@@ -70,7 +90,7 @@ SUB_PRICE_XTR = config.subscription_price_xtr  # XTR
 # Динамическая цена в XTR, рассчитанная на старте по курсу (если задан RUB_PER_XTR)
 DYNAMIC_PRICE_XTR = convert_rub_to_xtr(
     amount_rub=float(SUB_PRICE_RUB),
-    rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+    rub_per_xtr=getattr(config, "rub_per_xtr", None),
     default_xtr=SUB_PRICE_XTR,
 )
 
@@ -87,17 +107,20 @@ crypto_provider: Optional[CryptoPayProvider] = None
 error_handler: Optional[ErrorHandler] = None
 
 # Политика сессий
-USER_SESSIONS_MAX = int(getattr(config, 'user_sessions_max', 10000) or 10000)
-USER_SESSION_TTL_SECONDS = int(getattr(config, 'user_session_ttl_seconds', 3600) or 3600)
+USER_SESSIONS_MAX = int(getattr(config, "user_sessions_max", 10000) or 10000)
+USER_SESSION_TTL_SECONDS = int(getattr(config, "user_session_ttl_seconds", 3600) or 3600)
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
+
 
 def get_user_session(user_id: int) -> UserSession:
     if session_store is None:
         raise RuntimeError("Session store not initialized")
     return session_store.get_or_create(user_id)
 
+
 # ============ УТИЛИТЫ ============
+
 
 def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     """Разбивает текст на части для отправки в Telegram"""
@@ -107,25 +130,26 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     chunks = []
     current_chunk = ""
 
-    paragraphs = text.split('\n\n')
+    paragraphs = text.split("\n\n")
     for paragraph in paragraphs:
-        if len(current_chunk + paragraph + '\n\n') <= max_length:
-            current_chunk += paragraph + '\n\n'
+        if len(current_chunk + paragraph + "\n\n") <= max_length:
+            current_chunk += paragraph + "\n\n"
         else:
             if current_chunk:
                 chunks.append(current_chunk.strip())
-                current_chunk = paragraph + '\n\n'
+                current_chunk = paragraph + "\n\n"
             else:
                 # Параграф слишком длинный, разбиваем принудительно
                 while len(paragraph) > max_length:
                     chunks.append(paragraph[:max_length])
                     paragraph = paragraph[max_length:]
-                current_chunk = paragraph + '\n\n'
+                current_chunk = paragraph + "\n\n"
 
     if current_chunk:
         chunks.append(current_chunk.strip())
 
     return chunks
+
 
 def _md_links_to_anchors(line: str) -> str:
     """Convert markdown links [text](url) into safe HTML anchors.
@@ -137,14 +161,15 @@ def _md_links_to_anchors(line: str) -> str:
     last = 0
     for m in pattern.finditer(line):
         # escape non-link part
-        result_parts.append(html_escape(line[last:m.start()]))
+        result_parts.append(html_escape(line[last : m.start()]))
         text = html_escape(m.group(1))
         url = html_escape(m.group(2), quote=True)
         result_parts.append(f'<a href="{url}">{text}</a>')
         last = m.end()
     # tail
     result_parts.append(html_escape(line[last:]))
-    return ''.join(result_parts)
+    return "".join(result_parts)
+
 
 def sanitize_telegram_html(raw: str) -> str:
     """Allow only Telegram-supported HTML tags; escape the rest.
@@ -159,12 +184,18 @@ def sanitize_telegram_html(raw: str) -> str:
     esc = re.sub(r"&lt;br\s*/?&gt;", "<br>", esc, flags=re.IGNORECASE)
     # Restore simple tags exactly
     for tag in ("b", "i", "u", "s", "code", "pre"):
-        esc = re.sub(fr"&lt;{tag}&gt;", fr"<{tag}>", esc, flags=re.IGNORECASE)
-        esc = re.sub(fr"&lt;/{tag}&gt;", fr"</{tag}>", esc, flags=re.IGNORECASE)
+        esc = re.sub(rf"&lt;{tag}&gt;", rf"<{tag}>", esc, flags=re.IGNORECASE)
+        esc = re.sub(rf"&lt;/{tag}&gt;", rf"</{tag}>", esc, flags=re.IGNORECASE)
     # Restore anchors with http(s) only; keep entities like &amp; inside href
-    esc = re.sub(r"&lt;a href=&quot;(https?://[^&quot;]+)&quot;&gt;", r'<a href="\1">', esc, flags=re.IGNORECASE)
+    esc = re.sub(
+        r"&lt;a href=&quot;(https?://[^&quot;]+)&quot;&gt;",
+        r'<a href="\1">',
+        esc,
+        flags=re.IGNORECASE,
+    )
     esc = re.sub(r"&lt;/a&gt;", "</a>", esc, flags=re.IGNORECASE)
     return esc
+
 
 def render_legal_html(raw: str) -> str:
     """Beautify plain model text into simple, safe HTML.
@@ -179,7 +210,7 @@ def render_legal_html(raw: str) -> str:
         return ""
 
     # If looks like HTML from the model, sanitize and keep structure
-    if '<' in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
+    if "<" in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
         return sanitize_telegram_html(raw)
 
     def _auto_paragraph_breaks(text: str) -> str:
@@ -203,12 +234,12 @@ def render_legal_html(raw: str) -> str:
 
         return t
 
-    text = raw.replace('\r\n', '\n').replace('\r', '\n')
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
 
     # Always apply auto paragraph breaks for better structure
     text = _auto_paragraph_breaks(text)
 
-    lines = text.split('\n')
+    lines = text.split("\n")
     out: list[str] = []
 
     for line in lines:
@@ -230,9 +261,9 @@ def render_legal_html(raw: str) -> str:
 
         # Enhanced heading detection
         is_heading = (
-            stripped.endswith(":") or
-            stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ")) or
-            re.match(r"^\s*\d+\.\s+[А-ЯA-Z]", stripped) is not None  # "1. Какие статьи"
+            stripped.endswith(":")
+            or stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ"))
+            or re.match(r"^\s*\d+\.\s+[А-ЯA-Z]", stripped) is not None  # "1. Какие статьи"
         )
 
         # Special formatting for article references AFTER escaping
@@ -246,11 +277,14 @@ def render_legal_html(raw: str) -> str:
             out.append(html_line + "<br>")
 
     # Improved br collapse - better paragraph separation
-    html_result = ''.join(out)
+    html_result = "".join(out)
     html_result = re.sub(r"(?:<br>\s*){4,}", "<br><br><br>", html_result)  # Max 3 <br> tags
-    html_result = re.sub(r"(?:<br>\s*){3,}", "<br><br>", html_result)  # Usually 2 <br> for paragraphs
+    html_result = re.sub(
+        r"(?:<br>\s*){3,}", "<br><br>", html_result
+    )  # Usually 2 <br> for paragraphs
 
     return html_result
+
 
 def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
     """
@@ -314,9 +348,10 @@ def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
         else:
             # 4) крайний случай — жёсткая нарезка без учёта предложений
             for i in range(0, len(block), hard_limit):
-                final.append(block[i:i+hard_limit])
+                final.append(block[i : i + hard_limit])
 
     return [b.strip() for b in final if b.strip()]
+
 
 async def _send_html_chunks(message, html_text: str) -> None:
     """Отправляем длинный HTML несколькими сообщениями, без превью ссылок."""
@@ -325,17 +360,14 @@ async def _send_html_chunks(message, html_text: str) -> None:
     for i, chunk in enumerate(parts):
         logger.debug(f"Chunk {i+1}: {chunk[:100]}...")
         try:
-            await message.answer(
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            await message.answer(chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             logger.debug(f"Successfully sent chunk {i+1}")
         except Exception as e:
             logger.warning(f"Error sending chunk {i+1} to user {message.from_user.id}: {e}")
             # если вдруг разорвали тег — санитайз и повтор
             try:
                 from html import escape as _esc
+
                 # грубая санация: экранируем всё и восстанавливаем допустимые теги
                 safe = _esc(chunk, quote=True)
                 # Восстанавливаем все нужные HTML теги
@@ -346,16 +378,13 @@ async def _send_html_chunks(message, html_text: str) -> None:
                 safe = re.sub(r"&lt;/i&gt;", "</i>", safe, flags=re.IGNORECASE)
                 safe = re.sub(r"&lt;code&gt;", "<code>", safe, flags=re.IGNORECASE)
                 safe = re.sub(r"&lt;/code&gt;", "</code>", safe, flags=re.IGNORECASE)
-                await message.answer(
-                    safe,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True
-                )
+                await message.answer(safe, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             except Exception:
                 # финальный фоллбек — голый текст
                 await message.answer(re.sub(r"<[^>]+>", "", chunk))
         if i < len(parts) - 1:
             await asyncio.sleep(0.1)
+
 
 async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> Optional[str]:
     result = InputValidator.validate_question(text, user_id)
@@ -387,6 +416,7 @@ async def _validate_question_or_reply(message: Message, text: str, user_id: int)
         return None
     return cleaned
 
+
 async def _rate_limit_guard(user_id: int, message: Message) -> bool:
     if rate_limiter is None:
         return True
@@ -399,7 +429,11 @@ async def _rate_limit_guard(user_id: int, message: Message) -> bool:
     )
     return False
 
+
 async def _start_status_indicator(message: Message):
+    if not message.bot:
+        return None
+
     if USE_ANIMATION:
         status = AnimatedStatus(message.bot, message.chat.id)
         await status.start()
@@ -408,25 +442,35 @@ async def _start_status_indicator(message: Message):
     await status.start("Обрабатываю ваш запрос...")  # уже экранировано для HTML
     return status
 
+
 async def _stop_status_indicator(status) -> None:
     if status is None:
         return
     try:
-        if hasattr(status, 'complete'):
+        if hasattr(status, "complete"):
             await status.complete()
         else:
             await status.stop()
     except Exception:
         pass
 
+
 # ============ КОМАНДЫ ============
+
 
 async def cmd_start(message: Message):
     """Единственная команда - приветствие"""
+    if not message.from_user:
+        return
+
     user_session = get_user_session(message.from_user.id)  # noqa: F841 (инициализация)
     # Обеспечим запись в БД
     if db is not None and hasattr(db, "ensure_user"):
-        await db.ensure_user(message.from_user.id, default_trial=TRIAL_REQUESTS, is_admin=message.from_user.id in ADMIN_IDS)
+        await db.ensure_user(
+            message.from_user.id,
+            default_trial=TRIAL_REQUESTS,
+            is_admin=message.from_user.id in ADMIN_IDS,
+        )
     user_name = message.from_user.first_name or "Пользователь"
 
     # Подробное приветствие
@@ -469,20 +513,22 @@ async def cmd_start(message: Message):
     await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2)
     logger.info("User %s started bot", message.from_user.id)
 
+
 # ============ ОБРАБОТКА ВОПРОСОВ ============
+
 
 async def process_question(message: Message):
     """Главный обработчик юридических вопросов"""
+    if not message.from_user:
+        return
+
     user_id = message.from_user.id
     chat_id = message.chat.id
     message_id = message.message_id
 
     # Создаем контекст для обработки ошибок
     error_context = ErrorContext(
-        user_id=user_id,
-        chat_id=chat_id,
-        message_id=message_id,
-        function_name="process_question"
+        user_id=user_id, chat_id=chat_id, message_id=message_id, function_name="process_question"
     )
 
     user_session = get_user_session(user_id)
@@ -490,7 +536,7 @@ async def process_question(message: Message):
     quota_msg_to_send: Optional[str] = None
 
     # Проверяем, не ждем ли мы комментарий для рейтинга
-    if not hasattr(user_session, 'pending_feedback_request_id'):
+    if not hasattr(user_session, "pending_feedback_request_id"):
         user_session.pending_feedback_request_id = None
 
     if user_session.pending_feedback_request_id is not None:
@@ -499,7 +545,7 @@ async def process_question(message: Message):
     quota_is_trial: bool = False
 
     # Проверяем, что это не команда
-    if question_text.startswith('/'):
+    if question_text.startswith("/"):
         return
 
     # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
@@ -548,23 +594,62 @@ async def process_question(message: Message):
 
         try:
             # Имитация этапов
-            if not USE_ANIMATION and hasattr(status, 'update_stage'):
+            if not USE_ANIMATION and hasattr(status, "update_stage"):
                 await asyncio.sleep(0.5)
                 await status.update_stage(1, f"{Emoji.SEARCH} Анализирую ваш вопрос...")
                 await asyncio.sleep(1)
-                await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику...")
+                await status.update_stage(
+                    2, f"{Emoji.LOADING} Ищу релевантную судебную практику..."
+                )
 
             # Основной запрос к ИИ
             if openai_service is None:
                 raise SystemException("OpenAI service not initialized", error_context)
 
             request_start_time = time.time()
+            stream_manager = None
+
             try:
-                async with TypingContext(message.bot, message.chat.id):
-                    result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+                if USE_STREAMING and message.bot:
+                    # Streaming режим
+                    stream_manager = StreamManager(
+                        bot=message.bot,
+                        chat_id=message.chat.id,
+                        update_interval=1.5,
+                        buffer_size=100,
+                    )
+
+                    # Запускаем streaming
+                    await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")
+
+                    # Создаем callback
+                    callback = StreamingCallback(stream_manager)
+
+                    # Выполняем streaming запрос
+                    result = await openai_service.ask_legal_stream(
+                        LEGAL_SYSTEM_PROMPT, question_text, callback=callback
+                    )
+                else:
+                    # Обычный режим
+                    if message.bot:
+                        async with TypingContext(message.bot, message.chat.id):
+                            result = await openai_service.ask_legal(
+                                LEGAL_SYSTEM_PROMPT, question_text
+                            )
+                    else:
+                        result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+
                 request_error_type = None
             except Exception as e:
                 request_error_type = type(e).__name__
+
+                # Останавливаем streaming в случае ошибки
+                if stream_manager:
+                    try:
+                        await stream_manager.stop()
+                    except:
+                        pass
+
                 # Специфичная обработка ошибок OpenAI
                 if "rate limit" in str(e).lower() or "quota" in str(e).lower():
                     raise OpenAIException(str(e), error_context, is_quota_error=True)
@@ -573,8 +658,10 @@ async def process_question(message: Message):
                 else:
                     raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
 
-            if not USE_ANIMATION and hasattr(status, 'update_stage'):
-                await status.update_stage(3, f"{Emoji.DOCUMENT} Формирую структурированный ответ...")
+            if not USE_STREAMING and not USE_ANIMATION and hasattr(status, "update_stage"):
+                await status.update_stage(
+                    3, f"{Emoji.DOCUMENT} Формирую структурированный ответ..."
+                )
                 await asyncio.sleep(0.4)
                 await status.update_stage(4, f"{Emoji.MAGIC} Финализирую рекомендации...")
 
@@ -588,23 +675,37 @@ async def process_question(message: Message):
             error_text = result.get("error", "Неизвестная ошибка")
             logger.error("OpenAI error for user %s: %s", user_id, error_text)
 
-            await message.answer(
-                f"""{Emoji.ERROR} <b>Произошла ошибка</b>
+            # Для streaming показываем ошибку в том же сообщении
+            if USE_STREAMING and stream_manager:
+                await stream_manager.finalize(
+                    f"""{Emoji.ERROR} <b>Произошла ошибка</b>
+
+Не удалось получить ответ. Попробуйте ещё раз чуть позже.
+
+{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса
+
+<code>{html_escape(error_text[:300])}</code>"""
+                )
+            else:
+                await message.answer(
+                    f"""{Emoji.ERROR} <b>Произошла ошибка</b>
 
 Не удалось получить ответ. Попробуйте ещё раз чуть позже.
 
 {Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса
 
 <code>{html_escape(error_text[:300])}</code>""",
-                parse_mode=ParseMode.HTML
-            )
+                    parse_mode=ParseMode.HTML,
+                )
             return
 
-        # Форматируем ответ для HTML
-        response_text = render_legal_html(result.get("text", ""))
+        # Для streaming ответ уже отправлен через callback
+        if not USE_STREAMING:
+            # Форматируем ответ для HTML
+            response_text = render_legal_html(result.get("text", ""))
 
-        # Отправляем основной текст чанками
-        await _send_html_chunks(message, response_text)
+            # Отправляем основной текст чанками
+            await _send_html_chunks(message, response_text)
 
         # Информация о времени ответа — отдельным сообщением
         time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
@@ -614,7 +715,7 @@ async def process_question(message: Message):
             await message.answer(time_info)
 
         # if non-trial quota footer is present, send it separately
-        if 'quota_text' in locals() and quota_text and not quota_is_trial:
+        if "quota_text" in locals() and quota_text and not quota_is_trial:
             try:
                 await message.answer(quota_text, parse_mode=ParseMode.HTML)
             except Exception:
@@ -630,16 +731,16 @@ async def process_question(message: Message):
         user_session.add_question_stats(timer.duration)
 
         # Записываем статистику в базу данных (если это продвинутая версия БД)
-        if hasattr(db, 'record_request') and 'request_start_time' in locals():
+        if db is not None and hasattr(db, "record_request") and "request_start_time" in locals():
             try:
                 request_time_ms = int((time.time() - request_start_time) * 1000)
                 await db.record_request(
                     user_id=user_id,
-                    request_type='legal_question',
+                    request_type="legal_question",
                     tokens_used=0,  # Пока не подсчитываем токены
                     response_time_ms=request_time_ms,
                     success=result.get("ok", False),
-                    error_type=None if result.get("ok", False) else "openai_error"
+                    error_type=None if result.get("ok", False) else "openai_error",
                 )
             except Exception as db_error:
                 logger.warning("Failed to record request statistics: %s", db_error)
@@ -651,7 +752,9 @@ async def process_question(message: Message):
         if error_handler is not None:
             try:
                 custom_exc = await error_handler.handle_exception(e, error_context)
-                user_message = getattr(custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже.")
+                user_message = getattr(
+                    custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже."
+                )
             except Exception:
                 logger.exception("Error handler failed for user %s", user_id)
                 user_message = "Произошла системная ошибка. Попробуйте позже."
@@ -660,17 +763,23 @@ async def process_question(message: Message):
             user_message = "Произошла ошибка. Попробуйте позже."
 
         # Записываем статистику неудачного запроса (если это продвинутая версия БД)
-        if hasattr(db, 'record_request'):
+        if hasattr(db, "record_request"):
             try:
-                request_time_ms = int((time.time() - request_start_time) * 1000) if 'request_start_time' in locals() else 0
-                error_type = request_error_type if 'request_error_type' in locals() else type(e).__name__
+                request_time_ms = (
+                    int((time.time() - request_start_time) * 1000)
+                    if "request_start_time" in locals()
+                    else 0
+                )
+                error_type = (
+                    request_error_type if "request_error_type" in locals() else type(e).__name__
+                )
                 await db.record_request(
                     user_id=user_id,
-                    request_type='legal_question',
+                    request_type="legal_question",
                     tokens_used=0,
                     response_time_ms=request_time_ms,
                     success=False,
-                    error_type=str(error_type)
+                    error_type=str(error_type),
                 )
             except Exception as db_error:
                 logger.warning("Failed to record failed request statistics: %s", db_error)
@@ -684,7 +793,7 @@ async def process_question(message: Message):
                 f"• Переформулируйте вопрос\n"
                 f"• Попробуйте через несколько минут\n"
                 f"• Обратитесь в поддержку, если проблема повторяется",
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
             )
         except Exception as send_error:
             logger.error(f"Failed to send error message to user {user_id}: {send_error}")
@@ -693,12 +802,18 @@ async def process_question(message: Message):
             except Exception:
                 pass  # Уже ничего не сделать
 
+
 # ============ ПОДПИСКИ И ПЛАТЕЖИ ============
+
 
 def _build_payload(method: str, user_id: int) -> str:
     return f"sub:{method}:{user_id}:{int(datetime.now().timestamp())}"
 
+
 async def send_rub_invoice(message: Message):
+    if not message.from_user or not message.bot:
+        return
+
     if not RUB_PROVIDER_TOKEN:
         await message.answer(
             f"{Emoji.WARNING} Оплата картами временно недоступна. Попробуйте Telegram Stars или криптовалюту (/buy)",
@@ -718,12 +833,16 @@ async def send_rub_invoice(message: Message):
         is_flexible=False,
     )
 
+
 async def send_stars_invoice(message: Message):
+    if not message.from_user or not message.bot:
+        return
+
     if not STARS_PROVIDER_TOKEN:
         raise RuntimeError("Telegram Stars provider token is not configured")
     dynamic_xtr = convert_rub_to_xtr(
         amount_rub=float(SUB_PRICE_RUB),
-        rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+        rub_per_xtr=getattr(config, "rub_per_xtr", None),
         default_xtr=SUB_PRICE_XTR,
     )
     prices = [LabeledPrice(label="Подписка на 30 дней", amount=dynamic_xtr)]
@@ -739,10 +858,11 @@ async def send_stars_invoice(message: Message):
         is_flexible=False,
     )
 
+
 async def cmd_buy(message: Message):
     dynamic_xtr = convert_rub_to_xtr(
         amount_rub=float(SUB_PRICE_RUB),
-        rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+        rub_per_xtr=getattr(config, "rub_per_xtr", None),
         default_xtr=SUB_PRICE_XTR,
     )
     text = (
@@ -799,12 +919,17 @@ async def cmd_buy(message: Message):
             parse_mode=ParseMode.MARKDOWN_V2,
         )
 
+
 async def cmd_status(message: Message):
     if db is None:
         await message.answer("Статус временно недоступен")
         return
 
-    user = await db.ensure_user(message.from_user.id, default_trial=TRIAL_REQUESTS, is_admin=message.from_user.id in ADMIN_IDS)
+    user = await db.ensure_user(
+        message.from_user.id,
+        default_trial=TRIAL_REQUESTS,
+        is_admin=message.from_user.id in ADMIN_IDS,
+    )
     until = getattr(user, "subscription_until", 0)
     if until and until > 0:
         until_dt = datetime.fromtimestamp(until)
@@ -822,6 +947,7 @@ async def cmd_status(message: Message):
         parse_mode=ParseMode.HTML,
     )
 
+
 async def cmd_mystats(message: Message):
     """Показать детальную статистику пользователя"""
     if db is None:
@@ -830,7 +956,9 @@ async def cmd_mystats(message: Message):
 
     try:
         user_id = message.from_user.id
-        user = await db.ensure_user(user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS)
+        user = await db.ensure_user(
+            user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
+        )
 
         # Получаем детальную статистику
         stats = await db.get_user_statistics(user_id, days=30)
@@ -873,9 +1001,9 @@ async def cmd_mystats(message: Message):
 • Потрачено токенов: {stats.get('period_tokens', 0)}
 • Среднее время ответа: {stats.get('avg_response_time_ms', 0)} мс"""
 
-        if stats.get('request_types'):
+        if stats.get("request_types"):
             status_text += f"\n\n📊 <b>Типы запросов (30 дней)</b>\n"
-            for req_type, count in stats['request_types'].items():
+            for req_type, count in stats["request_types"].items():
                 emoji = "⚖️" if req_type == "legal_question" else "🤖"
                 status_text += f"• {emoji} {req_type}: {count}\n"
 
@@ -885,7 +1013,9 @@ async def cmd_mystats(message: Message):
         logger.error(f"Error in cmd_mystats: {e}")
         await message.answer("❌ Ошибка получения статистики. Попробуйте позже.")
 
+
 # ============ СИСТЕМА РЕЙТИНГА ============
+
 
 async def handle_pending_feedback(message: Message, user_session: UserSession):
     """Обработка текстового комментария для рейтинга"""
@@ -900,13 +1030,13 @@ async def handle_pending_feedback(message: Message, user_session: UserSession):
     user_session.pending_feedback_request_id = None
 
     try:
-        if hasattr(db, 'add_rating'):
+        if hasattr(db, "add_rating"):
             success = await db.add_rating(request_id, user_id, -1, feedback_text)
             if success:
                 await message.answer(
                     "✅ <b>Спасибо за развернутый отзыв!</b>\n\n"
                     "Ваш комментарий поможет нам улучшить качество ответов.",
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
                 )
                 logger.info(f"Received feedback for request {request_id} from user {user_id}")
             else:
@@ -917,6 +1047,7 @@ async def handle_pending_feedback(message: Message, user_session: UserSession):
     except Exception as e:
         logger.error(f"Error in handle_pending_feedback: {e}")
         await message.answer("❌ Произошла ошибка при сохранении комментария")
+
 
 async def handle_rating_callback(callback: CallbackQuery):
     """Обработчик нажатий на кнопки рейтинга"""
@@ -938,26 +1069,38 @@ async def handle_rating_callback(callback: CallbackQuery):
 
         rating_value = 1 if action == "like" else -1
 
-        if hasattr(db, 'add_rating'):
+        if hasattr(db, "add_rating"):
             success = await db.add_rating(request_id, user_id, rating_value)
             if success:
                 if action == "like":
                     await callback.answer("✅ Спасибо за оценку! Рады, что ответ был полезен.")
                     await callback.message.edit_text(
                         "💬 <b>Спасибо за оценку!</b> ✅ Отмечено как полезное",
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
                     )
                 else:
                     await callback.answer("📝 Спасибо за обратную связь!")
-                    feedback_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="📝 Написать комментарий", callback_data=f"feedback_{request_id}")],
-                        [InlineKeyboardButton(text="❌ Пропустить", callback_data=f"skip_feedback_{request_id}")]
-                    ])
+                    feedback_keyboard = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="📝 Написать комментарий",
+                                    callback_data=f"feedback_{request_id}",
+                                )
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    text="❌ Пропустить",
+                                    callback_data=f"skip_feedback_{request_id}",
+                                )
+                            ],
+                        ]
+                    )
                     await callback.message.edit_text(
                         "💬 <b>Что можно улучшить?</b>\n\n"
                         "Ваша обратная связь поможет нам стать лучше:",
                         reply_markup=feedback_keyboard,
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
                     )
             else:
                 await callback.answer("❌ Ошибка сохранения оценки")
@@ -967,6 +1110,7 @@ async def handle_rating_callback(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in handle_rating_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
+
 
 async def handle_feedback_callback(callback: CallbackQuery):
     """Обработчик запроса обратной связи"""
@@ -985,20 +1129,19 @@ async def handle_feedback_callback(callback: CallbackQuery):
 
         if action == "skip":
             await callback.message.edit_text(
-                "💬 <b>Спасибо за оценку!</b> 👎 Отмечено для улучшения",
-                parse_mode=ParseMode.HTML
+                "💬 <b>Спасибо за оценку!</b> 👎 Отмечено для улучшения", parse_mode=ParseMode.HTML
             )
             await callback.answer("✅ Спасибо за обратную связь!")
         elif action == "feedback":
             user_session = get_user_session(callback.from_user.id)
-            if not hasattr(user_session, 'pending_feedback_request_id'):
+            if not hasattr(user_session, "pending_feedback_request_id"):
                 user_session.pending_feedback_request_id = None
             user_session.pending_feedback_request_id = request_id
 
             await callback.message.edit_text(
                 "💬 <b>Напишите ваш комментарий:</b>\n\n"
                 "<i>Что можно улучшить в ответе? Отправьте текстовое сообщение.</i>",
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
             )
             await callback.answer("✏️ Напишите комментарий следующим сообщением")
 
@@ -1006,13 +1149,14 @@ async def handle_feedback_callback(callback: CallbackQuery):
         logger.error(f"Error in handle_feedback_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
 
+
 async def cmd_ratings_stats(message: Message):
     """Команда для просмотра статистики рейтингов (только для админов)"""
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("❌ Команда доступна только администраторам")
         return
 
-    if not hasattr(db, 'get_ratings_statistics'):
+    if not hasattr(db, "get_ratings_statistics"):
         await message.answer("❌ Статистика рейтингов недоступна")
         return
 
@@ -1048,6 +1192,7 @@ async def cmd_ratings_stats(message: Message):
         logger.error(f"Error in cmd_ratings_stats: {e}")
         await message.answer("❌ Ошибка получения статистики рейтингов")
 
+
 async def pre_checkout(pre: PreCheckoutQuery):
     try:
         payload = pre.invoice_payload or ""
@@ -1057,7 +1202,7 @@ async def pre_checkout(pre: PreCheckoutQuery):
             expected_currency = "XTR"
             expected_amount = convert_rub_to_xtr(
                 amount_rub=float(SUB_PRICE_RUB),
-                rub_per_xtr=getattr(config, 'rub_per_xtr', None),
+                rub_per_xtr=getattr(config, "rub_per_xtr", None),
                 default_xtr=SUB_PRICE_XTR,
             )
         elif method == "rub":
@@ -1067,7 +1212,9 @@ async def pre_checkout(pre: PreCheckoutQuery):
             expected_currency = pre.currency.upper()
             expected_amount = pre.total_amount
 
-        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(expected_amount):
+        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(
+            expected_amount
+        ):
             await pre.answer(ok=False, error_message="Некорректные параметры оплаты")
             return
 
@@ -1075,21 +1222,24 @@ async def pre_checkout(pre: PreCheckoutQuery):
     except Exception:
         await pre.answer(ok=False, error_message="Ошибка проверки оплаты, попробуйте позже")
 
+
 async def on_successful_payment(message: Message):
     try:
         sp = message.successful_payment
         if sp is None:
             return
         currency_up = sp.currency.upper()
-        if currency_up == 'RUB':
-            provider_name = 'telegram_rub'
-        elif currency_up == 'XTR':
-            provider_name = 'telegram_stars'
+        if currency_up == "RUB":
+            provider_name = "telegram_rub"
+        elif currency_up == "XTR":
+            provider_name = "telegram_stars"
         else:
-            provider_name = f'telegram_{currency_up.lower()}'
+            provider_name = f"telegram_{currency_up.lower()}"
 
         if db is not None and sp.telegram_payment_charge_id:
-            exists = await db.transaction_exists_by_telegram_charge_id(sp.telegram_payment_charge_id)
+            exists = await db.transaction_exists_by_telegram_charge_id(
+                sp.telegram_payment_charge_id
+            )
             if exists:
                 return
         until_text = ""
@@ -1117,13 +1267,17 @@ async def on_successful_payment(message: Message):
     except Exception:
         logger.exception("Failed to handle successful payment")
 
+
 # ============ ОБРАБОТКА ОШИБОК ============
+
 
 async def log_only_aiogram_error(event: ErrorEvent):
     """Глобальный обработчик ошибок"""
     logger.exception("Critical error in bot: %s", event.exception)
 
+
 # ============ ГЛАВНАЯ ФУНКЦИЯ ============
+
 
 async def _maybe_call(coro_or_func):
     """Вспомогательный вызов: поддерживает sync/async методы init()/close()."""
@@ -1138,6 +1292,7 @@ async def _maybe_call(coro_or_func):
         return await res
     return res
 
+
 async def main():
     """Запуск простого бота"""
     if not BOT_TOKEN:
@@ -1147,11 +1302,12 @@ async def main():
     session = None
     proxy_url = os.getenv("TELEGRAM_PROXY_URL", "").strip()
     if proxy_url:
-        logger.info("Using proxy: %s", proxy_url.split('@')[-1])
+        logger.info("Using proxy: %s", proxy_url.split("@")[-1])
         proxy_user = os.getenv("TELEGRAM_PROXY_USER", "").strip()
         proxy_pass = os.getenv("TELEGRAM_PROXY_PASS", "").strip()
         if proxy_user and proxy_pass:
             from urllib.parse import urlparse, urlunparse, quote
+
             if "://" not in proxy_url:
                 proxy_url = "http://" + proxy_url
             u = urlparse(proxy_url)
@@ -1168,19 +1324,27 @@ async def main():
     from src.core.metrics import init_metrics, set_system_status
     from src.core.cache import create_cache_backend, ResponseCache
     from src.core.background_tasks import (
-        BackgroundTaskManager, DatabaseCleanupTask, CacheCleanupTask,
-        SessionCleanupTask, HealthCheckTask, MetricsCollectionTask
+        BackgroundTaskManager,
+        DatabaseCleanupTask,
+        CacheCleanupTask,
+        SessionCleanupTask,
+        HealthCheckTask,
+        MetricsCollectionTask,
     )
     from src.core.health import (
-        HealthChecker, DatabaseHealthCheck, OpenAIHealthCheck,
-        SessionStoreHealthCheck, RateLimiterHealthCheck, SystemResourcesHealthCheck
+        HealthChecker,
+        DatabaseHealthCheck,
+        OpenAIHealthCheck,
+        SessionStoreHealthCheck,
+        RateLimiterHealthCheck,
+        SystemResourcesHealthCheck,
     )
     from src.core.scaling import ServiceRegistry, LoadBalancer, SessionAffinity, ScalingManager
 
     prometheus_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
     metrics_collector = init_metrics(
         enable_prometheus=os.getenv("ENABLE_PROMETHEUS", "1") == "1",
-        prometheus_port=prometheus_port
+        prometheus_port=prometheus_port,
     )
     set_system_status("starting")
 
@@ -1193,11 +1357,10 @@ async def main():
     use_advanced_db = os.getenv("USE_ADVANCED_DB", "1") == "1"
     if use_advanced_db:
         from src.core.db_advanced import DatabaseAdvanced
+
         logger.info("Using advanced database with connection pooling")
         db = DatabaseAdvanced(
-            DB_PATH,
-            max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "5")),
-            enable_metrics=True
+            DB_PATH, max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "5")), enable_metrics=True
         )
     else:
         logger.info("Using legacy database")
@@ -1211,13 +1374,13 @@ async def main():
     cache_backend = await create_cache_backend(
         redis_url=config.redis_url,
         fallback_to_memory=True,
-        memory_max_size=int(os.getenv("CACHE_MAX_SIZE", "1000"))
+        memory_max_size=int(os.getenv("CACHE_MAX_SIZE", "1000")),
     )
 
     response_cache = ResponseCache(
         backend=cache_backend,
         default_ttl=int(os.getenv("CACHE_TTL", "3600")),
-        enable_compression=os.getenv("CACHE_COMPRESSION", "1") == "1"
+        enable_compression=os.getenv("CACHE_COMPRESSION", "1") == "1",
     )
 
     # Инициализация rate limiter
@@ -1231,8 +1394,7 @@ async def main():
     # Инициализация сервисов
     access_service = AccessService(db=db, trial_limit=TRIAL_REQUESTS, admin_ids=ADMIN_IDS)
     openai_service = OpenAIService(
-        cache=response_cache,
-        enable_cache=False  # Временно отключаем кеш для тестирования
+        cache=response_cache, enable_cache=False  # Временно отключаем кеш для тестирования
     )
     session_store = SessionStore(max_size=USER_SESSIONS_MAX, ttl_seconds=USER_SESSION_TTL_SECONDS)
     crypto_provider = CryptoPayProvider(asset=os.getenv("CRYPTO_ASSET", "USDT"))
@@ -1259,36 +1421,34 @@ async def main():
         try:
             service_registry = ServiceRegistry(
                 redis_url=config.redis_url,
-                heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "15.0"))
+                heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "15.0")),
             )
             await service_registry.initialize()
             await service_registry.start_background_tasks()
 
             load_balancer = LoadBalancer(service_registry)
             session_affinity = SessionAffinity(
-                redis_client=getattr(cache_backend, '_redis', None),
-                ttl=int(os.getenv("SESSION_AFFINITY_TTL", "3600"))
+                redis_client=getattr(cache_backend, "_redis", None),
+                ttl=int(os.getenv("SESSION_AFFINITY_TTL", "3600")),
             )
             scaling_manager = ScalingManager(
                 service_registry=service_registry,
                 load_balancer=load_balancer,
-                session_affinity=session_affinity
+                session_affinity=session_affinity,
             )
 
             scaling_components = {
                 "service_registry": service_registry,
                 "load_balancer": load_balancer,
                 "session_affinity": session_affinity,
-                "scaling_manager": scaling_manager
+                "scaling_manager": scaling_manager,
             }
             logger.info("🔄 Scaling components initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize scaling components: {e}")
 
     # Health checks
-    health_checker = HealthChecker(
-        check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "30.0"))
-    )
+    health_checker = HealthChecker(check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "30.0")))
     health_checker.register_check(DatabaseHealthCheck(db))
     health_checker.register_check(OpenAIHealthCheck(openai_service))
     health_checker.register_check(SessionStoreHealthCheck(session_store))
@@ -1300,19 +1460,23 @@ async def main():
     # Фоновые задачи
     task_manager = BackgroundTaskManager(error_handler)
     if use_advanced_db:
-        task_manager.register_task(DatabaseCleanupTask(
-            db,
-            interval_seconds=float(os.getenv("DB_CLEANUP_INTERVAL", "3600")),
-            max_old_transactions_days=int(os.getenv("DB_CLEANUP_DAYS", "90"))
-        ))
-    task_manager.register_task(CacheCleanupTask(
-        [openai_service],
-        interval_seconds=float(os.getenv("CACHE_CLEANUP_INTERVAL", "300"))
-    ))
-    task_manager.register_task(SessionCleanupTask(
-        session_store,
-        interval_seconds=float(os.getenv("SESSION_CLEANUP_INTERVAL", "600"))
-    ))
+        task_manager.register_task(
+            DatabaseCleanupTask(
+                db,
+                interval_seconds=float(os.getenv("DB_CLEANUP_INTERVAL", "3600")),
+                max_old_transactions_days=int(os.getenv("DB_CLEANUP_DAYS", "90")),
+            )
+        )
+    task_manager.register_task(
+        CacheCleanupTask(
+            [openai_service], interval_seconds=float(os.getenv("CACHE_CLEANUP_INTERVAL", "300"))
+        )
+    )
+    task_manager.register_task(
+        SessionCleanupTask(
+            session_store, interval_seconds=float(os.getenv("SESSION_CLEANUP_INTERVAL", "600"))
+        )
+    )
 
     all_components = {
         "database": db,
@@ -1320,31 +1484,36 @@ async def main():
         "rate_limiter": rate_limiter,
         "session_store": session_store,
         "error_handler": error_handler,
-        "health_checker": health_checker
+        "health_checker": health_checker,
     }
     if scaling_components:
         all_components.update(scaling_components)
 
-    task_manager.register_task(HealthCheckTask(
-        all_components,
-        interval_seconds=float(os.getenv("HEALTH_CHECK_TASK_INTERVAL", "120"))
-    ))
+    task_manager.register_task(
+        HealthCheckTask(
+            all_components, interval_seconds=float(os.getenv("HEALTH_CHECK_TASK_INTERVAL", "120"))
+        )
+    )
     if getattr(metrics_collector, "enable_prometheus", False):
-        task_manager.register_task(MetricsCollectionTask(
-            all_components,
-            interval_seconds=float(os.getenv("METRICS_COLLECTION_INTERVAL", "30"))
-        ))
+        task_manager.register_task(
+            MetricsCollectionTask(
+                all_components,
+                interval_seconds=float(os.getenv("METRICS_COLLECTION_INTERVAL", "30")),
+            )
+        )
     await task_manager.start_all()
     logger.info(f"🔧 Started {len(task_manager.tasks)} background tasks")
 
     # Команды
-    await bot.set_my_commands([
-        BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
-        BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
-        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
-        BotCommand(command="mystats", description=f"📊 Моя статистика"),
-        BotCommand(command="ratings", description=f"📈 Статистика рейтингов (админ)"),
-    ])
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
+            BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
+            BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
+            BotCommand(command="mystats", description=f"📊 Моя статистика"),
+            BotCommand(command="ratings", description=f"📈 Статистика рейтингов (админ)"),
+        ]
+    )
 
     # Роутинг
     dp.message.register(cmd_start, Command("start"))
@@ -1354,7 +1523,9 @@ async def main():
     dp.message.register(cmd_ratings_stats, Command("ratings"))
 
     dp.callback_query.register(handle_rating_callback, F.data.startswith("rate_"))
-    dp.callback_query.register(handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_")))
+    dp.callback_query.register(
+        handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_"))
+    )
 
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)
@@ -1368,8 +1539,8 @@ async def main():
                     function_name="telegram_error_handler",
                     additional_data={
                         "update": str(event.update) if event.update else None,
-                        "exception_type": type(event.exception).__name__
-                    }
+                        "exception_type": type(event.exception).__name__,
+                    },
                 )
                 await error_handler.handle_exception(event.exception, context)
             except Exception as handler_error:
@@ -1388,12 +1559,14 @@ async def main():
         f"📈 Metrics: {'enabled' if getattr(metrics_collector, 'enable_prometheus', False) else 'disabled'}",
         f"🏥 Health checks: {len(health_checker.checks)} registered",
         f"⚙️ Background tasks: {len(task_manager.tasks)} running",
-        f"🔄 Scaling: {'enabled' if scaling_components else 'disabled'}"
+        f"🔄 Scaling: {'enabled' if scaling_components else 'disabled'}",
     ]
     for info in startup_info:
         logger.info(info)
     if prometheus_port:
-        logger.info(f"📊 Prometheus metrics available at http://localhost:{prometheus_port}/metrics")
+        logger.info(
+            f"📊 Prometheus metrics available at http://localhost:{prometheus_port}/metrics"
+        )
 
     try:
         logger.info("🚀 Starting bot polling...")
@@ -1433,8 +1606,14 @@ async def main():
             ("Bot session", lambda: bot.session.close()),
             ("Database", lambda: getattr(db, "close", None) and db.close()),
             ("Rate limiter", lambda: getattr(rate_limiter, "close", None) and rate_limiter.close()),
-            ("OpenAI service", lambda: getattr(openai_service, "close", None) and openai_service.close()),
-            ("Response cache", lambda: getattr(response_cache, "close", None) and response_cache.close()),
+            (
+                "OpenAI service",
+                lambda: getattr(openai_service, "close", None) and openai_service.close(),
+            ),
+            (
+                "Response cache",
+                lambda: getattr(response_cache, "close", None) and response_cache.close(),
+            ),
         ]
         for service_name, close_func in services_to_close:
             try:
@@ -1445,10 +1624,12 @@ async def main():
 
         logger.info("👋 AI-Ivan shutdown complete")
 
+
 if __name__ == "__main__":
     try:
         try:
             import uvloop  # type: ignore
+
             uvloop.install()
             logger.info("🚀 Включен uvloop для повышенной производительности")
         except ImportError:

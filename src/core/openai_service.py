@@ -1,111 +1,263 @@
 from __future__ import annotations
 
+import inspect
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Callable, Awaitable
 
-from src.bot.openai_gateway import ask_legal as oai_ask_legal
+try:
+    # базовый запрос (обязателен)
+    from src.bot.openai_gateway import ask_legal as oai_ask_legal
+except Exception as e:
+    raise ImportError("Не найден src.bot.openai_gateway.ask_legal") from e
+
+# стриминговый запрос – может отсутствовать в gateway (обрабатываем это)
+try:
+    from src.bot.openai_gateway import ask_legal_stream as oai_ask_legal_stream  # type: ignore
+except Exception:  # noqa: BLE001
+    oai_ask_legal_stream = None  # type: ignore
+
 from .cache import ResponseCache
 
 logger = logging.getLogger(__name__)
 
-class OpenAIService:
-    """Application-facing service for legal Q&A over OpenAI Responses API.
+# Колбэк принимает либо (delta: str), либо (delta: str, is_final: bool)
+StreamCallback = Callable[..., Awaitable[None]]
 
-    Encapsulates gateway calls with caching, retry logic and monitoring.
+
+async def _safe_fire_callback(cb: Optional[StreamCallback], delta: str, is_final: bool = False) -> None:
+    """Вызов колбэка с поддержкой 1 или 2 аргументов, sync/async."""
+    if not cb:
+        return
+    try:
+        # пробуем (delta, is_final)
+        res = cb(delta, is_final)
+    except TypeError:
+        # колбэк ожидает только один аргумент
+        res = cb(delta)
+    if inspect.isawaitable(res):
+        await res
+
+
+class OpenAIService:
     """
-    
+    Application-facing сервис над OpenAI gateway.
+
+    Возможности:
+    - ask_legal: обычный запрос с кэшированием
+    - ask_legal_stream: стрим с кэш-фолбэком (и «псевдостримом», если gateway-стрим недоступен)
+    - простая статистика и методы обслуживания кэша
+    """
+
     def __init__(self, cache: Optional[ResponseCache] = None, enable_cache: bool = True):
         self.cache = cache
         self.enable_cache = enable_cache
-        
+
         # Статистика
         self.total_requests = 0
         self.cached_requests = 0
         self.failed_requests = 0
 
+        # последний «полный» текст из стрима (удобно читать после показа дельт)
+        self.last_full_text: str = ""
+
+    # ------------------------ обычный запрос ------------------------
+
     async def ask_legal(
-        self, 
-        system_prompt: str, 
+        self,
+        system_prompt: str,
         user_text: str,
-        force_refresh: bool = False
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
-        """Запрос к OpenAI с кешированием и обработкой ошибок"""
+        """Запрос к OpenAI с кэшированием и обработкой ошибок."""
         self.total_requests += 1
-        
-        # Проверяем кеш если включен
+
+        # кэш
         if self.cache and self.enable_cache and not force_refresh:
             try:
-                cached_response = await self.cache.get_cached_response(
-                    system_prompt=system_prompt,
-                    user_text=user_text
-                )
-                
-                if cached_response:
+                cached = await self.cache.get_cached_response(system_prompt=system_prompt, user_text=user_text)
+                if cached:
                     self.cached_requests += 1
-                    logger.info(f"Returning cached response for user query (length: {len(user_text)})")
-                    return cached_response
-                    
-            except Exception as e:
-                logger.warning(f"Cache retrieval failed: {e}")
-        
-        # Выполняем запрос к OpenAI
+                    logger.info("Cache HIT for ask_legal (len=%s)", len(user_text))
+                    return cached
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Cache get failed: %s", e)
+
+        # сеть
         try:
             response = await oai_ask_legal(system_prompt, user_text)
-            
-            # Кешируем успешный ответ
-            if (self.cache and 
-                self.enable_cache and 
-                response.get("ok") and 
-                response.get("text")):
+
+            # кэшируем только успешный и непустой ответ
+            if (
+                self.cache
+                and self.enable_cache
+                and response.get("ok")
+                and response.get("text")
+            ):
                 try:
-                    await self.cache.cache_response(
-                        system_prompt=system_prompt,
-                        user_text=user_text,
-                        response=response
-                    )
-                    logger.debug("Response cached successfully")
-                except Exception as e:
-                    logger.warning(f"Failed to cache response: {e}")
-            
+                    await self.cache.cache_response(system_prompt=system_prompt, user_text=user_text, response=response)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Cache set failed: %s", e)
+
             return response
-            
-        except Exception as e:
+
+        except Exception as e:  # noqa: BLE001
             self.failed_requests += 1
-            logger.error(f"OpenAI request failed: {e}")
+            logger.error("OpenAI request failed: %s", e)
             raise
-    
+
+    # ------------------------ стриминговый запрос ------------------------
+
+    async def ask_legal_stream(
+        self,
+        system_prompt: str,
+        user_text: str,
+        callback: Optional[StreamCallback] = None,
+        *,
+        force_refresh: bool = False,
+        pseudo_chunk: int = 600,
+    ) -> dict[str, Any]:
+        """
+        Стрим с кэш-фолбэком. Возвращает финальный dict, а дельты отдает через `callback`.
+
+        Поведение:
+        1) Если в кэше есть готовый ответ — отдаем его и «симулируем стрим» через callback.
+        2) Если в gateway есть `ask_legal_stream`:
+           - поддерживаем оба варианта: (а) async-генератор дельт; (б) функция с колбэком.
+        3) Если стрима нет — обычный запрос + «псевдострим» кусками.
+        """
+        self.total_requests += 1
+        self.last_full_text = ""
+        parts: list[str] = []
+
+        # кэш (и псевдострим из кэша)
+        if self.cache and self.enable_cache and not force_refresh:
+            try:
+                cached = await self.cache.get_cached_response(system_prompt=system_prompt, user_text=user_text)
+                if cached and cached.get("ok") and cached.get("text"):
+                    self.cached_requests += 1
+                    text = str(cached.get("text", ""))
+                    # «поток» из кэша
+                    if callback:
+                        if len(text) <= pseudo_chunk:
+                            await _safe_fire_callback(callback, text, True)
+                        else:
+                            for i in range(0, len(text), pseudo_chunk):
+                                await _safe_fire_callback(callback, text[i : i + pseudo_chunk], False)
+                            await _safe_fire_callback(callback, "", True)
+                    self.last_full_text = text
+                    return cached
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Cache get failed (stream): %s", e)
+
+        # вспомогательный on_delta: накапливает и пробрасывает наружу
+        async def on_delta(delta: str) -> None:
+            if not delta:
+                return
+            parts.append(delta)
+            await _safe_fire_callback(callback, delta, False)
+
+        # если в gateway есть стрим — пробуем оба режима
+        if oai_ask_legal_stream:
+            try:
+                candidate = oai_ask_legal_stream(system_prompt, user_text, on_delta)  # type: ignore[misc]
+            except TypeError:
+                # сигнатура без колбэка — возможно, async-генератор
+                candidate = oai_ask_legal_stream(system_prompt, user_text)  # type: ignore[misc]
+
+            try:
+                # режим async-генератора
+                if hasattr(candidate, "__aiter__"):
+                    async for delta in candidate:  # type: ignore[attr-defined]
+                        await on_delta(str(delta))
+                    text = "".join(parts).strip()
+                    await _safe_fire_callback(callback, "", True)
+                    self.last_full_text = text
+
+                    resp = {"ok": True, "text": text}
+                    # кэшируем
+                    if self.cache and self.enable_cache and text:
+                        try:
+                            await self.cache.cache_response(system_prompt, user_text, resp)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("Cache set failed (stream/gen): %s", e)
+                    return resp
+
+                # режим «функция с колбэком» -> нужно дождаться результата
+                result = await candidate  # type: ignore[misc]
+                text = (result or {}).get("text") if isinstance(result, dict) else None
+                if not text:
+                    text = "".join(parts).strip()
+                    result = {"ok": True, "text": text}
+                await _safe_fire_callback(callback, "", True)
+                self.last_full_text = text or ""
+
+                if self.cache and self.enable_cache and text:
+                    try:
+                        await self.cache.cache_response(system_prompt, user_text, result)  # type: ignore[arg-type]
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Cache set failed (stream/callback): %s", e)
+
+                return result  # type: ignore[return-value]
+
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Gateway streaming failed, fallback to non-stream. Error: %s", e)
+
+        # фолбэк: обычный запрос + псевдострим кусками
+        try:
+            result = await oai_ask_legal(system_prompt, user_text)
+            text = str(result.get("text", "") or "")
+
+            if callback:
+                if len(text) <= pseudo_chunk:
+                    await _safe_fire_callback(callback, text, True)
+                else:
+                    for i in range(0, len(text), pseudo_chunk):
+                        await _safe_fire_callback(callback, text[i : i + pseudo_chunk], False)
+                    await _safe_fire_callback(callback, "", True)
+
+            self.last_full_text = text
+
+            # кэшируем обычным способом (если еще не закэшировано)
+            if (
+                self.cache
+                and self.enable_cache
+                and result.get("ok")
+                and result.get("text")
+            ):
+                try:
+                    await self.cache.cache_response(system_prompt, user_text, result)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Cache set failed (fallback): %s", e)
+
+            return result
+
+        except Exception as e:  # noqa: BLE001
+            self.failed_requests += 1
+            logger.error("OpenAI streaming request failed: %s", e)
+            raise
+
+    # ------------------------ служебные методы ------------------------
+
     async def get_stats(self) -> dict[str, Any]:
-        """Статистика сервиса"""
         stats = {
             "total_requests": self.total_requests,
             "cached_requests": self.cached_requests,
             "failed_requests": self.failed_requests,
             "cache_enabled": self.enable_cache,
-            "cache_hit_rate": (
-                self.cached_requests / self.total_requests 
-                if self.total_requests > 0 else 0
-            )
+            "cache_hit_rate": (self.cached_requests / self.total_requests) if self.total_requests else 0.0,
         }
-        
-        # Добавляем статистику кеша если доступен
         if self.cache:
             try:
-                cache_stats = await self.cache.get_cache_stats()
-                stats["cache_stats"] = cache_stats
-            except Exception as e:
+                stats["cache_stats"] = await self.cache.get_cache_stats()
+            except Exception as e:  # noqa: BLE001
                 stats["cache_error"] = str(e)
-        
         return stats
-    
+
     async def clear_cache(self) -> None:
-        """Очистка кеша"""
         if self.cache:
             await self.cache.clear_cache()
             logger.info("OpenAI response cache cleared")
-    
+
     async def close(self) -> None:
-        """Закрытие сервиса"""
         if self.cache:
             await self.cache.close()
-
-
