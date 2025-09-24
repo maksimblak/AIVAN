@@ -12,6 +12,7 @@ from .translator import DocumentTranslator
 from .ocr_converter import OCRConverter
 
 __all__ = [
+    "DocumentManager"
     "DocumentProcessor",
     "DocumentResult",
     "ProcessingError",

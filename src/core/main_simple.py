@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, TYPE_CHECKING
 
+from src.documents.document_manager import DocumentManager
+
 if TYPE_CHECKING:
     from src.core.db_advanced import DatabaseAdvanced
 
@@ -1816,7 +1818,7 @@ async def main():
     error_handler = ErrorHandler(logger=logger)
 
     # Инициализация системы документооборота
-    from src.documents import DocumentManager
+
     document_manager = DocumentManager(openai_service=openai_service)
     logger.info("📄 Document processing system initialized")
 
