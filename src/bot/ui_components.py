@@ -4,14 +4,14 @@ UI компоненты для Telegram бота ИИ-Иван
 """
 
 from __future__ import annotations
-from typing import Optional
+
 # Callback классы больше не нужны без inline клавиатур
 
 # ============ ЭМОДЗИ КОНСТАНТЫ ============
 
 class Emoji:
     """Коллекция эмодзи для интерфейса"""
-    
+
     # Основные системные
     ROBOT = "🤖"
     LAW = "⚖️"
@@ -25,10 +25,10 @@ class Emoji:
     FIRE = "🔥"
     STAR = "⭐"
     MAGIC = "✨"
-    
+
     # Категории права
     CIVIL = "🏠"
-    CRIMINAL = "🚨" 
+    CRIMINAL = "🚨"
     CORPORATE = "🏢"
     CONTRACT = "📝"
     LABOR = "👨‍💼"
@@ -37,7 +37,7 @@ class Emoji:
     IP = "💼"
     ADMIN = "🏛️"
     FAMILY = "👪"
-    
+
     # Навигация
     BACK = "◀️"
     HOME = "🏠"
@@ -46,14 +46,14 @@ class Emoji:
     STATS = "📊"
     UP = "🔺"
     DOWN = "🔻"
-    
+
     # Действия
     SAVE = "💾"
     SHARE = "📤"
     COPY = "📄"
     PRINT = "🖨️"
     DOWNLOAD = "📥"
-    
+
     # Статусы
     ONLINE = "🟢"
     OFFLINE = "🔴"
@@ -75,7 +75,7 @@ class Colors:
 
 class MessageTemplates:
     """Шаблоны сообщений с красивым форматированием"""
-    
+
     WELCOME = f"""{Emoji.LAW} **ИИ\\-Иван** — ваш юридический ассистент
 
 {Emoji.ROBOT} Специализируюсь на российском праве и судебной практике
@@ -115,7 +115,7 @@ class MessageTemplates:
         f"{Emoji.DOCUMENT} Формирую структурированный ответ...",
         f"{Emoji.MAGIC} Финализирую рекомендации..."
     ]
-    
+
     ERROR_GENERIC = f"""{Emoji.ERROR} **Произошла ошибка**
 
 К сожалению, не удалось обработать ваш запрос\\.
@@ -142,14 +142,14 @@ LEGAL_CATEGORIES = {
         "examples": ["Договоры", "Собственность", "Обязательства", "Деликты"]
     },
     "corporate": {
-        "name": "Корпоративное право", 
+        "name": "Корпоративное право",
         "emoji": Emoji.CORPORATE,
         "description": "Создание и деятельность юридических лиц",
         "examples": ["Учреждение ООО", "Корпоративные споры", "Реорганизация", "M&A"]
     },
     "contract": {
         "name": "Договорное право",
-        "emoji": Emoji.CONTRACT, 
+        "emoji": Emoji.CONTRACT,
         "description": "Заключение, исполнение и расторжение договоров",
         "examples": ["Поставка", "Подряд", "Аренда", "Займ"]
     },
@@ -160,7 +160,7 @@ LEGAL_CATEGORIES = {
         "examples": ["Увольнение", "Зарплата", "Отпуска", "Дисциплина"]
     },
     "tax": {
-        "name": "Налоговое право", 
+        "name": "Налоговое право",
         "emoji": Emoji.TAX,
         "description": "Налогообложение и взаимодействие с ФНС",
         "examples": ["НДС", "Налог на прибыль", "НДФЛ", "Проверки"]
@@ -168,7 +168,7 @@ LEGAL_CATEGORIES = {
     "real_estate": {
         "name": "Право недвижимости",
         "emoji": Emoji.REAL_ESTATE,
-        "description": "Сделки с недвижимостью и земельными участками", 
+        "description": "Сделки с недвижимостью и земельными участками",
         "examples": ["Купля-продажа", "Аренда", "Ипотека", "Кадастр"]
     },
     "ip": {
@@ -181,7 +181,7 @@ LEGAL_CATEGORIES = {
         "name": "Административное право",
         "emoji": Emoji.ADMIN,
         "description": "Взаимодействие с госорганами и административная ответственность",
-        "examples": ["Лицензирование", "Штрафы", "Госуслуги", "Контроль"]  
+        "examples": ["Лицензирование", "Штрафы", "Госуслуги", "Контроль"]
     },
     "criminal": {
         "name": "Уголовное право",
@@ -190,7 +190,7 @@ LEGAL_CATEGORIES = {
         "examples": ["Экономические преступления", "Должностные", "Налоговые", "Защита"]
     },
     "family": {
-        "name": "Семейное право", 
+        "name": "Семейное право",
         "emoji": Emoji.FAMILY,
         "description": "Брак, развод, алименты, опека",
         "examples": ["Развод", "Алименты", "Раздел имущества", "Опека"]
@@ -215,15 +215,15 @@ def escape_markdown_v2(text: str) -> str:
         text = text.replace(char, f'\\{char}')
     return text
 
-def format_legal_response(text: str, category: Optional[str] = None) -> str:
+def format_legal_response(text: str, category: str | None = None) -> str:
     """Форматирует ответ с красивой разметкой MarkdownV2"""
-    
+
     # Заголовок с категорией
     if category:
         category_info = get_category_info(category)
         header = f"{category_info['emoji']} **{escape_markdown_v2(category_info['name'])}**\n\n"
         text = header + text
-    
+
 
     return text
 
@@ -231,16 +231,17 @@ def create_progress_message(stage: int, total: int = 4) -> str:
     """Создает сообщение с прогрессом"""
     if stage >= len(MessageTemplates.PROCESSING_STAGES):
         stage = len(MessageTemplates.PROCESSING_STAGES) - 1
-        
+
     progress_bar = "▓" * stage + "░" * (total - stage)
     percentage = int((stage / total) * 100)
-    
+
     return f"{MessageTemplates.PROCESSING_STAGES[stage]}\n\n`{progress_bar}` {percentage}%"
 
 # ============ HTML ФОРМАТИРОВАНИЕ ДЛЯ STREAMING ============
 
 import re
 from html import escape as html_escape
+
 
 def _md_links_to_anchors(line: str) -> str:
     """Convert markdown links [text](url) into safe HTML anchors.
@@ -310,6 +311,12 @@ def render_legal_html(raw: str) -> str:
         # Break after sentence end before em dash bullets or numbers
         t = re.sub(r"(?<=[\.!?])\s+(?=(?:—|•|-|\d+[\.)]\s))", "\n", t)
 
+        # NEW: Break before em dashes that start new thoughts (после точки, скобки или в начале предложения)
+        t = re.sub(r"(?<=[\.!?\)])\s+(?=—\s+[А-ЯA-Z])", "\n", t)
+
+        # NEW: Break before em dashes in middle of text that indicate new bullet points
+        t = re.sub(r"(?<=\.)\s+(?=—\s+[А-ЯA-Zа-я])", "\n", t)
+
         # Insert breaks before article references like "ст. 304", "Статья 222"
         t = re.sub(r"(?<=[\.!?])\s+(?=(?:—\s*)?(?:ст\.|Статья)\s*\d+)", "\n", t)
 
@@ -326,11 +333,19 @@ def render_legal_html(raw: str) -> str:
     lines = text.split('\n')
     out: list[str] = []
 
-    for line in lines:
+    prev_was_empty = False
+
+    for i, line in enumerate(lines):
         stripped = line.strip()
+
+        # Handle empty lines - create paragraph breaks
         if stripped == "":
-            out.append("<br>")
+            if not prev_was_empty:  # Avoid multiple consecutive breaks
+                out.append("<br><br>")
+                prev_was_empty = True
             continue
+
+        prev_was_empty = False
 
         # Enhanced bullet detection
         if re.match(r"^\s*[-•—]\s+", line):
@@ -339,30 +354,45 @@ def render_legal_html(raw: str) -> str:
         # Transform md links and escape other parts FIRST
         html_line = _md_links_to_anchors(line)
 
-        # Numbered lists with proper formatting AFTER escaping
-        if re.match(r"^\s*\d+[\.)]\s+", stripped):
+        # Check if this is a numbered list item
+        is_numbered_item = re.match(r"^\s*\d+[\.)]\s+", stripped)
+        if is_numbered_item:
             html_line = re.sub(r"(\d+[\.)]\s+)", r"<b>\1</b>", html_line)
 
-        # Enhanced heading detection
+        # Enhanced heading detection (исключаем нумерованные элементы)
         is_heading = (
-            stripped.endswith(":") or
-            stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ")) or
-            re.match(r"^\s*\d+\.\s+[А-ЯA-Z]", stripped) is not None  # "1. Какие статьи"
+            stripped.endswith(":") and not is_numbered_item or
+            stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ"))
         )
 
         # Special formatting for article references AFTER escaping
         if re.search(r"\b(?:ст\.|Статья)\s*\d+", stripped):
             html_line = re.sub(r"(\b(?:ст\.|Статья)\s*\d+[^\s]*)", r"<b>\1</b>", html_line)
 
+        # Check if this line should start a new paragraph
+        is_paragraph_start = (
+            is_heading or
+            is_numbered_item or
+            re.match(r"^\s*[-•—]\s+", stripped) or     # Bullet point
+            (i > 0 and lines[i-1].strip() == "")       # After empty line
+        )
+
         if is_heading:
             html_line = f"<b>{html_line}</b>"
             out.append(html_line + "<br><br>")
+        elif is_paragraph_start and out and not out[-1].endswith("<br><br>"):
+            # Add paragraph break before this line if needed
+            out.append("<br>" + html_line + "<br>")
         else:
             out.append(html_line + "<br>")
 
-    # Improved br collapse - better paragraph separation
+    # Clean up multiple breaks and ensure proper paragraph separation
     html_result = ''.join(out)
-    html_result = re.sub(r"(?:<br>\s*){4,}", "<br><br><br>", html_result)  # Max 3 <br> tags
-    html_result = re.sub(r"(?:<br>\s*){3,}", "<br><br>", html_result)  # Usually 2 <br> for paragraphs
+
+    # Remove excessive breaks (more than 2 consecutive) but keep paragraph structure
+    html_result = re.sub(r"(?:<br>\s*){3,}", "<br><br>", html_result)
+
+    # Clean up trailing breaks
+    html_result = re.sub(r"(?:<br>\s*)+$", "", html_result)
 
     return html_result
