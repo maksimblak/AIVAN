@@ -34,7 +34,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
 
 from src.bot.logging_setup import setup_logging
-from src.bot.promt import LEGAL_SYSTEM_PROMPT
+from src.bot.promt import LEGAL_SYSTEM_PROMPT, JUDICIAL_PRACTICE_SEARCH_PROMPT
 from src.bot.ui_components import Emoji, escape_markdown_v2
 from src.bot.stream_manager import StreamManager, StreamingCallback
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
@@ -455,6 +455,34 @@ async def _stop_status_indicator(status) -> None:
         pass
 
 
+# ============ ФУНКЦИИ РЕЙТИНГА И UI ============
+
+
+def create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
+    """Создает клавиатуру с кнопками рейтинга для оценки ответа"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👍", callback_data=f"rate_like_{request_id}"),
+            InlineKeyboardButton(text="👎", callback_data=f"rate_dislike_{request_id}")
+        ]
+    ])
+
+
+async def send_rating_request(message: Message, request_id: int):
+    """Отправляет сообщение с запросом на оценку ответа"""
+    try:
+        rating_keyboard = create_rating_keyboard(request_id)
+        await message.answer(
+            f"{Emoji.STAR} <b>Оцените качество ответа</b>\n\n"
+            "Ваша оценка поможет нам улучшить сервис!",
+            parse_mode=ParseMode.HTML,
+            reply_markup=rating_keyboard
+        )
+    except Exception as e:
+        logger.error(f"Failed to send rating request: {e}")
+        # Не критично, если не удалось отправить запрос на рейтинг
+
+
 # ============ КОМАНДЫ ============
 
 
@@ -506,11 +534,24 @@ async def cmd_start(message: Message):
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🔥 Готов к работе! Отправьте ваш правовой вопрос
+🔥 Готов к работе! Отправьте ваш правовой вопрос или выберите действие ниже:
 """
     # Здесь избыточное экранирование не нужно — используем MarkdownV2 c вашим helper'ом
     welcome_text = escape_markdown_v2(welcome_raw)
-    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2)
+
+    # Создаем inline клавиатуру с кнопками (компактное размещение)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
+            InlineKeyboardButton(text="📋 Консультация", callback_data="general_consultation")
+        ],
+        [
+            InlineKeyboardButton(text="📄 Документы", callback_data="prepare_documents"),
+            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info")
+        ]
+    ])
+
+    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
     logger.info("User %s started bot", message.from_user.id)
 
 
@@ -609,6 +650,13 @@ async def process_question(message: Message):
             request_start_time = time.time()
             stream_manager = None
 
+            # Выбираем промпт в зависимости от режима пользователя
+            selected_prompt = LEGAL_SYSTEM_PROMPT
+            if hasattr(user_session, "practice_search_mode") and user_session.practice_search_mode:
+                selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
+                # Сбрасываем режим после использования
+                user_session.practice_search_mode = False
+
             try:
                 if USE_STREAMING and message.bot:
                     # Streaming режим
@@ -627,17 +675,17 @@ async def process_question(message: Message):
 
                     # Выполняем streaming запрос
                     result = await openai_service.ask_legal_stream(
-                        LEGAL_SYSTEM_PROMPT, question_text, callback=callback
+                        selected_prompt, question_text, callback=callback
                     )
                 else:
                     # Обычный режим
                     if message.bot:
                         async with TypingContext(message.bot, message.chat.id):
                             result = await openai_service.ask_legal(
-                                LEGAL_SYSTEM_PROMPT, question_text
+                                selected_prompt, question_text
                             )
                     else:
-                        result = await openai_service.ask_legal(LEGAL_SYSTEM_PROMPT, question_text)
+                        result = await openai_service.ask_legal(selected_prompt, question_text)
 
                 request_error_type = None
             except Exception as e:
@@ -731,10 +779,11 @@ async def process_question(message: Message):
         user_session.add_question_stats(timer.duration)
 
         # Записываем статистику в базу данных (если это продвинутая версия БД)
+        request_id = None
         if db is not None and hasattr(db, "record_request") and "request_start_time" in locals():
             try:
                 request_time_ms = int((time.time() - request_start_time) * 1000)
-                await db.record_request(
+                request_id = await db.record_request(
                     user_id=user_id,
                     request_type="legal_question",
                     tokens_used=0,  # Пока не подсчитываем токены
@@ -742,8 +791,13 @@ async def process_question(message: Message):
                     success=result.get("ok", False),
                     error_type=None if result.get("ok", False) else "openai_error",
                 )
+                logger.debug(f"Recorded request with ID: {request_id}")
             except Exception as db_error:
                 logger.warning("Failed to record request statistics: %s", db_error)
+
+        # Отправляем запрос на оценку ответа (только если запрос был успешным)
+        if request_id is not None and result.get("ok", False):
+            await send_rating_request(message, request_id)
 
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
 
@@ -1150,6 +1204,124 @@ async def handle_feedback_callback(callback: CallbackQuery):
         await callback.answer("❌ Произошла ошибка")
 
 
+async def handle_search_practice_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Поиск и аналитика судебной практики'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        # Создаем сообщение для запроса вопроса
+        await callback.message.answer(
+            "🔍 <b>Поиск и аналитика судебной практики</b>\n\n"
+            "📝 Опишите ваш юридический вопрос, и я найду релевантную судебную практику:\n\n"
+            "• Получите краткую консультацию с 2 ссылками на практику\n"
+            "• Возможность углубленного анализа с 6+ примерами\n"
+            "• Подготовка документов на основе практики\n\n"
+            "<i>Напишите ваш вопрос следующим сообщением...</i>",
+            parse_mode=ParseMode.HTML
+        )
+
+        # Устанавливаем режим поиска практики для пользователя
+        user_session = get_user_session(callback.from_user.id)
+        if not hasattr(user_session, "practice_search_mode"):
+            user_session.practice_search_mode = False
+        user_session.practice_search_mode = True
+
+    except Exception as e:
+        logger.error(f"Error in handle_search_practice_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_general_consultation_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Общая юридическая консультация'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        await callback.message.answer(
+            "📋 <b>Общая юридическая консультация</b>\n\n"
+            "💬 Задайте любой юридический вопрос, и я помогу:\n\n"
+            "• Анализ правовой ситуации\n"
+            "• Поиск релевантных НПА\n"
+            "• Рекомендации по действиям\n"
+            "• Оценка перспектив дела\n\n"
+            "<i>Напишите ваш вопрос следующим сообщением...</i>",
+            parse_mode=ParseMode.HTML
+        )
+
+        # Обычный режим консультации (по умолчанию)
+        user_session = get_user_session(callback.from_user.id)
+        if hasattr(user_session, "practice_search_mode"):
+            user_session.practice_search_mode = False
+
+    except Exception as e:
+        logger.error(f"Error in handle_general_consultation_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_prepare_documents_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Подготовка документов'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        await callback.message.answer(
+            "📄 <b>Подготовка документов</b>\n\n"
+            "📑 Я помогу составить процессуальные документы:\n\n"
+            "• Исковые заявления\n"
+            "• Ходатайства\n"
+            "• Жалобы и возражения\n"
+            "• Договоры и соглашения\n\n"
+            "<i>Опишите какой документ нужно подготовить и приложите детали дела...</i>",
+            parse_mode=ParseMode.HTML
+        )
+
+        # Режим подготовки документов
+        user_session = get_user_session(callback.from_user.id)
+        if not hasattr(user_session, "document_preparation_mode"):
+            user_session.document_preparation_mode = False
+        user_session.document_preparation_mode = True
+
+    except Exception as e:
+        logger.error(f"Error in handle_prepare_documents_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_help_info_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Помощь'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        # Используем готовый шаблон справки из UI компонентов
+        from src.bot.ui_components import MessageTemplates
+
+        help_text = MessageTemplates.HELP
+
+        await callback.message.answer(
+            help_text,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+
+        logger.info(f"Help info requested by user {callback.from_user.id}")
+
+    except Exception as e:
+        logger.error(f"Error in handle_help_info_callback: {e}")
+        await callback.answer("❌ Произошла ошибка при получении справки")
+
+
 async def cmd_ratings_stats(message: Message):
     """Команда для просмотра статистики рейтингов (только для админов)"""
     if message.from_user.id not in ADMIN_IDS:
@@ -1526,6 +1698,12 @@ async def main():
     dp.callback_query.register(
         handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_"))
     )
+
+    # Обработчики кнопок главного меню
+    dp.callback_query.register(handle_search_practice_callback, F.data == "search_practice")
+    dp.callback_query.register(handle_general_consultation_callback, F.data == "general_consultation")
+    dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
+    dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
 
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)
