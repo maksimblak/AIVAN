@@ -9,6 +9,7 @@ import os
 import logging
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Dict, Any, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     Document,
     ContentType,
+    FSInputFile
 )
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
@@ -1452,6 +1454,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
         # Получаем данные из состояния
         data = await state.get_data()
         operation = data.get("document_operation")
+        options = dict(data.get("operation_options") or {})
 
         if not operation:
             await message.answer("❌ Операция не выбрана. Начните заново с /start")
@@ -1474,9 +1477,12 @@ async def handle_document_upload(message: Message, state: FSMContext):
             return
 
         # Показываем статус обработки
+        operation_info = document_manager.get_operation_info(operation) or {}
+        operation_name = operation_info.get("name", operation)
+
         status_msg = await message.answer(
             f"📄 Обрабатываем документ **{file_name}**...\n\n"
-            f"⏳ Операция: {document_manager.get_operation_info(operation)['name']}\n"
+            f"⏳ Операция: {operation_name}\n"
             f"📊 Размер: {file_size // 1024} КБ",
             parse_mode="Markdown"
         )
@@ -1497,7 +1503,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 file_content=file_content.read(),
                 original_name=file_name,
                 mime_type=mime_type,
-                operation=operation
+                operation=operation,
+                **options
             )
 
             # Удаляем статусное сообщение
@@ -1515,6 +1522,18 @@ async def handle_document_upload(message: Message, state: FSMContext):
                     formatted_result,
                     parse_mode="Markdown"
                 )
+
+                exports = result.data.get("exports") or []
+                for export in exports:
+                    export_path = export.get("path")
+                    if not export_path:
+                        continue
+                    try:
+                        caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
+                        await message.answer_document(FSInputFile(export_path), caption=caption)
+                    except Exception as send_error:
+                        logger.error(f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True)
+                        await message.answer(f"⚠️ Не удалось отправить файл {Path(export_path).name}")
 
                 logger.info(f"Successfully processed document {file_name} for user {message.from_user.id}")
             else:

@@ -145,6 +145,7 @@ class DocumentStorage:
     def __init__(self, storage_path: Union[str, Path] = "data/documents"):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+        self._write_lock = asyncio.Lock()
 
     def get_user_storage_path(self, user_id: int) -> Path:
         """Получить путь к папке пользователя"""
@@ -163,7 +164,7 @@ class DocumentStorage:
         file_path = user_path / safe_name
 
         # Сохраняем файл
-        async with asyncio.Lock():  # Защита от одновременной записи
+        async with self._write_lock:
             with open(file_path, 'wb') as f:
                 f.write(file_content)
 

@@ -9,11 +9,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Union, Optional
 import logging
+import re
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
+
+QUESTION_STOPWORDS = {
+    "что", "это", "где", "когда", "если", "как", "или",
+    "and", "the", "for", "from", "with", "into", "onto", "there", "here"
+}
 
 DOCUMENT_CHAT_PROMPT = """
 Ты — помощник для работы с документами. Пользователь загрузил документ и задает вопросы по его содержанию.
@@ -102,10 +108,27 @@ class DocumentChat(DocumentProcessor):
         document_text = document_data["text"]
 
         try:
-            # Формируем промпт с документом
-            prompt = DOCUMENT_CHAT_PROMPT.format(document_text=document_text[:6000])  # Ограничиваем длину
+            chunks = document_data.get("chunks", [])
+            selected_chunks = self._select_relevant_chunks(chunks, question, max_chunks=3)
 
-            # Задаем вопрос
+            context_chunks = []
+            if selected_chunks:
+                for chunk_info in selected_chunks:
+                    excerpt = chunk_info["text"][:1800]
+                    context_chunks.append({
+                        "index": chunk_info["index"],
+                        "score": chunk_info["score"],
+                        "excerpt": excerpt
+                    })
+                context_text = "\n\n".join(
+                    f"[Фрагмент {item['index'] + 1}]\n{item['excerpt']}"
+                    for item in context_chunks
+                )
+            else:
+                context_text = document_text[:6000]
+
+            prompt = DOCUMENT_CHAT_PROMPT.format(document_text=context_text)
+
             result = await self.openai_service.ask_legal(
                 system_prompt=prompt,
                 user_message=question
@@ -116,13 +139,13 @@ class DocumentChat(DocumentProcessor):
 
             answer = result.get("text", "")
 
-            # Находим релевантные фрагменты
             relevant_fragments = self._find_relevant_fragments(document_text, question, answer)
 
             return {
                 "answer": answer,
                 "question": question,
                 "relevant_fragments": relevant_fragments,
+                "context_chunks": context_chunks,
                 "document_id": document_id,
                 "timestamp": datetime.now().isoformat()
             }
@@ -165,6 +188,47 @@ class DocumentChat(DocumentProcessor):
             "metadata": doc_data["metadata"],
             "chunks_count": len(doc_data["chunks"])
         }
+
+    def _select_relevant_chunks(self, chunks: List[str], question: str, max_chunks: int = 3) -> List[Dict[str, Any]]:
+        """Определяет наиболее релевантные фрагменты документа для заданного вопроса."""
+        if not chunks:
+            return []
+
+        tokens = [token for token in re.findall(r"[\w-]+", question.lower()) if len(token) > 3 and token not in QUESTION_STOPWORDS]
+        if not tokens:
+            tokens = [token for token in re.findall(r"[\w-]+", question.lower()) if token not in QUESTION_STOPWORDS]
+        if not tokens:
+            tokens = [token for token in re.findall(r"[\w-]+", question.lower())]
+
+        token_set = set(tokens)
+        scored_chunks = []
+        for index, chunk in enumerate(chunks):
+            chunk_lower = chunk.lower()
+            direct_matches = sum(chunk_lower.count(token) for token in tokens)
+            if direct_matches == 0:
+                chunk_tokens = set(re.findall(r"[\w-]+", chunk_lower))
+                overlap = len(chunk_tokens & token_set)
+                score = overlap * 0.5
+            else:
+                score = float(direct_matches)
+            if score > 0:
+                scored_chunks.append((score, index, chunk))
+
+        if not scored_chunks:
+            fallback = []
+            for idx, chunk in enumerate(chunks[:max_chunks]):
+                fallback.append({"index": idx, "score": 0.0, "text": chunk})
+            return fallback
+
+        scored_chunks.sort(key=lambda item: item[0], reverse=True)
+        selected = []
+        for score, index, chunk in scored_chunks[:max_chunks]:
+            selected.append({
+                "index": index,
+                "score": float(score),
+                "text": chunk
+            })
+        return selected
 
     def _find_relevant_fragments(self, document_text: str, question: str, answer: str) -> List[Dict[str, Any]]:
         """Найти релевантные фрагменты документа"""

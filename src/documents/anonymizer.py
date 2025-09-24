@@ -6,7 +6,7 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Union, Optional
+from typing import Dict, Any, List, Union, Optional, Set
 import logging
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
@@ -25,7 +25,7 @@ class DocumentAnonymizer(DocumentProcessor):
         self.supported_formats = ['.pdf', '.docx', '.doc', '.txt']
         self.anonymization_map: Dict[str, str] = {}
 
-    async def process(self, file_path: Union[str, Path], anonymization_mode: str = "replace", **kwargs) -> DocumentResult:
+    async def process(self, file_path: Union[str, Path], anonymization_mode: str = "replace", exclude_types: Optional[List[str]] = None, **kwargs) -> DocumentResult:
         """
         Обезличивание документа
 
@@ -43,13 +43,17 @@ class DocumentAnonymizer(DocumentProcessor):
         if not cleaned_text.strip():
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
+        self.anonymization_map = {}
+        exclude_set = {item.lower() for item in (exclude_types or [])}
+
         # Обезличиваем текст
-        anonymized_text, report = self._anonymize_text(cleaned_text, anonymization_mode)
+        anonymized_text, report = self._anonymize_text(cleaned_text, anonymization_mode, exclude_set)
+        report["excluded_types"] = sorted(exclude_set) if exclude_set else []
 
         result_data = {
             "anonymized_text": anonymized_text,
             "anonymization_report": report,
-            "anonymization_map": self.anonymization_map,
+            "anonymization_map": self.anonymization_map.copy(),
             "original_file": str(file_path),
             "mode": anonymization_mode
         }
@@ -59,18 +63,29 @@ class DocumentAnonymizer(DocumentProcessor):
             message="Обезличивание документа успешно завершено"
         )
 
-    def _anonymize_text(self, text: str, mode: str) -> tuple[str, Dict[str, Any]]:
+    def _anonymize_text(self, text: str, mode: str, exclude: Optional[Set[str]] = None) -> tuple[str, Dict[str, Any]]:
         """Основная функция обезличивания"""
         anonymized_text = text
-        report = {"processed_items": [], "statistics": {}}
+        report: Dict[str, Any] = {"processed_items": [], "statistics": {}}
+        exclude_set = {item.lower() for item in (exclude or set())}
 
-        # Обрабатываем различные типы персональных данных
-        anonymized_text, names_count = self._anonymize_names(anonymized_text, mode)
-        anonymized_text, phones_count = self._anonymize_phones(anonymized_text, mode)
-        anonymized_text, emails_count = self._anonymize_emails(anonymized_text, mode)
-        anonymized_text, addresses_count = self._anonymize_addresses(anonymized_text, mode)
-        anonymized_text, documents_count = self._anonymize_documents(anonymized_text, mode)
-        anonymized_text, bank_details_count = self._anonymize_bank_details(anonymized_text, mode)
+        def _should_process(kind: str) -> bool:
+            return kind not in exclude_set
+
+        names_count = phones_count = emails_count = addresses_count = documents_count = bank_details_count = 0
+
+        if _should_process("names"):
+            anonymized_text, names_count = self._anonymize_names(anonymized_text, mode)
+        if _should_process("phones"):
+            anonymized_text, phones_count = self._anonymize_phones(anonymized_text, mode)
+        if _should_process("emails"):
+            anonymized_text, emails_count = self._anonymize_emails(anonymized_text, mode)
+        if _should_process("addresses"):
+            anonymized_text, addresses_count = self._anonymize_addresses(anonymized_text, mode)
+        if _should_process("documents"):
+            anonymized_text, documents_count = self._anonymize_documents(anonymized_text, mode)
+        if _should_process("bank_details"):
+            anonymized_text, bank_details_count = self._anonymize_bank_details(anonymized_text, mode)
 
         report["statistics"] = {
             "names": names_count,

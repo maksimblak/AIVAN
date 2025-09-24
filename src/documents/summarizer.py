@@ -17,6 +17,11 @@ from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
 
+LANGUAGE_INSTRUCTIONS = {
+    "ru": "Отвечай на русском языке, используй Markdown форматирование.",
+    "en": "Respond in English, using Markdown formatting.",
+}
+
 DOCUMENT_SUMMARIZATION_PROMPT = """
 Ты — эксперт по анализу и саммаризации юридических документов.
 
@@ -74,7 +79,7 @@ class DocumentSummarizer(DocumentProcessor):
         self.supported_formats = ['.pdf', '.docx', '.doc', '.txt']
         self.openai_service = openai_service
 
-    async def process(self, file_path: Union[str, Path], detail_level: str = "detailed", **kwargs) -> DocumentResult:
+    async def process(self, file_path: Union[str, Path], detail_level: str = "detailed", language: str = "ru", **kwargs) -> DocumentResult:
         """
         Основной метод саммаризации документа
 
@@ -100,8 +105,12 @@ class DocumentSummarizer(DocumentProcessor):
         # Получаем метаданные документа
         metadata = TextProcessor.extract_metadata(cleaned_text)
 
+        language_code = (language or "ru").lower()
+        if language_code not in LANGUAGE_INSTRUCTIONS:
+            language_code = "ru"
+
         # Создаем саммаризацию
-        summary_data = await self._create_summary(cleaned_text, detail_level)
+        summary_data = await self._create_summary(cleaned_text, detail_level, language_code)
 
         # Извлекаем структурированные данные
         structured_data = self._extract_structured_data(cleaned_text)
@@ -112,7 +121,8 @@ class DocumentSummarizer(DocumentProcessor):
             "structured_data": structured_data,
             "metadata": metadata,
             "original_file": str(file_path),
-            "detail_level": detail_level
+            "detail_level": detail_level,
+            "language": language_code
         }
 
         return DocumentResult.success_result(
@@ -120,14 +130,24 @@ class DocumentSummarizer(DocumentProcessor):
             message="Саммаризация документа успешно завершена"
         )
 
-    async def _create_summary(self, text: str, detail_level: str) -> Dict[str, Any]:
+    async def _create_summary(self, text: str, detail_level: str, language: str) -> Dict[str, Any]:
         """Создать саммаризацию с помощью OpenAI"""
 
-        # Адаптируем промпт под уровень детализации
+        language_code = (language or "ru").lower()
+        if language_code not in LANGUAGE_INSTRUCTIONS:
+            language_code = "ru"
+
         if detail_level == "brief":
-            prompt = DOCUMENT_SUMMARIZATION_PROMPT + "\n\nДай КРАТКУЮ выжимку (до 500 слов)."
+            detail_instruction = "Дай КРАТКУЮ выжимку (до 500 слов)."
         else:
-            prompt = DOCUMENT_SUMMARIZATION_PROMPT + "\n\nДай ПОДРОБНУЮ выжимку (до 1500 слов)."
+            detail_instruction = "Дай ПОДРОБНУЮ выжимку (до 1500 слов)."
+
+        prompt = "
+".join([
+            DOCUMENT_SUMMARIZATION_PROMPT.strip(),
+            LANGUAGE_INSTRUCTIONS[language_code],
+            detail_instruction,
+        ])
 
         try:
             # Если текст слишком длинный, разбиваем на части
@@ -141,7 +161,7 @@ class DocumentSummarizer(DocumentProcessor):
 
                     result = await self.openai_service.ask_legal(
                         system_prompt=prompt,
-                        user_message=chunk
+                        user_message=chunk_prompt
                     )
 
                     if result.get("ok"):
@@ -156,7 +176,7 @@ class DocumentSummarizer(DocumentProcessor):
                     """ + combined_text
 
                     final_result = await self.openai_service.ask_legal(
-                        system_prompt=DOCUMENT_SUMMARIZATION_PROMPT,
+                        system_prompt=prompt,
                         user_message=final_prompt
                     )
 

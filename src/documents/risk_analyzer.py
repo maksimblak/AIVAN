@@ -175,12 +175,17 @@ class RiskAnalyzer(DocumentProcessor):
         legal_compliance = await self._check_legal_compliance(cleaned_text)
 
         # Объединяем результаты
+        ai_risks = ai_analysis.get("risks", [])
+        combined_risks = pattern_risks + ai_risks
+        highlighted_text = self.highlight_problematic_clauses(cleaned_text, combined_risks)
+
         result_data = {
-            "overall_risk_level": self._calculate_overall_risk([*pattern_risks, *ai_analysis.get("risks", [])]),
+            "overall_risk_level": self._calculate_overall_risk(combined_risks),
             "pattern_risks": pattern_risks,
             "ai_analysis": ai_analysis,
             "legal_compliance": legal_compliance,
             "recommendations": self._generate_recommendations(pattern_risks, ai_analysis),
+            "highlighted_text": highlighted_text,
             "original_file": str(file_path),
             "analysis_timestamp": datetime.now().isoformat()
         }
@@ -329,6 +334,31 @@ class RiskAnalyzer(DocumentProcessor):
 
         return risks
 
+
+    def _extract_legal_violations(self, analysis_text: str) -> List[Dict[str, Any]]:
+        """Простое извлечение нарушений из текста анализа AI."""
+        if not analysis_text:
+            return []
+
+        violations: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_line in analysis_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if re.match(r'^(?:[-•*—]|\d+[.)])\s*', line):
+                normalized = re.sub(r'^(?:[-•*—]|\d+[.)])\s*', '', line).strip()
+                norm_key = normalized.lower()
+                if not normalized or norm_key in seen:
+                    continue
+                seen.add(norm_key)
+                ref_match = re.search(r'(ст\.?\s*\d+[\w\-]*|article\s*\d+)', normalized, re.IGNORECASE)
+                violations.append({
+                    'text': normalized,
+                    'reference': ref_match.group(1) if ref_match else None
+                })
+        return violations
+
     async def _check_legal_compliance(self, text: str) -> Dict[str, Any]:
         """Проверка соответствия законодательству"""
 
@@ -351,10 +381,11 @@ class RiskAnalyzer(DocumentProcessor):
             )
 
             if result.get("ok"):
+                analysis_text = result.get("text", "")
                 return {
                     "status": "completed",
-                    "analysis": result.get("text", ""),
-                    "violations": []  # Можно добавить парсинг нарушений
+                    "analysis": analysis_text,
+                    "violations": self._extract_legal_violations(analysis_text)
                 }
             else:
                 return {

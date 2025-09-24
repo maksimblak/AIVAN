@@ -38,8 +38,10 @@ class FileFormatHandler:
                 return await FileFormatHandler._extract_from_txt(path)
             elif extension == ".pdf":
                 return await FileFormatHandler._extract_from_pdf(path)
-            elif extension in [".docx", ".doc"]:
+            elif extension == ".docx":
                 return await FileFormatHandler._extract_from_docx(path)
+            elif extension == ".doc":
+                return await FileFormatHandler._extract_from_doc(path)
             else:
                 return False, f"Неподдерживаемый формат файла: {extension}"
         except Exception as e:
@@ -115,30 +117,46 @@ class FileFormatHandler:
     async def _extract_from_docx(file_path: Path) -> tuple[bool, str]:
         """Извлечь текст из DOCX файла"""
         try:
-            try:
-                import docx
+            import docx  # type: ignore
+        except ImportError:
+            return False, "Для работы с DOCX файлами требуется установить python-docx"
 
-                async with asyncio.Lock():
-                    doc = docx.Document(file_path)
-                    text = ""
+        def _load_docx() -> str:
+            document = docx.Document(file_path)
+            parts: list[str] = []
+            for paragraph in document.paragraphs:
+                parts.append(paragraph.text)
+            for table in document.tables:
+                for row in table.rows:
+                    parts.append('\t'.join(cell.text for cell in row.cells))
+            return '\n'.join(parts)
 
-                    for paragraph in doc.paragraphs:
-                        text += paragraph.text + "\n"
-
-                    # Извлекаем текст из таблиц
-                    for table in doc.tables:
-                        for row in table.rows:
-                            for cell in row.cells:
-                                text += cell.text + "\t"
-                            text += "\n"
-
-                return True, text
-
-            except ImportError:
-                return False, "Для работы с DOCX файлами требуется установить python-docx"
-
+        try:
+            text_content = await asyncio.to_thread(_load_docx)
+            if not text_content.strip():
+                return False, "DOCX файл не содержит извлекаемого текста"
+            return True, text_content
         except Exception as e:
-            return False, f"Ошибка чтения DOCX файла: {str(e)}"
+            return False, f"Ошибка чтения DOCX файла: {e}"
+
+    @staticmethod
+    async def _extract_from_doc(file_path: Path) -> tuple[bool, str]:
+        """Извлечь текст из DOC файла"""
+        try:
+            import textract  # type: ignore
+        except ImportError:
+            return False, "Для обработки DOC файлов требуется установить textract (poetry install --extras full)."
+
+        loop = asyncio.get_event_loop()
+        try:
+            text_bytes = await loop.run_in_executor(None, textract.process, str(file_path))
+            text = text_bytes.decode('utf-8', errors='ignore')
+            if not text.strip():
+                return False, "DOC файл не содержит извлекаемого текста"
+            return True, text
+        except Exception as e:
+            return False, f"Ошибка чтения DOC файла: {e}"
+
 
 class TextProcessor:
     """Класс для предварительной обработки текста"""
