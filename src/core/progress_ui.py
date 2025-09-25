@@ -1,24 +1,31 @@
 # progress_ui.py  — версия со стримингом текста
 from __future__ import annotations
-import asyncio, time, re
+
+import asyncio
+import re
+import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
-from aiogram.enums import ParseMode
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
+
 from aiogram import F, Router
+from aiogram.enums import ParseMode
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 ICON_IDLE = "○"
-ICON_RUN  = "⏳"
+ICON_RUN = "⏳"
 ICON_DONE = "✅"
 
+
 def _bar(done: int, total: int, width: int = 12) -> str:
-    if total <= 0: return "—"
+    if total <= 0:
+        return "—"
     frac = max(0.0, min(1.0, done / total))
     full = int(frac * width)
     return "▓" * full + "░" * (width - full)
 
+
 def _html_escape(s: str) -> str:
-    return (s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"))
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def _to_html_chunk(raw: str) -> str:
     # грубый, но быстрый рендер: переносы -> <br>, ссылки -> <a>
@@ -27,35 +34,39 @@ def _to_html_chunk(raw: str) -> str:
     t = t.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
     return t
 
+
 @dataclass
 class ChecklistProgress:
     bot: any
     chat_id: int
-    stages: List[str]
-    session_store: Optional[any] = None
-    context_questions: Optional[List[str]] = None
+    stages: list[str]
+    session_store: any | None = None
+    context_questions: list[str] | None = None
     throttle_sec: float = 0.8
-    max_message_len: int = 3900   # безопасный лимит для всего сообщения
+    max_message_len: int = 3900  # безопасный лимит для всего сообщения
 
-    message_id: Optional[int] = field(default=None, init=False)
+    message_id: int | None = field(default=None, init=False)
     start_ts: float = field(default=0, init=False)
     cur: int = field(default=-1, init=False)
     _last_edit: float = field(default=0, init=False)
-    _ticker_task: Optional[asyncio.Task] = field(default=None, init=False)
+    _ticker_task: asyncio.Task | None = field(default=None, init=False)
     show_ctx: bool = field(default=False, init=False)
     _done: bool = field(default=False, init=False)
 
     # --- стриминговый блок ---
     stream_title: str = field(default="Формирую ответ", init=False)
-    _stream_raw: List[str] = field(default_factory=list, init=False)
+    _stream_raw: list[str] = field(default_factory=list, init=False)
     _stream_enabled: bool = field(default=False, init=False)
 
     async def start(self, show_ctx_default: bool = False):
         self.show_ctx = show_ctx_default
         self.start_ts = time.time()
         msg = await self.bot.send_message(
-            self.chat_id, self._render(), parse_mode=ParseMode.HTML,
-            reply_markup=self._kb(), disable_web_page_preview=True
+            self.chat_id,
+            self._render(),
+            parse_mode=ParseMode.HTML,
+            reply_markup=self._kb(),
+            disable_web_page_preview=True,
         )
         self.message_id = msg.message_id
         self._save_state()
@@ -68,13 +79,15 @@ class ChecklistProgress:
         self.cur = idx
         await self._safe_edit()
 
-    async def next(self): await self.to_stage(self.cur + 1)
+    async def next(self):
+        await self.to_stage(self.cur + 1)
 
     async def complete(self):
         self.cur = len(self.stages) - 1
         self._done = True
         await self._safe_edit(force=True)
-        if self._ticker_task: self._ticker_task.cancel()
+        if self._ticker_task:
+            self._ticker_task.cancel()
 
     # ---------- стрим ----------
     async def start_stream(self, title: str = "Формирую ответ"):
@@ -144,7 +157,7 @@ class ChecklistProgress:
     def _kb(self) -> InlineKeyboardMarkup:
         btn = InlineKeyboardButton(
             text=("Скрыть контекст" if self.show_ctx else "Показать контекст"),
-            callback_data=f"progress:ctx:{int(self.show_ctx)}:{self.message_id or 0}"
+            callback_data=f"progress:ctx:{int(self.show_ctx)}:{self.message_id or 0}",
         )
         return InlineKeyboardMarkup(inline_keyboard=[[btn]])
 
@@ -153,12 +166,16 @@ class ChecklistProgress:
         if not force and now - self._last_edit < self.throttle_sec:
             return
         self._last_edit = now
-        if self.message_id is None: return
+        if self.message_id is None:
+            return
         try:
             await self.bot.edit_message_text(
-                chat_id=self.chat_id, message_id=self.message_id,
-                text=self._render(), parse_mode=ParseMode.HTML,
-                reply_markup=self._kb(), disable_web_page_preview=True
+                chat_id=self.chat_id,
+                message_id=self.message_id,
+                text=self._render(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=self._kb(),
+                disable_web_page_preview=True,
             )
         except Exception:
             pass
@@ -168,13 +185,17 @@ class ChecklistProgress:
         if not self.session_store or self.message_id is None:
             return
         key = f"progress:{self.message_id}"
-        self.session_store.set(key, {
-            "chat_id": self.chat_id,
-            "cur": self.cur,
-            "stages": self.stages,
-            "start_ts": self.start_ts,
-            "show_ctx": self.show_ctx,
-        })
+        self.session_store.set(
+            key,
+            {
+                "chat_id": self.chat_id,
+                "cur": self.cur,
+                "stages": self.stages,
+                "start_ts": self.start_ts,
+                "show_ctx": self.show_ctx,
+            },
+        )
+
 
 def setup_progress_router(router: Router, session_store):
     @router.callback_query(F.data.startswith("progress:ctx:"))
@@ -183,12 +204,14 @@ def setup_progress_router(router: Router, session_store):
             _, _, state, mid = call.data.split(":")
             mid = int(mid)
         except Exception:
-            await call.answer(); return
+            await call.answer()
+            return
 
         key = f"progress:{mid}"
-        data: Dict = await session_store.get(key) if hasattr(session_store, "get") else None
+        data: dict = await session_store.get(key) if hasattr(session_store, "get") else None
         if not data:
-            await call.answer("Истёк контекст"); return
+            await call.answer("Истёк контекст")
+            return
 
         show_ctx = not bool(int(state))
         data["show_ctx"] = show_ctx

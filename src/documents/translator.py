@@ -1,13 +1,14 @@
-﻿"""
+"""
 РњРѕРґСѓР»СЊ РїРµСЂРµРІРѕРґР° РґРѕРєСѓРјРµРЅС‚РѕРІ
 РџСЂРѕС„РµСЃСЃРёРѕРЅР°Р»СЊРЅС‹Р№ РїРµСЂРµРІРѕРґ РґРѕРєСѓРјРµРЅС‚РѕРІ СЃ СЃРѕС…СЂР°РЅРµРЅРёРµРј СЋСЂРёРґРёС‡РµСЃРєРѕР№ С‚РµСЂРјРёРЅРѕР»РѕРіРёРё
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Dict, Any, List, Union, Optional, Tuple
+
 import logging
 import re
+from pathlib import Path
+from typing import Any
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -37,25 +38,25 @@ TRANSLATION_PROMPT = """
 РџРµСЂРµРІРѕРґРё С‚РѕР»СЊРєРѕ С‚РµРєСЃС‚ РґРѕРєСѓРјРµРЅС‚Р°, СЃРѕС…СЂР°РЅСЏСЏ РµРіРѕ СЃС‚СЂСѓРєС‚СѓСЂСѓ.
 """
 
+
 class DocumentTranslator(DocumentProcessor):
     """РљР»Р°СЃСЃ РґР»СЏ РїРµСЂРµРІРѕРґР° РґРѕРєСѓРјРµРЅС‚РѕРІ"""
 
     def __init__(self, openai_service=None):
-        super().__init__(
-            name="DocumentTranslator",
-            max_file_size=50 * 1024 * 1024
-        )
-        self.supported_formats = ['.pdf', '.docx', '.doc', '.txt']
+        super().__init__(name="DocumentTranslator", max_file_size=50 * 1024 * 1024)
+        self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
         self.openai_service = openai_service
 
         self.supported_languages = {
             "ru": "СЂСѓСЃСЃРєРёР№",
             "en": "Р°РЅРіР»РёР№СЃРєРёР№",
             "zh": "РєРёС‚Р°Р№СЃРєРёР№",
-            "de": "РЅРµРјРµС†РєРёР№"
+            "de": "РЅРµРјРµС†РєРёР№",
         }
 
-    async def process(self, file_path: Union[str, Path], source_lang: str = "ru", target_lang: str = "en", **kwargs) -> DocumentResult:
+    async def process(
+        self, file_path: str | Path, source_lang: str = "ru", target_lang: str = "en", **kwargs
+    ) -> DocumentResult:
         """
         РџРµСЂРµРІРѕРґ РґРѕРєСѓРјРµРЅС‚Р°
 
@@ -66,25 +67,34 @@ class DocumentTranslator(DocumentProcessor):
         """
 
         if not self.openai_service:
-            raise ProcessingError("OpenAI СЃРµСЂРІРёСЃ РЅРµ РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°РЅ", "SERVICE_ERROR")
+            raise ProcessingError(
+                "OpenAI СЃРµСЂРІРёСЃ РЅРµ РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°РЅ", "SERVICE_ERROR"
+            )
 
-        if source_lang not in self.supported_languages or target_lang not in self.supported_languages:
-            raise ProcessingError("РќРµРїРѕРґРґРµСЂР¶РёРІР°РµРјР°СЏ СЏР·С‹РєРѕРІР°СЏ РїР°СЂР°", "LANGUAGE_ERROR")
+        if (
+            source_lang not in self.supported_languages
+            or target_lang not in self.supported_languages
+        ):
+            raise ProcessingError(
+                "РќРµРїРѕРґРґРµСЂР¶РёРІР°РµРјР°СЏ СЏР·С‹РєРѕРІР°СЏ РїР°СЂР°", "LANGUAGE_ERROR"
+            )
 
         # РР·РІР»РµРєР°РµРј С‚РµРєСЃС‚ РёР· С„Р°Р№Р»Р°
         success, text = await FileFormatHandler.extract_text_from_file(file_path)
         if not success:
-            raise ProcessingError(f"РќРµ СѓРґР°Р»РѕСЃСЊ РёР·РІР»РµС‡СЊ С‚РµРєСЃС‚: {text}", "EXTRACTION_ERROR")
+            raise ProcessingError(
+                f"РќРµ СѓРґР°Р»РѕСЃСЊ РёР·РІР»РµС‡СЊ С‚РµРєСЃС‚: {text}", "EXTRACTION_ERROR"
+            )
 
         cleaned_text = TextProcessor.clean_text(text)
         if not cleaned_text.strip():
-            raise ProcessingError("Р”РѕРєСѓРјРµРЅС‚ РЅРµ СЃРѕРґРµСЂР¶РёС‚ С‚РµРєСЃС‚Р°", "EMPTY_DOCUMENT")
+            raise ProcessingError(
+                "Р”РѕРєСѓРјРµРЅС‚ РЅРµ СЃРѕРґРµСЂР¶РёС‚ С‚РµРєСЃС‚Р°", "EMPTY_DOCUMENT"
+            )
 
         # РџРµСЂРµРІРѕРґРёРј РґРѕРєСѓРјРµРЅС‚
         translated_text, chunk_details = await self._translate_text(
-            cleaned_text,
-            source_lang,
-            target_lang
+            cleaned_text, source_lang, target_lang
         )
 
         result_data = {
@@ -97,36 +107,32 @@ class DocumentTranslator(DocumentProcessor):
                 "original_length": len(cleaned_text),
                 "translated_length": len(translated_text),
                 "language_pair": f"{source_lang} -> {target_lang}",
-                "chunks_processed": len(chunk_details)
-            }
+                "chunks_processed": len(chunk_details),
+            },
         }
 
         return DocumentResult.success_result(
             data=result_data,
-            message=f"РџРµСЂРµРІРѕРґ СЃ {self.supported_languages[source_lang]} РЅР° {self.supported_languages[target_lang]} Р·Р°РІРµСЂС€РµРЅ"
+            message=f"РџРµСЂРµРІРѕРґ СЃ {self.supported_languages[source_lang]} РЅР° {self.supported_languages[target_lang]} Р·Р°РІРµСЂС€РµРЅ",
         )
 
     async def _translate_text(
-        self,
-        text: str,
-        source_lang: str,
-        target_lang: str
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+        self, text: str, source_lang: str, target_lang: str
+    ) -> tuple[str, list[dict[str, Any]]]:
         """РџРµСЂРµРІРѕРґ С‚РµРєСЃС‚Р° СЃ РїРѕРјРѕС‰СЊСЋ AI"""
 
         source_lang_name = self.supported_languages[source_lang]
         target_lang_name = self.supported_languages[target_lang]
 
         prompt = TRANSLATION_PROMPT.format(
-            source_lang=source_lang_name,
-            target_lang=target_lang_name
+            source_lang=source_lang_name, target_lang=target_lang_name
         )
-        chunk_details: List[Dict[str, Any]] = []
+        chunk_details: list[dict[str, Any]] = []
 
         try:
             if len(text) > 6000:
                 chunks = TextProcessor.split_into_chunks(text, max_chunk_size=4000)
-                translated_chunks: List[str] = []
+                translated_chunks: list[str] = []
 
                 for i, chunk in enumerate(chunks):
                     logger.info(f"РџРµСЂРµРІРѕРґРёРј С‡Р°СЃС‚СЊ {i+1}/{len(chunks)}")
@@ -138,61 +144,59 @@ class DocumentTranslator(DocumentProcessor):
                     )
 
                     result = await self.openai_service.ask_legal(
-                        system_prompt=prompt,
-                        user_message=chunk_prompt
+                        system_prompt=prompt, user_message=chunk_prompt
                     )
 
                     if result.get("ok"):
                         translated_part = result.get("text", "")
                         translated_chunks.append(translated_part)
-                        chunk_details.append({
-                            "chunk_number": i + 1,
-                            "source_preview": chunk[:200],
-                            "translated_preview": translated_part[:200]
-                        })
+                        chunk_details.append(
+                            {
+                                "chunk_number": i + 1,
+                                "source_preview": chunk[:200],
+                                "translated_preview": translated_part[:200],
+                            }
+                        )
                     else:
                         raise ProcessingError(
-                            f"РћС€РёР±РєР° РїРµСЂРµРІРѕРґР° С‡Р°СЃС‚Рё {i + 1}",
-                            "TRANSLATION_ERROR"
+                            f"РћС€РёР±РєР° РїРµСЂРµРІРѕРґР° С‡Р°СЃС‚Рё {i + 1}", "TRANSLATION_ERROR"
                         )
 
                 return "\n\n".join(translated_chunks), chunk_details
 
-            result = await self.openai_service.ask_legal(
-                system_prompt=prompt,
-                user_message=text
-            )
+            result = await self.openai_service.ask_legal(system_prompt=prompt, user_message=text)
 
             if result.get("ok"):
                 translated_text = result.get("text", "")
-                chunk_details.append({
-                    "chunk_number": 1,
-                    "source_preview": text[:200],
-                    "translated_preview": translated_text[:200]
-                })
+                chunk_details.append(
+                    {
+                        "chunk_number": 1,
+                        "source_preview": text[:200],
+                        "translated_preview": translated_text[:200],
+                    }
+                )
                 return translated_text, chunk_details
 
-            raise ProcessingError("РќРµ СѓРґР°Р»РѕСЃСЊ РїРµСЂРµРІРµСЃС‚Рё РґРѕРєСѓРјРµРЅС‚", "TRANSLATION_ERROR")
+            raise ProcessingError(
+                "РќРµ СѓРґР°Р»РѕСЃСЊ РїРµСЂРµРІРµСЃС‚Рё РґРѕРєСѓРјРµРЅС‚", "TRANSLATION_ERROR"
+            )
 
         except Exception as e:
             logger.error(f"РћС€РёР±РєР° РїРµСЂРµРІРѕРґР°: {e}")
-            raise ProcessingError(
-                f"РћС€РёР±РєР° РїРµСЂРµРІРѕРґР°: {str(e)}",
-                "TRANSLATION_ERROR"
-            )
+            raise ProcessingError(f"РћС€РёР±РєР° РїРµСЂРµРІРѕРґР°: {str(e)}", "TRANSLATION_ERROR")
 
-    def get_supported_languages(self) -> Dict[str, str]:
+    def get_supported_languages(self) -> dict[str, str]:
         """РџРѕР»СѓС‡РёС‚СЊ СЃРїРёСЃРѕРє РїРѕРґРґРµСЂР¶РёРІР°РµРјС‹С… СЏР·С‹РєРѕРІ"""
         return self.supported_languages.copy()
 
     def detect_language(self, text: str) -> str:
         """РџСЂРѕСЃС‚РѕРµ РѕРїСЂРµРґРµР»РµРЅРёРµ СЏР·С‹РєР° С‚РµРєСЃС‚Р°"""
         # РћС‡РµРЅСЊ РїСЂРѕСЃС‚Р°СЏ СЌРІСЂРёСЃС‚РёРєР° - РјРѕР¶РЅРѕ СѓР»СѓС‡С€РёС‚СЊ
-        if re.search(r'[Р°-СЏС‘]', text.lower()):
+        if re.search(r"[Р°-СЏС‘]", text.lower()):
             return "ru"
-        elif re.search(r'[\u4e00-\u9fff]', text):
+        elif re.search(r"[\u4e00-\u9fff]", text):
             return "zh"
-        elif re.search(r'[Г¤Г¶ГјГџ]', text.lower()):
+        elif re.search(r"[Г¤Г¶ГјГџ]", text.lower()):
             return "de"
         else:
             return "en"  # РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ

@@ -1,6 +1,5 @@
-﻿import asyncio
+import asyncio
 import html
-from typing import List, Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
@@ -28,10 +27,10 @@ class AwaitChecklist:
         self,
         bot: Bot,
         chat_id: int,
-        steps: Optional[List[str]] = None,
+        steps: list[str] | None = None,
         *,
-        throttle_sec: float = 1.2,         # не редактировать чаще
-        expected_duration_sec: int = 45,   # для авто-прогресса по времени
+        throttle_sec: float = 1.2,  # не редактировать чаще
+        expected_duration_sec: int = 45,  # для авто-прогресса по времени
     ):
         self.bot = bot
         self.chat_id = chat_id
@@ -41,14 +40,14 @@ class AwaitChecklist:
         # состояние
         loop = asyncio.get_event_loop()
         self._t0 = loop.time()
-        self._progress = 0.0               # 0..1
+        self._progress = 0.0  # 0..1
         self._current_step = 0
         self._throttle = throttle_sec
         self._expected = max(10, expected_duration_sec)
 
         # tg
-        self.message_id: Optional[int] = None
-        self._tick_task: Optional[asyncio.Task] = None
+        self.message_id: int | None = None
+        self._tick_task: asyncio.Task | None = None
         self._last_edit_ts = 0.0
         self._stopped = False
 
@@ -57,14 +56,16 @@ class AwaitChecklist:
     async def start(self) -> int:
         text = self._render()
         msg = await self.bot.send_message(
-            self.chat_id, text,
-            parse_mode="HTML", disable_web_page_preview=True,
+            self.chat_id,
+            text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
         )
         self.message_id = msg.message_id
         self._tick_task = asyncio.create_task(self._ticker())
         return msg.message_id
 
-    async def finish(self, final_text: Optional[str] = None) -> None:
+    async def finish(self, final_text: str | None = None) -> None:
         if self._stopped:
             return
         self._stopped = True
@@ -76,8 +77,11 @@ class AwaitChecklist:
         txt = final_text or self._render(final=True)
         try:
             await self.bot.edit_message_text(
-                txt, chat_id=self.chat_id, message_id=self.message_id,
-                parse_mode="HTML", disable_web_page_preview=True
+                txt,
+                chat_id=self.chat_id,
+                message_id=self.message_id,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
         except TelegramBadRequest as e:
             if "message is not modified" not in str(e).lower():
@@ -89,10 +93,9 @@ class AwaitChecklist:
         self._progress = fraction
         # переводим прогресс в текущий шаг, но сохраняем последний «бОльший» шаг
         est_step = min(self.n - 1, int(self._progress * self.n))
-        if est_step > self._current_step:
-            self._current_step = est_step
+        self._current_step = max(est_step, self._current_step)
 
-    async def advance(self, step_index: Optional[int] = None) -> None:
+    async def advance(self, step_index: int | None = None) -> None:
         """Ручной прыжок на шаг (или +1)."""
         if step_index is None:
             step_index = self._current_step + 1
@@ -127,8 +130,11 @@ class AwaitChecklist:
         txt = self._render()
         try:
             await self.bot.edit_message_text(
-                txt, chat_id=self.chat_id, message_id=self.message_id,
-                parse_mode="HTML", disable_web_page_preview=True
+                txt,
+                chat_id=self.chat_id,
+                message_id=self.message_id,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
         except TelegramBadRequest as e:
             # игнорируем «message is not modified»

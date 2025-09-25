@@ -4,71 +4,64 @@
 """
 
 from __future__ import annotations
+
 import asyncio
-import os
 import logging
+import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.documents.document_manager import DocumentManager
 
 if TYPE_CHECKING:
     from src.core.db_advanced import DatabaseAdvanced
 
-from html import escape as html_escape
 import re
+from html import escape as html_escape
 
-from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ParseMode
-from aiogram.types import (
-    Message,
-    BotCommand,
-    ErrorEvent,
-    LabeledPrice,
-    PreCheckoutQuery,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    Document,
-    ContentType,
-    FSInputFile
-)
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    ErrorEvent,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+)
+from dotenv import load_dotenv
 
 from src.bot.logging_setup import setup_logging
-from src.bot.promt import LEGAL_SYSTEM_PROMPT, JUDICIAL_PRACTICE_SEARCH_PROMPT
-from src.bot.ui_components import Emoji, escape_markdown_v2
-from src.bot.stream_manager import StreamManager, StreamingCallback
+from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
-from src.core.db import Database
-from src.telegram_legal_bot.config import load_config
-from src.telegram_legal_bot.ratelimit import RateLimiter
+from src.bot.stream_manager import StreamingCallback, StreamManager
+from src.bot.ui_components import Emoji, escape_markdown_v2
 from src.core.access import AccessService
-from src.core.openai_service import OpenAIService
-from src.core.session_store import SessionStore, UserSession
-from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
-from src.core.validation import InputValidator, ValidationSeverity
+from src.core.db import Database
 from src.core.exceptions import (
-    ErrorHandler,
     ErrorContext,
+    ErrorHandler,
     ErrorType,
-    ValidationException,
-    DatabaseException,
-    OpenAIException,
-    TelegramException,
     NetworkException,
-    PaymentException,
-    AuthException,
-    RateLimitException,
+    OpenAIException,
     SystemException,
 )
+from src.core.openai_service import OpenAIService
+from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
+from src.core.session_store import SessionStore, UserSession
+from src.core.validation import InputValidator, ValidationSeverity
 from src.documents.base import ProcessingError
+from src.telegram_legal_bot.config import load_config
+from src.telegram_legal_bot.ratelimit import RateLimiter
 
 SAFE_LIMIT = 3900  # чуть меньше телеграмного 4096 (запас на теги)
 # ============ КОНФИГУРАЦИЯ ============
@@ -107,14 +100,14 @@ DYNAMIC_PRICE_XTR = convert_rub_to_xtr(
 ADMIN_IDS = set(config.admin_ids)
 
 # Глобальная БД/лимитер
-db: Optional[Union[Database, DatabaseAdvanced]] = None
-rate_limiter: Optional[RateLimiter] = None
-access_service: Optional[AccessService] = None
-openai_service: Optional[OpenAIService] = None
-session_store: Optional[SessionStore] = None
-crypto_provider: Optional[CryptoPayProvider] = None
-error_handler: Optional[ErrorHandler] = None
-document_manager: Optional[Any] = None  # DocumentManager будет инициализирован позже
+db: Database | DatabaseAdvanced | None = None
+rate_limiter: RateLimiter | None = None
+access_service: AccessService | None = None
+openai_service: OpenAIService | None = None
+session_store: SessionStore | None = None
+crypto_provider: CryptoPayProvider | None = None
+error_handler: ErrorHandler | None = None
+document_manager: Any | None = None  # DocumentManager будет инициализирован позже
 
 # Политика сессий
 USER_SESSIONS_MAX = int(getattr(config, "user_sessions_max", 10000) or 10000)
@@ -122,9 +115,11 @@ USER_SESSION_TTL_SECONDS = int(getattr(config, "user_session_ttl_seconds", 3600)
 
 # ============ СОСТОЯНИЯ ДЛЯ РАБОТЫ С ДОКУМЕНТАМИ ============
 
+
 class DocumentProcessingStates(StatesGroup):
     waiting_for_document = State()
     processing_document = State()
+
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
@@ -150,16 +145,15 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     for paragraph in paragraphs:
         if len(current_chunk + paragraph + "\n\n") <= max_length:
             current_chunk += paragraph + "\n\n"
+        elif current_chunk:
+            chunks.append(current_chunk.strip())
+            current_chunk = paragraph + "\n\n"
         else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = paragraph + "\n\n"
-            else:
-                # Параграф слишком длинный, разбиваем принудительно
-                while len(paragraph) > max_length:
-                    chunks.append(paragraph[:max_length])
-                    paragraph = paragraph[max_length:]
-                current_chunk = paragraph + "\n\n"
+            # Параграф слишком длинный, разбиваем принудительно
+            while len(paragraph) > max_length:
+                chunks.append(paragraph[:max_length])
+                paragraph = paragraph[max_length:]
+            current_chunk = paragraph + "\n\n"
 
     if current_chunk:
         chunks.append(current_chunk.strip())
@@ -402,7 +396,7 @@ async def _send_html_chunks(message, html_text: str) -> None:
             await asyncio.sleep(0.1)
 
 
-async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> Optional[str]:
+async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> str | None:
     result = InputValidator.validate_question(text, user_id)
     if not result.is_valid:
         bullet = "\n\u0007 "
@@ -476,12 +470,14 @@ async def _stop_status_indicator(status) -> None:
 
 def create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
     """Создает клавиатуру с кнопками рейтинга для оценки ответа"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="👍", callback_data=f"rate_like_{request_id}"),
-            InlineKeyboardButton(text="👎", callback_data=f"rate_dislike_{request_id}")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍", callback_data=f"rate_like_{request_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"rate_dislike_{request_id}"),
+            ]
         ]
-    ])
+    )
 
 
 async def send_rating_request(message: Message, request_id: int):
@@ -492,7 +488,7 @@ async def send_rating_request(message: Message, request_id: int):
             f"{Emoji.STAR} <b>Оцените качество ответа</b>\n\n"
             "Ваша оценка поможет нам улучшить сервис!",
             parse_mode=ParseMode.HTML,
-            reply_markup=rating_keyboard
+            reply_markup=rating_keyboard,
         )
     except Exception as e:
         logger.error(f"Failed to send rating request: {e}")
@@ -556,19 +552,25 @@ async def cmd_start(message: Message):
     welcome_text = escape_markdown_v2(welcome_raw)
 
     # Создаем inline клавиатуру с кнопками (компактное размещение)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
-            InlineKeyboardButton(text="📋 Консультация", callback_data="general_consultation")
-        ],
-        [
-            InlineKeyboardButton(text="📄 Подготовка документов", callback_data="prepare_documents"),
-            InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing")
-        ],
-        [
-            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔍 Поиск судебной практики", callback_data="search_practice"
+                ),
+                InlineKeyboardButton(text="📋 Консультация", callback_data="general_consultation"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📄 Подготовка документов", callback_data="prepare_documents"
+                ),
+                InlineKeyboardButton(
+                    text="🗂️ Работа с документами", callback_data="document_processing"
+                ),
+            ],
+            [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info")],
         ]
-    ])
+    )
 
     await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
     logger.info("User %s started bot", message.from_user.id)
@@ -593,7 +595,7 @@ async def process_question(message: Message):
 
     user_session = get_user_session(user_id)
     question_text = (message.text or "").strip()
-    quota_msg_to_send: Optional[str] = None
+    quota_msg_to_send: str | None = None
 
     # Проверяем, не ждем ли мы комментарий для рейтинга
     if not hasattr(user_session, "pending_feedback_request_id"):
@@ -696,15 +698,12 @@ async def process_question(message: Message):
                     result = await openai_service.ask_legal_stream(
                         selected_prompt, question_text, callback=callback
                     )
-                else:
-                    # Обычный режим
-                    if message.bot:
-                        async with TypingContext(message.bot, message.chat.id):
-                            result = await openai_service.ask_legal(
-                                selected_prompt, question_text
-                            )
-                    else:
+                # Обычный режим
+                elif message.bot:
+                    async with TypingContext(message.bot, message.chat.id):
                         result = await openai_service.ask_legal(selected_prompt, question_text)
+                else:
+                    result = await openai_service.ask_legal(selected_prompt, question_text)
 
                 request_error_type = None
             except Exception as e:
@@ -1075,7 +1074,7 @@ async def cmd_mystats(message: Message):
 • Среднее время ответа: {stats.get('avg_response_time_ms', 0)} мс"""
 
         if stats.get("request_types"):
-            status_text += f"\n\n📊 <b>Типы запросов (30 дней)</b>\n"
+            status_text += "\n\n📊 <b>Типы запросов (30 дней)</b>\n"
             for req_type, count in stats["request_types"].items():
                 emoji = "⚖️" if req_type == "legal_question" else "🤖"
                 status_text += f"• {emoji} {req_type}: {count}\n"
@@ -1240,7 +1239,7 @@ async def handle_search_practice_callback(callback: CallbackQuery):
             "• Возможность углубленного анализа с 6+ примерами\n"
             "• Подготовка документов на основе практики\n\n"
             "<i>Напишите ваш вопрос следующим сообщением...</i>",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
 
         # Устанавливаем режим поиска практики для пользователя
@@ -1271,7 +1270,7 @@ async def handle_general_consultation_callback(callback: CallbackQuery):
             "• Рекомендации по действиям\n"
             "• Оценка перспектив дела\n\n"
             "<i>Напишите ваш вопрос следующим сообщением...</i>",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
 
         # Обычный режим консультации (по умолчанию)
@@ -1301,7 +1300,7 @@ async def handle_prepare_documents_callback(callback: CallbackQuery):
             "• Жалобы и возражения\n"
             "• Договоры и соглашения\n\n"
             "<i>Опишите какой документ нужно подготовить и приложите детали дела...</i>",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
 
         # Режим подготовки документов
@@ -1329,10 +1328,7 @@ async def handle_help_info_callback(callback: CallbackQuery):
 
         help_text = MessageTemplates.HELP
 
-        await callback.message.answer(
-            help_text,
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+        await callback.message.answer(help_text, parse_mode=ParseMode.MARKDOWN_V2)
 
         logger.info(f"Help info requested by user {callback.from_user.id}")
 
@@ -1343,6 +1339,7 @@ async def handle_help_info_callback(callback: CallbackQuery):
 
 # ============ ОБРАБОТЧИКИ СИСТЕМЫ ДОКУМЕНТООБОРОТА ============
 
+
 async def handle_document_processing(callback: CallbackQuery):
     """Обработка кнопки работы с документами"""
     try:
@@ -1352,10 +1349,13 @@ async def handle_document_processing(callback: CallbackQuery):
         for op_key, op_info in operations.items():
             emoji = op_info.get("emoji", "📄")
             name = op_info.get("name", op_key)
-            buttons.append([InlineKeyboardButton(
-                text=f"{emoji} {name}",
-                callback_data=f"doc_operation_{op_key}"
-            )])
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{emoji} {name}", callback_data=f"doc_operation_{op_key}"
+                    )
+                ]
+            )
 
         buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
 
@@ -1377,7 +1377,7 @@ async def handle_document_processing(callback: CallbackQuery):
         await callback.message.edit_text(
             message_text,
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
         await callback.answer()
 
@@ -1417,9 +1417,15 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             message_text,
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад к операциям", callback_data="document_processing")]
-            ])
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="◀️ Назад к операциям", callback_data="document_processing"
+                        )
+                    ]
+                ]
+            ),
         )
         await callback.answer()
 
@@ -1474,7 +1480,9 @@ async def handle_document_upload(message: Message, state: FSMContext):
         # Проверяем размер файла (максимум 50MB)
         max_size = 50 * 1024 * 1024
         if file_size > max_size:
-            await message.answer(f"❌ Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ")
+            await message.answer(
+                f"❌ Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ"
+            )
             await state.clear()
             return
 
@@ -1486,7 +1494,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
             f"📄 Обрабатываем документ **{file_name}**...\n\n"
             f"⏳ Операция: {operation_name}\n"
             f"📊 Размер: {file_size // 1024} КБ",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
         try:
@@ -1506,7 +1514,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 original_name=file_name,
                 mime_type=mime_type,
                 operation=operation,
-                **options
+                **options,
             )
 
             # Удаляем статусное сообщение
@@ -1520,10 +1528,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 formatted_result = document_manager.format_result_for_telegram(result, operation)
 
                 # Отправляем результат
-                await message.answer(
-                    formatted_result,
-                    parse_mode="Markdown"
-                )
+                await message.answer(formatted_result, parse_mode="Markdown")
 
                 exports = result.data.get("exports") or []
                 for export in exports:
@@ -1534,14 +1539,19 @@ async def handle_document_upload(message: Message, state: FSMContext):
                         caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
                         await message.answer_document(FSInputFile(export_path), caption=caption)
                     except Exception as send_error:
-                        logger.error(f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True)
-                        await message.answer(f"⚠️ Не удалось отправить файл {Path(export_path).name}")
+                        logger.error(
+                            f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
+                        )
+                        await message.answer(
+                            f"⚠️ Не удалось отправить файл {Path(export_path).name}"
+                        )
 
-                logger.info(f"Successfully processed document {file_name} for user {message.from_user.id}")
+                logger.info(
+                    f"Successfully processed document {file_name} for user {message.from_user.id}"
+                )
             else:
                 await message.answer(
-                    f"❌ **Ошибка обработки документа**\n\n{result.message}",
-                    parse_mode="Markdown"
+                    f"❌ **Ошибка обработки документа**\n\n{result.message}", parse_mode="Markdown"
                 )
 
         except Exception as e:
@@ -1552,8 +1562,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 pass
 
             await message.answer(
-                f"❌ **Ошибка обработки документа**\n\n{str(e)}",
-                parse_mode="Markdown"
+                f"❌ **Ошибка обработки документа**\n\n{str(e)}", parse_mode="Markdown"
             )
             logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
@@ -1599,7 +1608,7 @@ async def cmd_ratings_stats(message: Message):
 • 💬 С комментариями: {stats_30d.get('feedback_count', 0)}"""
 
         if low_rated:
-            stats_text += f"\n\n⚠️ <b>Запросы для улучшения:</b>\n"
+            stats_text += "\n\n⚠️ <b>Запросы для улучшения:</b>\n"
             for req in low_rated[:3]:
                 stats_text += f"• ID {req['request_id']}: рейтинг {req['avg_rating']:.1f} ({req['rating_count']} оценок)\n"
 
@@ -1723,7 +1732,7 @@ async def main():
         proxy_user = os.getenv("TELEGRAM_PROXY_USER", "").strip()
         proxy_pass = os.getenv("TELEGRAM_PROXY_PASS", "").strip()
         if proxy_user and proxy_pass:
-            from urllib.parse import urlparse, urlunparse, quote
+            from urllib.parse import quote, urlparse, urlunparse
 
             if "://" not in proxy_url:
                 proxy_url = "http://" + proxy_url
@@ -1738,25 +1747,25 @@ async def main():
     dp = Dispatcher()
 
     # Инициализация системы метрик/кэша/т.п.
-    from src.core.metrics import init_metrics, set_system_status
-    from src.core.cache import create_cache_backend, ResponseCache
     from src.core.background_tasks import (
         BackgroundTaskManager,
-        DatabaseCleanupTask,
         CacheCleanupTask,
-        SessionCleanupTask,
+        DatabaseCleanupTask,
         HealthCheckTask,
         MetricsCollectionTask,
+        SessionCleanupTask,
     )
+    from src.core.cache import ResponseCache, create_cache_backend
     from src.core.health import (
-        HealthChecker,
         DatabaseHealthCheck,
+        HealthChecker,
         OpenAIHealthCheck,
-        SessionStoreHealthCheck,
         RateLimiterHealthCheck,
+        SessionStoreHealthCheck,
         SystemResourcesHealthCheck,
     )
-    from src.core.scaling import ServiceRegistry, LoadBalancer, SessionAffinity, ScalingManager
+    from src.core.metrics import init_metrics, set_system_status
+    from src.core.scaling import LoadBalancer, ScalingManager, ServiceRegistry, SessionAffinity
 
     prometheus_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
     metrics_collector = init_metrics(
@@ -1932,8 +1941,8 @@ async def main():
             BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
             BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
             BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
-            BotCommand(command="mystats", description=f"📊 Моя статистика"),
-            BotCommand(command="ratings", description=f"📈 Статистика рейтингов (админ)"),
+            BotCommand(command="mystats", description="📊 Моя статистика"),
+            BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
         ]
     )
 
@@ -1951,7 +1960,9 @@ async def main():
 
     # Обработчики кнопок главного меню
     dp.callback_query.register(handle_search_practice_callback, F.data == "search_practice")
-    dp.callback_query.register(handle_general_consultation_callback, F.data == "general_consultation")
+    dp.callback_query.register(
+        handle_general_consultation_callback, F.data == "general_consultation"
+    )
     dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
     dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
 
@@ -1959,7 +1970,9 @@ async def main():
     dp.callback_query.register(handle_document_processing, F.data == "document_processing")
     dp.callback_query.register(handle_document_operation, F.data.startswith("doc_operation_"))
     dp.callback_query.register(handle_back_to_menu, F.data == "back_to_menu")
-    dp.message.register(handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document)
+    dp.message.register(
+        handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
+    )
 
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)

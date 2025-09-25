@@ -4,14 +4,13 @@
 Имитирует весь процесс обработки сообщения
 """
 
-import sys
-import os
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+import os
+import sys
 
 # Импортируем функции из основного файла
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'core'))
-from src.core.main_simple import render_legal_html, _split_html_safely
+sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
+from src.core.main_simple import _split_html_safely, render_legal_html
 
 # Имитируем ответ от OpenAI API с типичным юридическим текстом
 MOCK_OPENAI_RESPONSE = """Коротко: да — расторгнуть договор поставки за просрочку можно, но только при выполнении определённых условий и с соблюдением процессуальной порядочности.
@@ -33,6 +32,7 @@ MOCK_OPENAI_RESPONSE = """Коротко: да — расторгнуть дог
 1. Соберите доказательства: договора, графики поставок, акты недопоставки.
 2. Направьте претензию поставщику с указанием срока устранения нарушений.
 3. При отсутствии реакции — уведомление об одностороннем отказе от договора."""
+
 
 async def test_full_formatting_process():
     """
@@ -69,12 +69,12 @@ async def test_full_formatting_process():
 
     # Проверки
     checks = {
-        "Жирные номера пунктов": any('<b>1) </b>' in chunk for chunk in chunks),
-        "Жирные статьи ГК": any('<b>ст. 523</b>' in chunk for chunk in chunks),
-        "Жирные заголовки": any('<b>Коротко:' in chunk for chunk in chunks),
-        "Переносы строк": any('<br>' in chunk for chunk in chunks),
-        "Нет двойного экранирования": not any('&lt;b&gt;' in chunk for chunk in chunks),
-        "Правильные параграфы": any('<br><br>' in chunk for chunk in chunks)
+        "Жирные номера пунктов": any("<b>1) </b>" in chunk for chunk in chunks),
+        "Жирные статьи ГК": any("<b>ст. 523</b>" in chunk for chunk in chunks),
+        "Жирные заголовки": any("<b>Коротко:" in chunk for chunk in chunks),
+        "Переносы строк": any("<br>" in chunk for chunk in chunks),
+        "Нет двойного экранирования": not any("&lt;b&gt;" in chunk for chunk in chunks),
+        "Правильные параграфы": any("<br><br>" in chunk for chunk in chunks),
     }
 
     all_passed = True
@@ -114,6 +114,7 @@ async def test_full_formatting_process():
 
     return all_passed
 
+
 async def test_specific_cases():
     """
     Тест специфических случаев форматирования
@@ -126,34 +127,35 @@ async def test_specific_cases():
         {
             "name": "Номерованный список",
             "input": "1) Первый пункт\n2) Второй пункт\n3) Третий пункт",
-            "expected": ["<b>1) </b>", "<b>2) </b>", "<b>3) </b>"]
+            "expected": ["<b>1) </b>", "<b>2) </b>", "<b>3) </b>"],
         },
         {
             "name": "Ссылки на статьи",
             "input": "Согласно ст. 304 ГК РФ и Статья 222 ГК РФ",
-            "expected": ["<b>ст. 304</b>", "<b>Статья 222</b>"]
+            "expected": ["<b>ст. 304</b>", "<b>Статья 222</b>"],
         },
         {
             "name": "Заголовки",
             "input": "Коротко: основные моменты\nПрактический вывод:",
-            "expected": ["<b>Коротко:", "<b>Практический вывод:</b>"]
-        }
+            "expected": ["<b>Коротко:", "<b>Практический вывод:</b>"],
+        },
     ]
 
     for case in test_cases:
         print(f"\nТест: {case['name']}")
         print(f"Вход: {case['input']}")
 
-        result = render_legal_html(case['input'])
+        result = render_legal_html(case["input"])
         print(f"Результат: {result}")
 
-        all_expected_found = all(expected in result for expected in case['expected'])
+        all_expected_found = all(expected in result for expected in case["expected"])
         status = "PASS" if all_expected_found else "FAIL"
         print(f"Статус: {status}")
 
         if not all_expected_found:
-            missing = [exp for exp in case['expected'] if exp not in result]
+            missing = [exp for exp in case["expected"] if exp not in result]
             print(f"Не найдено: {missing}")
+
 
 def test_telegram_html_limits():
     """
@@ -177,6 +179,7 @@ def test_telegram_html_limits():
         status = "OK" if size <= 4096 else "FAIL"
         print(f"Чанк {i}: {size} символов {status}")
 
+
 async def main():
     """Запуск всех тестов"""
     print("ЗАПУСК ТЕСТОВ ФОРМАТИРОВАНИЯ БЕЗ API ВЫЗОВОВ")
@@ -195,6 +198,7 @@ async def main():
     else:
         print("ЗАКЛЮЧЕНИЕ: Требуется доработка форматирования")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

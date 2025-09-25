@@ -3,20 +3,21 @@
 """
 
 from __future__ import annotations
+
 import asyncio
-import io
-from pathlib import Path
-from typing import Union, Optional, Dict, Any
 import logging
 import mimetypes
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 class FileFormatHandler:
     """Базовый класс для обработки различных форматов файлов"""
 
     @staticmethod
-    def detect_file_type(file_path: Union[str, Path]) -> tuple[str, str]:
+    def detect_file_type(file_path: str | Path) -> tuple[str, str]:
         """Определить тип файла по расширению и MIME-типу"""
         path = Path(file_path)
         extension = path.suffix.lower()
@@ -28,7 +29,7 @@ class FileFormatHandler:
         return extension, mime_type
 
     @staticmethod
-    async def extract_text_from_file(file_path: Union[str, Path]) -> tuple[bool, str]:
+    async def extract_text_from_file(file_path: str | Path) -> tuple[bool, str]:
         """Извлечь текст из файла в зависимости от его типа"""
         path = Path(file_path)
         extension, _ = FileFormatHandler.detect_file_type(path)
@@ -53,12 +54,12 @@ class FileFormatHandler:
         """Извлечь текст из TXT файла"""
         try:
             # Пробуем разные кодировки
-            encodings = ['utf-8', 'cp1251', 'latin-1']
+            encodings = ["utf-8", "cp1251", "latin-1"]
 
             for encoding in encodings:
                 try:
                     async with asyncio.Lock():
-                        with open(file_path, 'r', encoding=encoding) as f:
+                        with open(file_path, encoding=encoding) as f:
                             content = f.read()
                     return True, content
                 except UnicodeDecodeError:
@@ -78,7 +79,7 @@ class FileFormatHandler:
                 import PyPDF2
 
                 async with asyncio.Lock():
-                    with open(file_path, 'rb') as f:
+                    with open(file_path, "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
                         text = ""
                         for page in pdf_reader.pages:
@@ -108,7 +109,10 @@ class FileFormatHandler:
                         return False, "PDF файл не содержит извлекаемого текста"
 
                 except ImportError:
-                    return False, "Для работы с PDF файлами требуется установить PyPDF2 или pdfplumber"
+                    return (
+                        False,
+                        "Для работы с PDF файлами требуется установить PyPDF2 или pdfplumber",
+                    )
 
         except Exception as e:
             return False, f"Ошибка чтения PDF файла: {str(e)}"
@@ -128,8 +132,8 @@ class FileFormatHandler:
                 parts.append(paragraph.text)
             for table in document.tables:
                 for row in table.rows:
-                    parts.append('\t'.join(cell.text for cell in row.cells))
-            return '\n'.join(parts)
+                    parts.append("\t".join(cell.text for cell in row.cells))
+            return "\n".join(parts)
 
         try:
             text_content = await asyncio.to_thread(_load_docx)
@@ -145,12 +149,15 @@ class FileFormatHandler:
         try:
             import textract  # type: ignore
         except ImportError:
-            return False, "Для обработки DOC файлов требуется установить textract (poetry install --extras full)."
+            return (
+                False,
+                "Для обработки DOC файлов требуется установить textract (poetry install --extras full).",
+            )
 
         loop = asyncio.get_event_loop()
         try:
             text_bytes = await loop.run_in_executor(None, textract.process, str(file_path))
-            text = text_bytes.decode('utf-8', errors='ignore')
+            text = text_bytes.decode("utf-8", errors="ignore")
             if not text.strip():
                 return False, "DOC файл не содержит извлекаемого текста"
             return True, text
@@ -168,15 +175,15 @@ class TextProcessor:
             return ""
 
         # Убираем лишние пробелы и переносы
-        lines = text.split('\n')
+        lines = text.split("\n")
         cleaned_lines = []
 
         for line in lines:
-            cleaned_line = ' '.join(line.split())  # Убираем множественные пробелы
+            cleaned_line = " ".join(line.split())  # Убираем множественные пробелы
             if cleaned_line:  # Пропускаем пустые строки
                 cleaned_lines.append(cleaned_line)
 
-        return '\n'.join(cleaned_lines)
+        return "\n".join(cleaned_lines)
 
     @staticmethod
     def split_into_chunks(text: str, max_chunk_size: int = 4000, overlap: int = 200) -> list[str]:
@@ -202,7 +209,7 @@ class TextProcessor:
             # Ищем последнюю точку, восклицательный или вопросительный знак
             sentence_ends = []
             for i, char in enumerate(reversed(chunk_text)):
-                if char in '.!?':
+                if char in ".!?":
                     sentence_ends.append(len(chunk_text) - i)
                     break
 
@@ -214,7 +221,7 @@ class TextProcessor:
                 # Если не нашли границу предложения, режем по словам
                 words = chunk_text.split()
                 if len(words) > 1:
-                    chunk_text = ' '.join(words[:-1])  # Убираем последнее слово
+                    chunk_text = " ".join(words[:-1])  # Убираем последнее слово
                     chunks.append(chunk_text)
                     start = start + len(chunk_text) - overlap
                 else:
@@ -225,20 +232,21 @@ class TextProcessor:
         return chunks
 
     @staticmethod
-    def extract_metadata(text: str) -> Dict[str, Any]:
+    def extract_metadata(text: str) -> dict[str, Any]:
         """Извлечь метаданные из текста"""
         metadata = {
             "char_count": len(text),
             "word_count": len(text.split()),
-            "line_count": len(text.split('\n')),
-            "has_tables": '\t' in text,
+            "line_count": len(text.split("\n")),
+            "has_tables": "\t" in text,
             "has_numbers": any(char.isdigit() for char in text),
             "has_dates": False,  # Можно добавить регулярные выражения для поиска дат
-            "has_emails": '@' in text,
+            "has_emails": "@" in text,
             "has_phones": False,  # Можно добавить регулярные выражения для поиска телефонов
         }
 
         return metadata
+
 
 def format_file_size(size_bytes: int) -> str:
     """Форматировать размер файла в читаемом виде"""
@@ -255,20 +263,35 @@ def format_file_size(size_bytes: int) -> str:
 
     return f"{size:.1f} {size_names[i]}"
 
-def is_text_file(file_path: Union[str, Path]) -> bool:
+
+def is_text_file(file_path: str | Path) -> bool:
     """Проверить, является ли файл текстовым"""
     extension = Path(file_path).suffix.lower()
-    text_extensions = ['.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.py', '.java', '.cpp', '.h']
+    text_extensions = [
+        ".txt",
+        ".md",
+        ".json",
+        ".xml",
+        ".html",
+        ".css",
+        ".js",
+        ".py",
+        ".java",
+        ".cpp",
+        ".h",
+    ]
     return extension in text_extensions
 
-def is_document_file(file_path: Union[str, Path]) -> bool:
+
+def is_document_file(file_path: str | Path) -> bool:
     """Проверить, является ли файл документом"""
     extension = Path(file_path).suffix.lower()
-    doc_extensions = ['.pdf', '.doc', '.docx', '.odt', '.rtf']
+    doc_extensions = [".pdf", ".doc", ".docx", ".odt", ".rtf"]
     return extension in doc_extensions
 
-def is_image_file(file_path: Union[str, Path]) -> bool:
+
+def is_image_file(file_path: str | Path) -> bool:
     """Проверить, является ли файл изображением"""
     extension = Path(file_path).suffix.lower()
-    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp']
+    image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp"]
     return extension in image_extensions

@@ -4,9 +4,10 @@
 """
 
 # Импортируем функцию из основного файла
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'core'))
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
 
 from main_simple import render_legal_html
 
@@ -24,18 +25,19 @@ test_text = """Коротко: да — расторгнуть договор п
 — Реально (высокая вероятность успеха): неоднократные просрочки поставщика; системные срывы графика поставок по партиям; просрочки по товарам, для которых срок критичен (скоропортящиеся, сезонные поставки) если это прямо следует из договора или характера сделки. (base.garant.ru)
 """
 
+
 # Тестируем функцию
 def test_render():
     print("=== ТЕСТИРОВАНИЕ ФУНКЦИИ render_legal_html ===")
     print("\nИсходный текст:")
     print(test_text)
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
 
     result = render_legal_html(test_text)
 
     print("\nРезультат форматирования:")
     print(result)
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
 
     # Проверяем наличие важных элементов
     print("\nПроверка элементов:")
@@ -48,6 +50,7 @@ def test_render():
 
     # Проверяем на двойное экранирование
     print(f"Содержит &lt;b&gt; (двойное экранирование): {'ДА' if '&lt;b&gt;' in result else 'НЕТ'}")
+
 
 if __name__ == "__main__":
     test_render()

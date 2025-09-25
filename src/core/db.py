@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 import asyncio
 import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 def _now_ts() -> int:
@@ -31,7 +32,7 @@ class Database:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
 
     async def init(self) -> None:
@@ -77,8 +78,12 @@ class Database:
         )
 
         # Helpful indexes for queries and reporting
-        await self._exec("CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);")
-        await self._exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_tg_charge ON transactions(telegram_payment_charge_id);")
+        await self._exec(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);"
+        )
+        await self._exec(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_tg_charge ON transactions(telegram_payment_charge_id);"
+        )
 
         # Backfill schema for existing DBs: ensure amount_minor_units column exists
         await self._exec("PRAGMA table_info(transactions);")
@@ -130,7 +135,7 @@ class Database:
         async with self._lock:
             await asyncio.to_thread(self._conn.execute, query, params)  # type: ignore[arg-type]
 
-    async def _fetchone(self, query: str, params: tuple[Any, ...] = ()) -> Optional[tuple]:
+    async def _fetchone(self, query: str, params: tuple[Any, ...] = ()) -> tuple | None:
         async with self._lock:
             cur = await asyncio.to_thread(self._conn.execute, query, params)  # type: ignore[arg-type]
             row = await asyncio.to_thread(cur.fetchone)
@@ -144,56 +149,101 @@ class Database:
 
     # ---------------- Users ----------------
 
-    async def ensure_user(self, user_id: int, *, default_trial: int = 10, is_admin: bool = False) -> UserRecord:
-        row = await self._fetchone("SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at FROM users WHERE user_id = ?", (user_id,))
+    async def ensure_user(
+        self, user_id: int, *, default_trial: int = 10, is_admin: bool = False
+    ) -> UserRecord:
+        row = await self._fetchone(
+            "SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at FROM users WHERE user_id = ?",
+            (user_id,),
+        )
         now = _now_ts()
         if row:
             # Optionally upgrade admin flag
             if is_admin and row[1] == 0:
-                await self._exec("UPDATE users SET is_admin = 1, updated_at = ? WHERE user_id = ?", (now, user_id))
+                await self._exec(
+                    "UPDATE users SET is_admin = 1, updated_at = ? WHERE user_id = ?",
+                    (now, user_id),
+                )
             return UserRecord(*row)
 
         await self._exec(
             "INSERT INTO users (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)",
             (user_id, 1 if is_admin else 0, default_trial, now, now),
         )
-        return UserRecord(user_id=user_id, is_admin=1 if is_admin else 0, trial_remaining=default_trial, subscription_until=0, created_at=now, updated_at=now)
+        return UserRecord(
+            user_id=user_id,
+            is_admin=1 if is_admin else 0,
+            trial_remaining=default_trial,
+            subscription_until=0,
+            created_at=now,
+            updated_at=now,
+        )
 
-    async def get_user(self, user_id: int) -> Optional[UserRecord]:
-        row = await self._fetchone("SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at FROM users WHERE user_id = ?", (user_id,))
+    async def get_user(self, user_id: int) -> UserRecord | None:
+        row = await self._fetchone(
+            "SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at FROM users WHERE user_id = ?",
+            (user_id,),
+        )
         return UserRecord(*row) if row else None
 
     async def set_admin(self, user_id: int, is_admin: bool) -> None:
         now = _now_ts()
-        await self._exec("UPDATE users SET is_admin = ?, updated_at = ? WHERE user_id = ?", (1 if is_admin else 0, now, user_id))
+        await self._exec(
+            "UPDATE users SET is_admin = ?, updated_at = ? WHERE user_id = ?",
+            (1 if is_admin else 0, now, user_id),
+        )
 
     async def decrement_trial(self, user_id: int) -> bool:
         now = _now_ts()
-        row = await self._fetchone("SELECT trial_remaining FROM users WHERE user_id = ?", (user_id,))
+        row = await self._fetchone(
+            "SELECT trial_remaining FROM users WHERE user_id = ?", (user_id,)
+        )
         if not row:
             return False
         remaining = int(row[0])
         if remaining <= 0:
             return False
-        await self._exec("UPDATE users SET trial_remaining = trial_remaining - 1, updated_at = ? WHERE user_id = ?", (now, user_id))
+        await self._exec(
+            "UPDATE users SET trial_remaining = trial_remaining - 1, updated_at = ? WHERE user_id = ?",
+            (now, user_id),
+        )
         return True
 
     async def has_active_subscription(self, user_id: int) -> bool:
-        row = await self._fetchone("SELECT subscription_until FROM users WHERE user_id = ?", (user_id,))
+        row = await self._fetchone(
+            "SELECT subscription_until FROM users WHERE user_id = ?", (user_id,)
+        )
         if not row:
             return False
         return int(row[0]) > _now_ts()
 
     async def extend_subscription_days(self, user_id: int, days: int) -> None:
         now = _now_ts()
-        row = await self._fetchone("SELECT subscription_until FROM users WHERE user_id = ?", (user_id,))
+        row = await self._fetchone(
+            "SELECT subscription_until FROM users WHERE user_id = ?", (user_id,)
+        )
         base = int(row[0]) if row and int(row[0]) > now else now
         new_until = base + days * 86400
-        await self._exec("UPDATE users SET subscription_until = ?, updated_at = ? WHERE user_id = ?", (new_until, now, user_id))
+        await self._exec(
+            "UPDATE users SET subscription_until = ?, updated_at = ? WHERE user_id = ?",
+            (new_until, now, user_id),
+        )
 
     # ---------------- Transactions ----------------
 
-    async def record_transaction(self, *, user_id: int, provider: str, currency: str, amount: int, payload: str, status: str, telegram_payment_charge_id: Optional[str] = None, provider_payment_charge_id: Optional[str] = None, amount_minor_units: Optional[int] = None) -> None:
+    async def record_transaction(
+        self,
+        *,
+        user_id: int,
+        provider: str,
+        currency: str,
+        amount: int,
+        payload: str,
+        status: str,
+        telegram_payment_charge_id: str | None = None,
+        provider_payment_charge_id: str | None = None,
+        amount_minor_units: int | None = None,
+    ) -> None:
         now = _now_ts()
         await self._exec(
             """
@@ -215,7 +265,9 @@ class Database:
             ),
         )
 
-    async def mark_transaction_success(self, *, telegram_payment_charge_id: str, provider_payment_charge_id: Optional[str]) -> None:
+    async def mark_transaction_success(
+        self, *, telegram_payment_charge_id: str, provider_payment_charge_id: str | None
+    ) -> None:
         now = _now_ts()
         await self._exec(
             "UPDATE transactions SET status = 'success', provider_payment_charge_id = COALESCE(?, provider_payment_charge_id), updated_at = ? WHERE telegram_payment_charge_id = ?",
@@ -223,7 +275,9 @@ class Database:
         )
 
     async def transaction_exists_by_telegram_charge_id(self, charge_id: str) -> bool:
-        row = await self._fetchone("SELECT 1 FROM transactions WHERE telegram_payment_charge_id = ?", (charge_id,))
+        row = await self._fetchone(
+            "SELECT 1 FROM transactions WHERE telegram_payment_charge_id = ?", (charge_id,)
+        )
         return bool(row)
 
     # ---------------- Ratings ----------------
@@ -231,24 +285,34 @@ class Database:
     async def record_request(
         self,
         user_id: int,
-        request_type: str = 'legal_question',
+        request_type: str = "legal_question",
         tokens_used: int = 0,
         response_time_ms: int = 0,
         success: bool = True,
-        error_type: Optional[str] = None,
+        error_type: str | None = None,
     ) -> int:
         """Insert a request row and return its id (legacy DB implementation)."""
         now = _now_ts()
         async with self._lock:
+
             def _insert() -> int:
                 cur = self._conn.execute(  # type: ignore[union-attr]
                     """
                     INSERT INTO requests (user_id, request_type, tokens_used, response_time_ms, success, error_type, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (user_id, request_type, tokens_used, response_time_ms, 1 if success else 0, error_type, now),
+                    (
+                        user_id,
+                        request_type,
+                        tokens_used,
+                        response_time_ms,
+                        1 if success else 0,
+                        error_type,
+                        now,
+                    ),
                 )
                 return int(cur.lastrowid)
+
             return await asyncio.to_thread(_insert)
 
     async def add_rating(
@@ -256,7 +320,7 @@ class Database:
         request_id: int,
         user_id: int,
         rating: int,
-        feedback_text: Optional[str] = None,
+        feedback_text: str | None = None,
     ) -> bool:
         """Store or update a rating for a specific response.
 
@@ -289,5 +353,3 @@ class Database:
                 await asyncio.to_thread(conn.close)
             except Exception:
                 pass
-
-

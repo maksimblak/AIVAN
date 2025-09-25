@@ -3,15 +3,15 @@
 Тест идемпотентности платежей - защита от дублирующих транзакций
 """
 
-import sys
-import os
 import asyncio
+import os
+import sys
 import tempfile
-import time
 
 # Импортируем advanced database
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'core'))
+sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
 from src.core.db_advanced import DatabaseAdvanced
+
 
 async def test_payment_idempotency():
     """
@@ -22,18 +22,14 @@ async def test_payment_idempotency():
     print("=" * 60)
 
     # Создаем временную БД
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_file:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_file:
         db_path = tmp_file.name
 
     print(f"Создаем временную БД: {db_path}")
 
     try:
         # Инициализируем БД
-        db = DatabaseAdvanced(
-            db_path=db_path,
-            max_connections=5,
-            enable_metrics=True
-        )
+        db = DatabaseAdvanced(db_path=db_path, max_connections=5, enable_metrics=True)
         await db.init()
 
         # Создаем тестового пользователя
@@ -51,7 +47,7 @@ async def test_payment_idempotency():
             "payload": "subscription_30_days",
             "status": "pending",
             "telegram_payment_charge_id": test_charge_id,
-            "provider_payment_charge_id": "provider_123456"
+            "provider_payment_charge_id": "provider_123456",
         }
 
         print("\n1. Тест первой записи транзакции:")
@@ -83,14 +79,11 @@ async def test_payment_idempotency():
         test_charge_id_parallel = "test_charge_parallel_789"
         parallel_payment_data = {
             **test_payment_data,
-            "telegram_payment_charge_id": test_charge_id_parallel
+            "telegram_payment_charge_id": test_charge_id_parallel,
         }
 
         # Запускаем несколько параллельных попыток записи
-        parallel_tasks = [
-            db.record_transaction(**parallel_payment_data)
-            for _ in range(5)
-        ]
+        parallel_tasks = [db.record_transaction(**parallel_payment_data) for _ in range(5)]
 
         parallel_results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
         print(f"Результаты параллельных записей: {parallel_results}")
@@ -106,10 +99,7 @@ async def test_payment_idempotency():
         print("-" * 40)
 
         # Запись без charge_id
-        no_charge_data = {
-            **test_payment_data,
-            "telegram_payment_charge_id": None
-        }
+        no_charge_data = {**test_payment_data, "telegram_payment_charge_id": None}
 
         transaction_id_no_charge = await db.record_transaction(**no_charge_data)
         print(f"Транзакция без charge_id создана с ID: {transaction_id_no_charge}")
@@ -155,12 +145,12 @@ async def test_payment_idempotency():
 
         # Результаты тестов
         all_tests_passed = (
-            exists_1 and
-            ids_match and
-            len(valid_ids) > 0 and
-            all(id == valid_ids[0] for id in valid_ids) and
-            transaction_id_no_charge > 0 and
-            unique_charges >= 2  # test_charge_123456 и test_charge_parallel_789
+            exists_1
+            and ids_match
+            and len(valid_ids) > 0
+            and all(id == valid_ids[0] for id in valid_ids)
+            and transaction_id_no_charge > 0
+            and unique_charges >= 2  # test_charge_123456 и test_charge_parallel_789
         )
 
         if all_tests_passed:
@@ -185,6 +175,7 @@ async def test_payment_idempotency():
         except Exception as e:
             print(f"Не удалось удалить временную БД: {e}")
 
+
 async def main():
     """Запуск тестов идемпотентности"""
     print("ЗАПУСК ТЕСТОВ ИДЕМПОТЕНТНОСТИ ПЛАТЕЖЕЙ")
@@ -197,6 +188,7 @@ async def main():
     else:
         print("ЗАКЛЮЧЕНИЕ: Требуется доработка защиты от дублей")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

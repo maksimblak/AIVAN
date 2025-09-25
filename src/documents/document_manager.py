@@ -1,19 +1,20 @@
-﻿"""
+"""
 Менеджер документов - центральный класс для управления всеми модулями работы с документами
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-import logging
 
-from .base import DocumentStorage, ProcessingError, DocumentResult
-from .summarizer import DocumentSummarizer
-from .risk_analyzer import RiskAnalyzer
-from .document_chat import DocumentChat
+import logging
+from pathlib import Path
+from typing import Any
+
 from .anonymizer import DocumentAnonymizer
-from .translator import DocumentTranslator
+from .base import DocumentResult, DocumentStorage, ProcessingError
+from .document_chat import DocumentChat
 from .ocr_converter import OCRConverter
+from .risk_analyzer import RiskAnalyzer
+from .summarizer import DocumentSummarizer
+from .translator import DocumentTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class DocumentManager:
         self.translator = DocumentTranslator(openai_service)
         self.ocr_converter = OCRConverter()
 
-        self.PROCESSOR_PARAM_WHITELIST: Dict[str, set[str]] = {
+        self.PROCESSOR_PARAM_WHITELIST: dict[str, set[str]] = {
             "summarize": {"detail_level", "language", "output_formats"},
             "analyze_risks": {"custom_criteria"},
             "chat": set(),
@@ -63,7 +64,7 @@ class DocumentManager:
                 raise ProcessingError(f"Неизвестная операция: {operation}", "UNKNOWN_OPERATION")
 
             allowed_params = self.PROCESSOR_PARAM_WHITELIST.get(operation, set())
-            safe_kwargs: Dict[str, Any] = {}
+            safe_kwargs: dict[str, Any] = {}
             for key, value in kwargs.items():
                 if key not in allowed_params or value is None:
                     continue
@@ -116,7 +117,7 @@ class DocumentManager:
         }
         return processors.get(operation)
 
-    def _append_export_note(self, base_text: str, data: Dict[str, Any]) -> str:
+    def _append_export_note(self, base_text: str, data: dict[str, Any]) -> str:
         exports = data.get("exports") or []
         if not exports:
             return base_text
@@ -133,11 +134,11 @@ class DocumentManager:
     def _create_exports(
         self,
         operation: str,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         document_info,
-        options: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        exports: List[Dict[str, Any]] = []
+        options: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        exports: list[dict[str, Any]] = []
         try:
             if operation == "summarize":
                 formats = options.get("output_formats") or ["docx", "pdf"]
@@ -154,12 +155,14 @@ class DocumentManager:
             logger.warning("Не удалось подготовить экспорт для %s: %s", operation, export_error)
         return exports
 
-    def _export_summary(self, document_info, data: Dict[str, Any], formats: List[str]) -> List[Dict[str, Any]]:
+    def _export_summary(
+        self, document_info, data: dict[str, Any], formats: list[str]
+    ) -> list[dict[str, Any]]:
         summary_content = data.get("summary", {}).get("content")
         if not summary_content:
             return []
 
-        exports: List[Dict[str, Any]] = []
+        exports: list[dict[str, Any]] = []
         base_name = f"{document_info.file_path.stem}_summary"
         export_dir = document_info.file_path.parent
 
@@ -201,12 +204,14 @@ class DocumentManager:
 
         return exports
 
-    def _export_translation(self, document_info, data: Dict[str, Any], formats: List[str]) -> List[Dict[str, Any]]:
+    def _export_translation(
+        self, document_info, data: dict[str, Any], formats: list[str]
+    ) -> list[dict[str, Any]]:
         translated_text = data.get("translated_text")
         if not translated_text:
             return []
 
-        exports: List[Dict[str, Any]] = []
+        exports: list[dict[str, Any]] = []
         base_name = f"{document_info.file_path.stem}_translation"
         export_dir = document_info.file_path.parent
 
@@ -230,12 +235,14 @@ class DocumentManager:
 
         return exports
 
-    def _export_ocr(self, document_info, data: Dict[str, Any], output_format: str) -> List[Dict[str, Any]]:
+    def _export_ocr(
+        self, document_info, data: dict[str, Any], output_format: str
+    ) -> list[dict[str, Any]]:
         recognized_text = data.get("recognized_text")
         if not recognized_text:
             return []
 
-        exports: List[Dict[str, Any]] = []
+        exports: list[dict[str, Any]] = []
         base_name = f"{document_info.file_path.stem}_ocr"
         export_dir = document_info.file_path.parent
         fmt = output_format.lower()
@@ -282,7 +289,7 @@ class DocumentManager:
 
         return exports
 
-    def _export_risk_report(self, document_info, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _export_risk_report(self, document_info, data: dict[str, Any]) -> list[dict[str, Any]]:
         overall = data.get("overall_risk_level")
         pattern_risks = data.get("pattern_risks", [])
         ai_analysis = data.get("ai_analysis", {}).get("analysis", "")
@@ -296,27 +303,33 @@ class DocumentManager:
             "Найденные риски:",
         ]
         for risk in pattern_risks:
-            report_lines.append(f"- [{risk.get('risk_level', 'unknown')}] {risk.get('description', '')}")
+            report_lines.append(
+                f"- [{risk.get('risk_level', 'unknown')}] {risk.get('description', '')}"
+            )
         if ai_analysis:
             report_lines.extend(["", "AI-анализ:", ai_analysis])
         if highlighted:
             report_lines.extend(["", "Контекст с подсветкой:", highlighted])
 
-        txt_path = document_info.file_path.parent / f"{document_info.file_path.stem}_risk_report.txt"
+        txt_path = (
+            document_info.file_path.parent / f"{document_info.file_path.stem}_risk_report.txt"
+        )
         self._write_text_file(txt_path, "\n".join(report_lines))
         return [{"path": str(txt_path), "format": "txt"}]
 
     def _write_text_file(self, path: Path, content: str) -> None:
         path.write_text(content or "", encoding="utf-8")
 
-    async def chat_with_document(self, user_id: int, document_id: str, question: str) -> Dict[str, Any]:
+    async def chat_with_document(
+        self, user_id: int, document_id: str, question: str
+    ) -> dict[str, Any]:
         try:
             return await self.document_chat.chat_with_document(document_id, question)
         except Exception as exc:
             logger.error("Ошибка чата с документом %s: %s", document_id, exc)
             raise ProcessingError(f"Ошибка чата: {exc}", "CHAT_ERROR")
 
-    def get_supported_operations(self) -> Dict[str, Dict[str, Any]]:
+    def get_supported_operations(self) -> dict[str, dict[str, Any]]:
         return {
             "summarize": {
                 "name": "Саммаризация",
@@ -362,7 +375,7 @@ class DocumentManager:
             },
         }
 
-    def get_operation_info(self, operation: str) -> Optional[Dict[str, Any]]:
+    def get_operation_info(self, operation: str) -> dict[str, Any] | None:
         return self.get_supported_operations().get(operation)
 
     def format_result_for_telegram(self, result: DocumentResult, operation: str) -> str:
@@ -390,7 +403,7 @@ class DocumentManager:
             return self._format_ocr_result(header, result.data)
         return f"{header}✔ {result.message}"
 
-    def _format_summary_result(self, header: str, data: Dict[str, Any]) -> str:
+    def _format_summary_result(self, header: str, data: dict[str, Any]) -> str:
         summary = data.get("summary", {})
         content = summary.get("content", "Содержимое недоступно")
         metadata = data.get("metadata", {})
@@ -410,7 +423,7 @@ class DocumentManager:
 
         return self._append_export_note(result, data)
 
-    def _format_risk_analysis_result(self, header: str, data: Dict[str, Any]) -> str:
+    def _format_risk_analysis_result(self, header: str, data: dict[str, Any]) -> str:
         overall_risk = data.get("overall_risk_level", "неизвестен")
         risk_emojis = {
             "low": "🟢",
@@ -456,7 +469,7 @@ class DocumentManager:
 
         return self._append_export_note(result, data)
 
-    def _format_chat_result(self, header: str, data: Dict[str, Any]) -> str:
+    def _format_chat_result(self, header: str, data: dict[str, Any]) -> str:
         question = data.get("question", "")
         answer = data.get("answer", "Ответ недоступен")
 
@@ -471,7 +484,9 @@ class DocumentManager:
                 if len(preview) > 160:
                     preview = preview[:160] + "..."
                 score = item.get("score")
-                score_text = f" (релевантность {score:.2f})" if isinstance(score, (int, float)) else ""
+                score_text = (
+                    f" (релевантность {score:.2f})" if isinstance(score, (int, float)) else ""
+                )
                 result += f"• Фрагмент {item.get('index', 0) + 1}{score_text}: *{preview}*\n"
             result += "\n"
 
@@ -483,7 +498,7 @@ class DocumentManager:
 
         return self._append_export_note(result, data)
 
-    def _format_anonymize_result(self, header: str, data: Dict[str, Any]) -> str:
+    def _format_anonymize_result(self, header: str, data: dict[str, Any]) -> str:
         report = data.get("anonymization_report", {})
         stats = report.get("statistics", {})
         result = f"{header}**🔒 Результаты обезличивания:**\n\n"
@@ -509,7 +524,7 @@ class DocumentManager:
         result += "\n✅ Документ готов к безопасной передаче"
         return self._append_export_note(result, data)
 
-    def _format_translate_result(self, header: str, data: Dict[str, Any]) -> str:
+    def _format_translate_result(self, header: str, data: dict[str, Any]) -> str:
         source_lang = data.get("source_language", "")
         target_lang = data.get("target_language", "")
         lang_names = {
@@ -543,7 +558,7 @@ class DocumentManager:
 
         return self._append_export_note(result, data)
 
-    def _format_ocr_result(self, header: str, data: Dict[str, Any]) -> str:
+    def _format_ocr_result(self, header: str, data: dict[str, Any]) -> str:
         confidence = data.get("confidence_score", 0)
         quality = data.get("quality_analysis", {})
 

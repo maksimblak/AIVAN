@@ -1,48 +1,60 @@
-﻿"""
+"""
 Базовые классы для обработки документов
 """
 
 from __future__ import annotations
+
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Union
 from pathlib import Path
-import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 class ProcessingError(Exception):
     """Базовое исключение для ошибок обработки документов"""
+
     def __init__(self, message: str, error_code: str = "PROCESSING_ERROR"):
         self.message = message
         self.error_code = error_code
         super().__init__(self.message)
 
+
 @dataclass
 class DocumentResult:
     """Результат обработки документа"""
+
     success: bool
-    data: Dict[str, Any]
+    data: dict[str, Any]
     message: str
     processing_time: float
     timestamp: datetime
-    error_code: Optional[str] = None
+    error_code: str | None = None
 
     @classmethod
-    def success_result(cls, data: Dict[str, Any], message: str = "Обработка успешно завершена", processing_time: float = 0.0) -> DocumentResult:
+    def success_result(
+        cls,
+        data: dict[str, Any],
+        message: str = "Обработка успешно завершена",
+        processing_time: float = 0.0,
+    ) -> DocumentResult:
         """Создать успешный результат"""
         return cls(
             success=True,
             data=data,
             message=message,
             processing_time=processing_time,
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
         )
 
     @classmethod
-    def error_result(cls, message: str, error_code: str = "PROCESSING_ERROR", processing_time: float = 0.0) -> DocumentResult:
+    def error_result(
+        cls, message: str, error_code: str = "PROCESSING_ERROR", processing_time: float = 0.0
+    ) -> DocumentResult:
         """Создать результат с ошибкой"""
         return cls(
             success=False,
@@ -50,8 +62,9 @@ class DocumentResult:
             message=message,
             processing_time=processing_time,
             timestamp=datetime.now(),
-            error_code=error_code
+            error_code=error_code,
         )
+
 
 class DocumentProcessor(ABC):
     """Базовый абстрактный класс для обработчиков документов"""
@@ -59,14 +72,14 @@ class DocumentProcessor(ABC):
     def __init__(self, name: str, max_file_size: int = 50 * 1024 * 1024):  # 50MB по умолчанию
         self.name = name
         self.max_file_size = max_file_size
-        self.supported_formats: List[str] = []
+        self.supported_formats: list[str] = []
 
     @abstractmethod
-    async def process(self, file_path: Union[str, Path], **kwargs) -> DocumentResult:
+    async def process(self, file_path: str | Path, **kwargs) -> DocumentResult:
         """Абстрактный метод для обработки документа"""
         pass
 
-    def validate_file(self, file_path: Union[str, Path]) -> tuple[bool, str]:
+    def validate_file(self, file_path: str | Path) -> tuple[bool, str]:
         """Валидация файла перед обработкой"""
         path = Path(file_path)
 
@@ -79,16 +92,22 @@ class DocumentProcessor(ABC):
         if file_size > self.max_file_size:
             max_mb = self.max_file_size / (1024 * 1024)
             current_mb = file_size / (1024 * 1024)
-            return False, f"Размер файла ({current_mb:.1f} МБ) превышает максимальный ({max_mb:.1f} МБ)"
+            return (
+                False,
+                f"Размер файла ({current_mb:.1f} МБ) превышает максимальный ({max_mb:.1f} МБ)",
+            )
 
         # Проверка формата файла
         file_ext = path.suffix.lower()
         if self.supported_formats and file_ext not in self.supported_formats:
-            return False, f"Неподдерживаемый формат файла: {file_ext}. Поддерживаемые: {', '.join(self.supported_formats)}"
+            return (
+                False,
+                f"Неподдерживаемый формат файла: {file_ext}. Поддерживаемые: {', '.join(self.supported_formats)}",
+            )
 
         return True, "OK"
 
-    async def safe_process(self, file_path: Union[str, Path], **kwargs) -> DocumentResult:
+    async def safe_process(self, file_path: str | Path, **kwargs) -> DocumentResult:
         """Безопасная обработка документа с валидацией и обработкой ошибок"""
         start_time = asyncio.get_event_loop().time()
 
@@ -100,7 +119,7 @@ class DocumentProcessor(ABC):
                 return DocumentResult.error_result(
                     message=validation_message,
                     error_code="VALIDATION_ERROR",
-                    processing_time=processing_time
+                    processing_time=processing_time,
                 )
 
             # Обработка документа
@@ -115,9 +134,7 @@ class DocumentProcessor(ABC):
             processing_time = asyncio.get_event_loop().time() - start_time
             logger.error(f"Ошибка обработки документа {file_path}: {e.message}")
             return DocumentResult.error_result(
-                message=e.message,
-                error_code=e.error_code,
-                processing_time=processing_time
+                message=e.message, error_code=e.error_code, processing_time=processing_time
             )
 
         except Exception as e:
@@ -126,12 +143,14 @@ class DocumentProcessor(ABC):
             return DocumentResult.error_result(
                 message=f"Внутренняя ошибка: {str(e)}",
                 error_code="INTERNAL_ERROR",
-                processing_time=processing_time
+                processing_time=processing_time,
             )
+
 
 @dataclass
 class DocumentInfo:
     """Информация о загруженном документе"""
+
     file_path: Path
     original_name: str
     size: int
@@ -139,10 +158,11 @@ class DocumentInfo:
     upload_time: datetime
     user_id: int
 
+
 class DocumentStorage:
     """Класс для управления хранением документов"""
 
-    def __init__(self, storage_path: Union[str, Path] = "data/documents"):
+    def __init__(self, storage_path: str | Path = "data/documents"):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self._write_lock = asyncio.Lock()
@@ -153,7 +173,9 @@ class DocumentStorage:
         user_path.mkdir(parents=True, exist_ok=True)
         return user_path
 
-    async def save_document(self, user_id: int, file_content: bytes, original_name: str, mime_type: str) -> DocumentInfo:
+    async def save_document(
+        self, user_id: int, file_content: bytes, original_name: str, mime_type: str
+    ) -> DocumentInfo:
         """Сохранить документ пользователя"""
         user_path = self.get_user_storage_path(user_id)
 
@@ -165,7 +187,7 @@ class DocumentStorage:
 
         # Сохраняем файл
         async with self._write_lock:
-            with open(file_path, 'wb') as f:
+            with open(file_path, "wb") as f:
                 f.write(file_content)
 
         return DocumentInfo(
@@ -174,7 +196,7 @@ class DocumentStorage:
             size=len(file_content),
             mime_type=mime_type,
             upload_time=datetime.now(),
-            user_id=user_id
+            user_id=user_id,
         )
 
     def cleanup_old_files(self, user_id: int, max_age_hours: int = 24):

@@ -3,13 +3,13 @@
 """
 
 import asyncio
-import time
 import logging
-from typing import Optional, Callable
+import time
+
 from aiogram import Bot
-from aiogram.types import Message
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.types import Message
 
 from .ui_components import render_legal_html
 
@@ -34,12 +34,12 @@ class StreamManager:
         self.max_retries = max_retries
 
         # Состояние
-        self.message: Optional[Message] = None
+        self.message: Message | None = None
         self.last_update_time = 0.0
         self.last_sent_text = ""
         self.pending_text = ""
         self.is_final = False
-        self.update_task: Optional[asyncio.Task] = None
+        self.update_task: asyncio.Task | None = None
 
     async def start_streaming(self, initial_text: str = "🤔 Обдумываю ответ...") -> Message:
         """Начинает streaming, отправляет начальное сообщение"""

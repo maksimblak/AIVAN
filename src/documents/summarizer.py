@@ -1,4 +1,4 @@
-﻿"""
+"""
 Модуль саммаризации документов
 Создает структурированное резюме документа с ключевыми выводами для юристов
 """
@@ -8,21 +8,22 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
 
-LANGUAGE_CONFIG: Dict[str, Dict[str, str]] = {
+LANGUAGE_CONFIG: dict[str, dict[str, str]] = {
     "ru": {"prompt": "русский", "display": "Русский"},
     "en": {"prompt": "английский", "display": "English"},
 }
 
-DETAIL_LEVELS: Dict[str, Dict[str, str]] = {
+DETAIL_LEVELS: dict[str, dict[str, str]] = {
     "detailed": {"label": "detailed", "ru": "Подробная", "en": "Detailed"},
     "brief": {"label": "brief", "ru": "Краткая", "en": "Brief"},
 }
@@ -69,7 +70,7 @@ AGGREGATION_PROMPT = """
 }
 """
 
-LANG_SECTIONS: Dict[str, Dict[str, str]] = {
+LANG_SECTIONS: dict[str, dict[str, str]] = {
     "ru": {
         "overview": "### Общий обзор",
         "key_points": "### Ключевые положения",
@@ -88,15 +89,21 @@ LANG_SECTIONS: Dict[str, Dict[str, str]] = {
     },
 }
 
-DATE_PATTERNS: Tuple[str, ...] = (
+DATE_PATTERNS: tuple[str, ...] = (
     r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\b",
     r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\b",
 )
 
-PENALTY_KEYWORDS: Tuple[str, ...] = (
-    "штраф", "неустой", "пени", "penalty", "fine", "liquidated damages", "санкц",
+PENALTY_KEYWORDS: tuple[str, ...] = (
+    "штраф",
+    "неустой",
+    "пени",
+    "penalty",
+    "fine",
+    "liquidated damages",
+    "санкц",
 )
 
 
@@ -110,10 +117,10 @@ class DocumentSummarizer(DocumentProcessor):
 
     async def process(
         self,
-        file_path: Union[str, Path],
+        file_path: str | Path,
         detail_level: str = "detailed",
         language: str = "ru",
-        output_formats: Optional[List[str]] = None,
+        output_formats: list[str] | None = None,
         **_: Any,
     ) -> DocumentResult:
         if not self.openai_service:
@@ -174,14 +181,11 @@ class DocumentSummarizer(DocumentProcessor):
         if output_formats:
             result_payload["requested_formats"] = list(dict.fromkeys(output_formats))
 
-        return DocumentResult.success_result(
-            data=result_payload,
-            message="Саммари подготовлено"
-        )
+        return DocumentResult.success_result(data=result_payload, message="Саммари подготовлено")
 
-    async def _create_summary(self, text: str, detail_level: str, language: str) -> Dict[str, Any]:
+    async def _create_summary(self, text: str, detail_level: str, language: str) -> dict[str, Any]:
         chunks = TextProcessor.split_into_chunks(text, max_chunk_size=4000, overlap=400)
-        chunk_results: List[Dict[str, Any]] = []
+        chunk_results: list[dict[str, Any]] = []
 
         for idx, chunk in enumerate(chunks, start=1):
             chunk_result = await self._summarize_chunk(
@@ -219,16 +223,20 @@ class DocumentSummarizer(DocumentProcessor):
         total_chunks: int,
         detail_level: str,
         language: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         detail_label = DETAIL_LEVELS[detail_level]["ru" if language == "ru" else "en"]
         language_name = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["ru"])["prompt"]
 
-        user_message = CHUNK_PROMPT.format(
-            detail_label=detail_label,
-            language_name=language_name,
-            chunk_number=chunk_number,
-            total_chunks=total_chunks,
-        ) + "\n" + chunk_text
+        user_message = (
+            CHUNK_PROMPT.format(
+                detail_label=detail_label,
+                language_name=language_name,
+                chunk_number=chunk_number,
+                total_chunks=total_chunks,
+            )
+            + "\n"
+            + chunk_text
+        )
 
         response = await self.openai_service.ask_legal(
             system_prompt="Ты структурируешь юридические тексты.",
@@ -246,10 +254,10 @@ class DocumentSummarizer(DocumentProcessor):
 
     async def _aggregate_chunks(
         self,
-        chunk_results: List[Dict[str, Any]],
+        chunk_results: list[dict[str, Any]],
         detail_level: str,
         language: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         language_name = LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["ru"])["prompt"]
         detail_label = DETAIL_LEVELS[detail_level]["ru" if language == "ru" else "en"]
         payload = json.dumps([item["summary"] for item in chunk_results], ensure_ascii=False)
@@ -271,7 +279,7 @@ class DocumentSummarizer(DocumentProcessor):
         aggregated.setdefault("language", language)
         return aggregated
 
-    def _parse_summary_response(self, raw_text: str, language: str) -> Dict[str, Any]:
+    def _parse_summary_response(self, raw_text: str, language: str) -> dict[str, Any]:
         text = (raw_text or "").strip()
         if not text:
             return {
@@ -307,19 +315,19 @@ class DocumentSummarizer(DocumentProcessor):
             "language": language,
         }
 
-    def _extract_json(self, text: str) -> Optional[str]:
+    def _extract_json(self, text: str) -> str | None:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             return match.group(0)
         return None
 
-    def _ensure_list_of_strings(self, value: Any) -> List[str]:
+    def _ensure_list_of_strings(self, value: Any) -> list[str]:
         if not value:
             return []
         if isinstance(value, str):
             return [value.strip()] if value.strip() else []
         if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
-            result: List[str] = []
+            result: list[str] = []
             for item in value:
                 if isinstance(item, str):
                     stripped = item.strip()
@@ -328,12 +336,12 @@ class DocumentSummarizer(DocumentProcessor):
             return result
         return []
 
-    def _merge_chunks_locally(self, summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
-        summary_parts: List[str] = []
-        key_points: List[str] = []
-        deadlines: List[str] = []
-        penalties: List[str] = []
-        actions: List[str] = []
+    def _merge_chunks_locally(self, summaries: list[dict[str, Any]]) -> dict[str, Any]:
+        summary_parts: list[str] = []
+        key_points: list[str] = []
+        deadlines: list[str] = []
+        penalties: list[str] = []
+        actions: list[str] = []
 
         for item in summaries:
             summary_part = item.get("summary")
@@ -344,8 +352,8 @@ class DocumentSummarizer(DocumentProcessor):
             penalties.extend(item.get("penalties", []))
             actions.extend(item.get("actions", []))
 
-        def _dedup(items: List[str]) -> List[str]:
-            seen: Dict[str, None] = {}
+        def _dedup(items: list[str]) -> list[str]:
+            seen: dict[str, None] = {}
             for entry in items:
                 normalized = entry.strip()
                 if normalized and normalized not in seen:
@@ -360,11 +368,11 @@ class DocumentSummarizer(DocumentProcessor):
             "actions": _dedup(actions),
         }
 
-    def _format_summary_text(self, data: Dict[str, Any], language: str) -> str:
+    def _format_summary_text(self, data: dict[str, Any], language: str) -> str:
         sections = LANG_SECTIONS.get(language, LANG_SECTIONS["ru"])
-        lines: List[str] = [sections["overview"], data.get("summary") or sections["none"], ""]
+        lines: list[str] = [sections["overview"], data.get("summary") or sections["none"], ""]
 
-        def append_block(title_key: str, values: List[str]) -> None:
+        def append_block(title_key: str, values: list[str]) -> None:
             lines.append(sections[title_key])
             if values:
                 for item in values:
@@ -388,7 +396,7 @@ class DocumentSummarizer(DocumentProcessor):
             return "brief"
         return "detailed"
 
-    def _normalize_language(self, raw_language: str, document_text: Optional[str] = None) -> str:
+    def _normalize_language(self, raw_language: str, document_text: str | None = None) -> str:
         normalized = (raw_language or "").strip().lower()
         if normalized in LANGUAGE_CONFIG:
             return normalized
@@ -409,7 +417,7 @@ class DocumentSummarizer(DocumentProcessor):
             return "ru"
         return "ru" if cyr >= lat else "en"
 
-    def _collect_metadata(self, text: str, file_path: Union[str, Path], language: str) -> Dict[str, Any]:
+    def _collect_metadata(self, text: str, file_path: str | Path, language: str) -> dict[str, Any]:
         meta = TextProcessor.extract_metadata(text)
         meta.update(
             {
@@ -423,8 +431,8 @@ class DocumentSummarizer(DocumentProcessor):
         )
         return meta
 
-    def _extract_deadlines(self, text: str, limit: int = 5) -> List[str]:
-        results: List[str] = []
+    def _extract_deadlines(self, text: str, limit: int = 5) -> list[str]:
+        results: list[str] = []
         for pattern in DATE_PATTERNS:
             for match in re.findall(pattern, text, flags=re.IGNORECASE):
                 cleaned = match.strip()
@@ -434,9 +442,9 @@ class DocumentSummarizer(DocumentProcessor):
                     return results
         return results
 
-    def _extract_penalties(self, text: str, limit: int = 5) -> List[str]:
+    def _extract_penalties(self, text: str, limit: int = 5) -> list[str]:
         sentences = re.split(r"(?<=[.!?])\s+", text)
-        found: List[str] = []
+        found: list[str] = []
         for sentence in sentences:
             lower = sentence.lower()
             if any(keyword in lower for keyword in PENALTY_KEYWORDS):
@@ -449,10 +457,10 @@ class DocumentSummarizer(DocumentProcessor):
 
     def _build_checklist_from_metadata(
         self,
-        deadlines: List[str],
-        penalties: List[str],
-    ) -> List[str]:
-        checklist: List[str] = []
+        deadlines: list[str],
+        penalties: list[str],
+    ) -> list[str]:
+        checklist: list[str] = []
         if deadlines:
             checklist.append("Проверить соблюдение всех указанных сроков")
         if penalties:

@@ -4,17 +4,18 @@
 Симулирует streaming ответы для проверки работы механизма
 """
 
-import sys
-import os
 import asyncio
+import os
+import sys
 import time
 
 # Импортируем необходимые модули
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'core'))
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'bot'))
+sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "src", "bot"))
 
-from src.bot.stream_manager import StreamManager, StreamingCallback
+from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import render_legal_html
+
 
 # Мок бот для тестирования
 class MockBot:
@@ -26,7 +27,7 @@ class MockBot:
             "message_id": len(self.messages) + 1,
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": parse_mode
+            "parse_mode": parse_mode,
         }
         self.messages.append(message)
         print(f"[SEND] Message {message['message_id']}: {text[:100]}...")
@@ -42,10 +43,12 @@ class MockBot:
                 return
         raise Exception("Message not found")
 
+
 class MockMessage:
     def __init__(self, data):
         self.message_id = data["message_id"]
-        self.chat = type('Chat', (), {'id': data["chat_id"]})()
+        self.chat = type("Chat", (), {"id": data["chat_id"]})()
+
 
 # Симуляция streaming ответа OpenAI
 STREAMING_CHUNKS = [
@@ -69,15 +72,16 @@ STREAMING_CHUNKS = [
 
 — Реально (высокая вероятность успеха): неоднократные просрочки поставщика; системные срывы графика поставок.
 
-— Менее реально: единичная, несущественная просрочка без доказательств вреда."""
+— Менее реально: единичная, несущественная просрочка без доказательств вреда.""",
 ]
+
 
 async def simulate_streaming_callback(callback_func):
     """Симулирует streaming от OpenAI с постепенным добавлением текста"""
     print("\n=== СИМУЛЯЦИЯ STREAMING ОТВЕТА ===")
 
     for i, chunk in enumerate(STREAMING_CHUNKS):
-        is_final = (i == len(STREAMING_CHUNKS) - 1)
+        is_final = i == len(STREAMING_CHUNKS) - 1
 
         print(f"\nChunk {i+1}/{len(STREAMING_CHUNKS)} ({'FINAL' if is_final else 'PARTIAL'})")
         print(f"Length: {len(chunk)} chars")
@@ -88,6 +92,7 @@ async def simulate_streaming_callback(callback_func):
         # Пауза между чанками (как в реальном streaming)
         if not is_final:
             await asyncio.sleep(0.5)
+
 
 async def test_streaming_manager():
     """Тестирует StreamManager с симуляцией streaming"""
@@ -101,10 +106,7 @@ async def test_streaming_manager():
 
     # Создаем StreamManager
     stream_manager = StreamManager(
-        bot=bot,
-        chat_id=chat_id,
-        update_interval=1.0,  # Быстрее для теста
-        buffer_size=50
+        bot=bot, chat_id=chat_id, update_interval=1.0, buffer_size=50  # Быстрее для теста
     )
 
     print("\n1. Начинаем streaming...")
@@ -132,7 +134,7 @@ async def test_streaming_manager():
         "Жирные номера": "<b>1) </b>" in formatted_text,
         "Жирные статьи": "<b>ст. 523</b>" in formatted_text,
         "Жирные заголовки": "<b>Коротко:" in formatted_text,
-        "Переносы строк": "<br>" in formatted_text
+        "Переносы строк": "<br>" in formatted_text,
     }
 
     print("\n6. Результаты проверки форматирования:")
@@ -149,6 +151,7 @@ async def test_streaming_manager():
 
     return all_passed
 
+
 async def test_streaming_performance():
     """Тестирует производительность streaming"""
     print("\n" + "=" * 60)
@@ -158,10 +161,7 @@ async def test_streaming_performance():
     # Создаем мок объекты
     bot = MockBot()
     stream_manager = StreamManager(
-        bot=bot,
-        chat_id=12345,
-        update_interval=0.1,  # Быстрое обновление для теста
-        buffer_size=20
+        bot=bot, chat_id=12345, update_interval=0.1, buffer_size=20  # Быстрое обновление для теста
     )
 
     start_time = time.time()
@@ -183,6 +183,7 @@ async def test_streaming_performance():
     print(f"Среднее время на сообщение: {duration/len(bot.messages):.3f} сек")
 
     return duration < 5.0  # Должно выполниться быстро
+
 
 async def test_streaming_error_handling():
     """Тестирует обработку ошибок в streaming"""
@@ -209,7 +210,7 @@ async def test_streaming_error_handling():
         bot=error_bot,
         chat_id=12345,
         update_interval=0.5,
-        max_retries=3  # Должно хватить для восстановления
+        max_retries=3,  # Должно хватить для восстановления
     )
 
     try:
@@ -230,6 +231,7 @@ async def test_streaming_error_handling():
         print(f"Тест обработки ошибок провален: {e}")
         return False
 
+
 async def main():
     """Запуск всех тестов streaming"""
     print("ЗАПУСК ТЕСТОВ STREAMING ФУНКЦИОНАЛЬНОСТИ")
@@ -238,7 +240,7 @@ async def main():
     tests = [
         ("Основной функционал streaming", test_streaming_manager),
         ("Производительность streaming", test_streaming_performance),
-        ("Обработка ошибок", test_streaming_error_handling)
+        ("Обработка ошибок", test_streaming_error_handling),
     ]
 
     results = []
@@ -273,6 +275,7 @@ async def main():
     else:
         print("НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОШЛИ!")
         print("Требуется дополнительная отладка")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

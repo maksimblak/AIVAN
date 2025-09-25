@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any, Optional, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 try:
     # базовый запрос (обязателен)
@@ -24,7 +25,9 @@ logger = logging.getLogger(__name__)
 StreamCallback = Callable[..., Awaitable[None]]
 
 
-async def _safe_fire_callback(cb: Optional[StreamCallback], delta: str, is_final: bool = False) -> None:
+async def _safe_fire_callback(
+    cb: StreamCallback | None, delta: str, is_final: bool = False
+) -> None:
     """Вызов колбэка с поддержкой 1 или 2 аргументов, sync/async."""
     if not cb:
         return
@@ -48,7 +51,7 @@ class OpenAIService:
     - простая статистика и методы обслуживания кэша
     """
 
-    def __init__(self, cache: Optional[ResponseCache] = None, enable_cache: bool = True):
+    def __init__(self, cache: ResponseCache | None = None, enable_cache: bool = True):
         self.cache = cache
         self.enable_cache = enable_cache
 
@@ -74,7 +77,9 @@ class OpenAIService:
         # кэш
         if self.cache and self.enable_cache and not force_refresh:
             try:
-                cached = await self.cache.get_cached_response(system_prompt=system_prompt, user_text=user_text)
+                cached = await self.cache.get_cached_response(
+                    system_prompt=system_prompt, user_text=user_text
+                )
                 if cached:
                     self.cached_requests += 1
                     logger.info("Cache HIT for ask_legal (len=%s)", len(user_text))
@@ -87,14 +92,11 @@ class OpenAIService:
             response = await oai_ask_legal(system_prompt, user_text)
 
             # кэшируем только успешный и непустой ответ
-            if (
-                self.cache
-                and self.enable_cache
-                and response.get("ok")
-                and response.get("text")
-            ):
+            if self.cache and self.enable_cache and response.get("ok") and response.get("text"):
                 try:
-                    await self.cache.cache_response(system_prompt=system_prompt, user_text=user_text, response=response)
+                    await self.cache.cache_response(
+                        system_prompt=system_prompt, user_text=user_text, response=response
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Cache set failed: %s", e)
 
@@ -111,7 +113,7 @@ class OpenAIService:
         self,
         system_prompt: str,
         user_text: str,
-        callback: Optional[StreamCallback] = None,
+        callback: StreamCallback | None = None,
         *,
         force_refresh: bool = False,
         pseudo_chunk: int = 600,
@@ -132,7 +134,9 @@ class OpenAIService:
         # кэш (и псевдострим из кэша)
         if self.cache and self.enable_cache and not force_refresh:
             try:
-                cached = await self.cache.get_cached_response(system_prompt=system_prompt, user_text=user_text)
+                cached = await self.cache.get_cached_response(
+                    system_prompt=system_prompt, user_text=user_text
+                )
                 if cached and cached.get("ok") and cached.get("text"):
                     self.cached_requests += 1
                     text = str(cached.get("text", ""))
@@ -142,7 +146,9 @@ class OpenAIService:
                             await _safe_fire_callback(callback, text, True)
                         else:
                             for i in range(0, len(text), pseudo_chunk):
-                                await _safe_fire_callback(callback, text[i : i + pseudo_chunk], False)
+                                await _safe_fire_callback(
+                                    callback, text[i : i + pseudo_chunk], False
+                                )
                             await _safe_fire_callback(callback, "", True)
                     self.last_full_text = text
                     return cached
@@ -218,12 +224,7 @@ class OpenAIService:
             self.last_full_text = text
 
             # кэшируем обычным способом (если еще не закэшировано)
-            if (
-                self.cache
-                and self.enable_cache
-                and result.get("ok")
-                and result.get("text")
-            ):
+            if self.cache and self.enable_cache and result.get("ok") and result.get("text"):
                 try:
                     await self.cache.cache_response(system_prompt, user_text, result)
                 except Exception as e:  # noqa: BLE001
@@ -244,7 +245,9 @@ class OpenAIService:
             "cached_requests": self.cached_requests,
             "failed_requests": self.failed_requests,
             "cache_enabled": self.enable_cache,
-            "cache_hit_rate": (self.cached_requests / self.total_requests) if self.total_requests else 0.0,
+            "cache_hit_rate": (
+                (self.cached_requests / self.total_requests) if self.total_requests else 0.0
+            ),
         }
         if self.cache:
             try:

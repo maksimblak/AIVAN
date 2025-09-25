@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Optional
 
 
 @dataclass
@@ -10,9 +9,9 @@ class UserSession:
     user_id: int
     questions_count: int = 0
     total_response_time: float = 0.0
-    last_question_time: Optional[datetime] = None
+    last_question_time: datetime | None = None
     created_at: datetime = field(default_factory=datetime.now)
-    pending_feedback_request_id: Optional[int] = None
+    pending_feedback_request_id: int | None = None
 
     def add_question_stats(self, response_time: float) -> None:
         self.questions_count += 1
@@ -26,7 +25,7 @@ class SessionStore:
     def __init__(self, *, max_size: int, ttl_seconds: int) -> None:
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
-        self._sessions: Dict[int, UserSession] = {}
+        self._sessions: dict[int, UserSession] = {}
 
     def get_or_create(self, user_id: int) -> UserSession:
         self.cleanup()

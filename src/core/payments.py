@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 from .crypto_pay import create_crypto_invoice_async
 
@@ -9,10 +9,12 @@ from .crypto_pay import create_crypto_invoice_async
 class CryptoPayProvider:
     """Provider wrapper for CryptoBot payments."""
 
-    def __init__(self, *, asset: Optional[str] = None):
+    def __init__(self, *, asset: str | None = None):
         self.asset = asset or os.getenv("CRYPTO_ASSET", "USDT")
 
-    async def create_invoice(self, *, amount_rub: float, description: str, payload: str) -> dict[str, Any]:
+    async def create_invoice(
+        self, *, amount_rub: float, description: str, payload: str
+    ) -> dict[str, Any]:
         return await create_crypto_invoice_async(
             amount=float(amount_rub),
             asset=self.asset,
@@ -21,7 +23,9 @@ class CryptoPayProvider:
         )
 
 
-def convert_rub_to_xtr(amount_rub: float, *, rub_per_xtr: Optional[float], default_xtr: Optional[int] = None) -> int:
+def convert_rub_to_xtr(
+    amount_rub: float, *, rub_per_xtr: float | None, default_xtr: int | None = None
+) -> int:
     """Convert RUB to XTR (Telegram Stars) using configurable rate.
 
     - If rub_per_xtr provided: XTR = ceil(amount_rub / rub_per_xtr)
@@ -35,5 +39,3 @@ def convert_rub_to_xtr(amount_rub: float, *, rub_per_xtr: Optional[float], defau
     if default_xtr is not None:
         return int(default_xtr)
     return int(math.ceil(amount_rub))
-
-

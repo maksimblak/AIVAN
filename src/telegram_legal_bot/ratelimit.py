@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Deque, Dict, Optional
 
 try:
     from redis import asyncio as redis_async  # type: ignore
@@ -16,17 +15,19 @@ class RateLimiter:
     Fallback to in-memory deque timestamps when Redis is not configured.
     """
 
-    def __init__(self, *, redis_url: Optional[str], max_requests: int, window_seconds: int) -> None:
+    def __init__(self, *, redis_url: str | None, max_requests: int, window_seconds: int) -> None:
         self.redis_url = redis_url
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self._redis: Optional["redis_async.Redis"] = None
-        self._local: Dict[int, Deque[float]] = {}
+        self._redis: redis_async.Redis | None = None
+        self._local: dict[int, deque[float]] = {}
 
     async def init(self) -> None:
         if self.redis_url and redis_async is not None:
             try:
-                self._redis = redis_async.Redis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+                self._redis = redis_async.Redis.from_url(
+                    self.redis_url, encoding="utf-8", decode_responses=True
+                )
                 await self._redis.ping()
             except Exception:
                 self._redis = None
@@ -66,5 +67,3 @@ class RateLimiter:
             return False
         dq.append(now)
         return True
-
-

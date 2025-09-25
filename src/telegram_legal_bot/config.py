@@ -2,28 +2,27 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Optional
 
 from dotenv import load_dotenv
 
 
-def _bool(val: Optional[str], default: bool = False) -> bool:
+def _bool(val: str | None, default: bool = False) -> bool:
     if val is None:
         return default
     return val.lower() in ("1", "true", "yes", "on")
 
 
-def _parse_int(val: Optional[str], default: int) -> int:
+def _parse_int(val: str | None, default: int) -> int:
     try:
         return int(val) if val is not None and val != "" else default
     except ValueError:
         return default
 
 
-def _parse_int_list(val: Optional[str]) -> List[int]:
+def _parse_int_list(val: str | None) -> list[int]:
     if not val:
         return []
-    out: List[int] = []
+    out: list[int] = []
     for part in val.replace(" ", "").split(","):
         if not part:
             continue
@@ -34,7 +33,7 @@ def _parse_int_list(val: Optional[str]) -> List[int]:
     return out
 
 
-def _parse_float(val: Optional[str]) -> Optional[float]:
+def _parse_float(val: str | None) -> float | None:
     if val is None or val == "":
         return None
     try:
@@ -59,18 +58,18 @@ class Config:
     telegram_provider_token_stars: str
     subscription_price_xtr: int
 
-    admin_ids: List[int]
+    admin_ids: list[int]
 
     user_sessions_max: int
     user_session_ttl_seconds: int
 
-    redis_url: Optional[str]
+    redis_url: str | None
     rate_limit_requests: int
     rate_limit_window_seconds: int
-    rub_per_xtr: Optional[float]
+    rub_per_xtr: float | None
 
 
-_cached_config: Optional[Config] = None
+_cached_config: Config | None = None
 
 
 def load_config() -> Config:
@@ -111,5 +110,3 @@ def load_config() -> Config:
 
     _cached_config = cfg
     return cfg
-
-

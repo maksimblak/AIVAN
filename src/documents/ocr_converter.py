@@ -1,29 +1,32 @@
-﻿"""
+"""
 Модуль OCR и конвертации
 Распознавание сканированных документов и преобразование в редактируемый текст
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Dict, Any, List, Union, Optional
+
 import logging
+from pathlib import Path
+from typing import Any
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
-from .utils import format_file_size, is_image_file
+from .utils import is_image_file
 
 logger = logging.getLogger(__name__)
+
 
 class OCRConverter(DocumentProcessor):
     """Класс для OCR распознавания и конвертации документов"""
 
     def __init__(self):
         super().__init__(
-            name="OCRConverter",
-            max_file_size=100 * 1024 * 1024  # 100MB для изображений
+            name="OCRConverter", max_file_size=100 * 1024 * 1024  # 100MB для изображений
         )
-        self.supported_formats = ['.pdf', '.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp']
+        self.supported_formats = [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"]
 
-    async def process(self, file_path: Union[str, Path], output_format: str = "txt", **kwargs) -> DocumentResult:
+    async def process(
+        self, file_path: str | Path, output_format: str = "txt", **kwargs
+    ) -> DocumentResult:
         """
         OCR распознавание документа
 
@@ -39,11 +42,13 @@ class OCRConverter(DocumentProcessor):
             if is_image_file(path):
                 # OCR изображения
                 text, confidence = await self._ocr_image(path)
-            elif file_extension == '.pdf':
+            elif file_extension == ".pdf":
                 # Проверяем, является ли PDF сканом
                 text, confidence = await self._ocr_pdf(path)
             else:
-                raise ProcessingError(f"Неподдерживаемый формат для OCR: {file_extension}", "FORMAT_ERROR")
+                raise ProcessingError(
+                    f"Неподдерживаемый формат для OCR: {file_extension}", "FORMAT_ERROR"
+                )
 
             if not text.strip():
                 raise ProcessingError("Не удалось распознать текст в документе", "OCR_NO_TEXT")
@@ -63,13 +68,13 @@ class OCRConverter(DocumentProcessor):
                 "processing_info": {
                     "file_type": "image" if is_image_file(path) else "pdf",
                     "text_length": len(cleaned_text),
-                    "word_count": len(cleaned_text.split())
-                }
+                    "word_count": len(cleaned_text.split()),
+                },
             }
 
             return DocumentResult.success_result(
                 data=result_data,
-                message=f"OCR распознавание завершено с уверенностью {confidence:.1f}%"
+                message=f"OCR распознавание завершено с уверенностью {confidence:.1f}%",
             )
 
         except Exception as e:
@@ -87,21 +92,23 @@ class OCRConverter(DocumentProcessor):
                 image = Image.open(image_path)
 
                 # Распознаем текст с получением данных о уверенности
-                ocr_data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, lang='rus+eng')
+                ocr_data = pytesseract.image_to_data(
+                    image, output_type=pytesseract.Output.DICT, lang="rus+eng"
+                )
 
                 # Собираем текст и вычисляем среднюю уверенность
                 words = []
                 confidences = []
 
-                for i in range(len(ocr_data['text'])):
-                    word = ocr_data['text'][i].strip()
-                    confidence = int(ocr_data['conf'][i])
+                for i in range(len(ocr_data["text"])):
+                    word = ocr_data["text"][i].strip()
+                    confidence = int(ocr_data["conf"][i])
 
                     if word and confidence > 0:
                         words.append(word)
                         confidences.append(confidence)
 
-                text = ' '.join(words)
+                text = " ".join(words)
                 avg_confidence = sum(confidences) / len(confidences) if confidences else 0
 
                 return text, avg_confidence
@@ -122,7 +129,7 @@ class OCRConverter(DocumentProcessor):
             try:
                 import PyPDF2
 
-                with open(pdf_path, 'rb') as f:
+                with open(pdf_path, "rb") as f:
                     pdf_reader = PyPDF2.PdfReader(f)
                     text = ""
                     for page in pdf_reader.pages:
@@ -152,25 +159,29 @@ class OCRConverter(DocumentProcessor):
                     logger.info(f"OCR страницы {i+1}/{len(pages)}")
 
                     # OCR каждой страницы
-                    ocr_data = pytesseract.image_to_data(page, output_type=pytesseract.Output.DICT, lang='rus+eng')
+                    ocr_data = pytesseract.image_to_data(
+                        page, output_type=pytesseract.Output.DICT, lang="rus+eng"
+                    )
 
                     page_words = []
                     page_confidences = []
 
-                    for j in range(len(ocr_data['text'])):
-                        word = ocr_data['text'][j].strip()
-                        confidence = int(ocr_data['conf'][j])
+                    for j in range(len(ocr_data["text"])):
+                        word = ocr_data["text"][j].strip()
+                        confidence = int(ocr_data["conf"][j])
 
                         if word and confidence > 0:
                             page_words.append(word)
                             page_confidences.append(confidence)
 
                     if page_words:
-                        all_text.append(' '.join(page_words))
+                        all_text.append(" ".join(page_words))
                         all_confidences.extend(page_confidences)
 
-                text = '\n\n'.join(all_text)
-                avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
+                text = "\n\n".join(all_text)
+                avg_confidence = (
+                    sum(all_confidences) / len(all_confidences) if all_confidences else 0
+                )
 
                 return text, avg_confidence
 
@@ -184,7 +195,10 @@ class OCRConverter(DocumentProcessor):
 
     def _mock_ocr_result(self, file_path: Path) -> tuple[str, float]:
         """Заглушка для OCR результата"""
-        return f"[OCR ЗАГЛУШКА] Содержимое файла {file_path.name} не распознано. Требуется установка tesseract-ocr и pytesseract.", 50.0
+        return (
+            f"[OCR ЗАГЛУШКА] Содержимое файла {file_path.name} не распознано. Требуется установка tesseract-ocr и pytesseract.",
+            50.0,
+        )
 
     def _clean_ocr_text(self, text: str) -> str:
         """Очистка текста после OCR"""
@@ -192,15 +206,15 @@ class OCRConverter(DocumentProcessor):
             return ""
 
         # Убираем лишние пробелы и переносы
-        cleaned = ' '.join(text.split())
+        cleaned = " ".join(text.split())
 
         # Исправляем частые ошибки OCR
         corrections = {
-            'О': '0',  # где это уместно
-            'З': '3',  # где это уместно
-            '6': 'б',  # где это уместно
-            'rод': 'год',
-            'нaлог': 'налог',
+            "О": "0",  # где это уместно
+            "З": "3",  # где это уместно
+            "6": "б",  # где это уместно
+            "rод": "год",
+            "нaлог": "налог",
         }
 
         # Применяем корректировки осторожно
@@ -210,7 +224,7 @@ class OCRConverter(DocumentProcessor):
 
         return cleaned
 
-    def _analyze_ocr_quality(self, text: str, confidence: float) -> Dict[str, Any]:
+    def _analyze_ocr_quality(self, text: str, confidence: float) -> dict[str, Any]:
         """Анализ качества OCR распознавания"""
 
         quality_level = "низкое"
@@ -228,7 +242,7 @@ class OCRConverter(DocumentProcessor):
         char_count = len(text) if text else 0
 
         # Проверка на наличие подозрительных символов (ошибки OCR)
-        suspicious_chars = sum(1 for char in text if char in '°§¤¦№')
+        suspicious_chars = sum(1 for char in text if char in "°§¤¦№")
 
         recommendations = []
         if confidence < 70:
@@ -244,14 +258,14 @@ class OCRConverter(DocumentProcessor):
             "word_count": word_count,
             "char_count": char_count,
             "suspicious_chars": suspicious_chars,
-            "recommendations": recommendations
+            "recommendations": recommendations,
         }
 
-    def get_required_dependencies(self) -> List[str]:
+    def get_required_dependencies(self) -> list[str]:
         """Получить список требуемых зависимостей для OCR"""
         return [
             "pytesseract>=0.3.10",
             "pillow>=9.0.0",
             "pdf2image>=1.16.0",
-            "tesseract-ocr (системная утилита)"
+            "tesseract-ocr (системная утилита)",
         ]

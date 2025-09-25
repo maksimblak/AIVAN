@@ -1,15 +1,15 @@
-﻿"""
+"""
 Модуль "Чат с документом"
 Интерактивное взаимодействие с загруженными документами через вопросы-ответы
 """
 
 from __future__ import annotations
-import asyncio
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, List, Union, Optional
+
 import logging
 import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -17,8 +17,22 @@ from .utils import FileFormatHandler, TextProcessor
 logger = logging.getLogger(__name__)
 
 QUESTION_STOPWORDS = {
-    "что", "это", "где", "когда", "если", "как", "или",
-    "and", "the", "for", "from", "with", "into", "onto", "there", "here"
+    "что",
+    "это",
+    "где",
+    "когда",
+    "если",
+    "как",
+    "или",
+    "and",
+    "the",
+    "for",
+    "from",
+    "with",
+    "into",
+    "onto",
+    "there",
+    "here",
 }
 
 DOCUMENT_CHAT_PROMPT = """
@@ -43,19 +57,17 @@ DOCUMENT_CHAT_PROMPT = """
 Отвечай на вопросы пользователя на основе этого документа.
 """
 
+
 class DocumentChat(DocumentProcessor):
     """Класс для интерактивного чата с документами"""
 
     def __init__(self, openai_service=None):
-        super().__init__(
-            name="DocumentChat",
-            max_file_size=50 * 1024 * 1024  # 50MB
-        )
-        self.supported_formats = ['.pdf', '.docx', '.doc', '.txt']
+        super().__init__(name="DocumentChat", max_file_size=50 * 1024 * 1024)  # 50MB
+        self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
         self.openai_service = openai_service
-        self.loaded_documents: Dict[str, Dict[str, Any]] = {}
+        self.loaded_documents: dict[str, dict[str, Any]] = {}
 
-    async def load_document(self, file_path: Union[str, Path], document_id: Optional[str] = None) -> str:
+    async def load_document(self, file_path: str | Path, document_id: str | None = None) -> str:
         """
         Загрузить документ для чата
 
@@ -81,13 +93,13 @@ class DocumentChat(DocumentProcessor):
             "file_path": str(file_path),
             "loaded_at": datetime.now(),
             "metadata": TextProcessor.extract_metadata(cleaned_text),
-            "chunks": TextProcessor.split_into_chunks(cleaned_text, max_chunk_size=3000)
+            "chunks": TextProcessor.split_into_chunks(cleaned_text, max_chunk_size=3000),
         }
 
         logger.info(f"Документ {file_path} загружен с ID: {document_id}")
         return document_id
 
-    async def chat_with_document(self, document_id: str, question: str) -> Dict[str, Any]:
+    async def chat_with_document(self, document_id: str, question: str) -> dict[str, Any]:
         """
         Задать вопрос по документу
 
@@ -99,7 +111,9 @@ class DocumentChat(DocumentProcessor):
             Ответ с релевантными цитатами и ссылками
         """
         if document_id not in self.loaded_documents:
-            raise ProcessingError("Документ не найден. Сначала загрузите документ.", "DOCUMENT_NOT_FOUND")
+            raise ProcessingError(
+                "Документ не найден. Сначала загрузите документ.", "DOCUMENT_NOT_FOUND"
+            )
 
         if not self.openai_service:
             raise ProcessingError("OpenAI сервис не инициализирован", "SERVICE_ERROR")
@@ -115,14 +129,15 @@ class DocumentChat(DocumentProcessor):
             if selected_chunks:
                 for chunk_info in selected_chunks:
                     excerpt = chunk_info["text"][:1800]
-                    context_chunks.append({
-                        "index": chunk_info["index"],
-                        "score": chunk_info["score"],
-                        "excerpt": excerpt
-                    })
+                    context_chunks.append(
+                        {
+                            "index": chunk_info["index"],
+                            "score": chunk_info["score"],
+                            "excerpt": excerpt,
+                        }
+                    )
                 context_text = "\n\n".join(
-                    f"[Фрагмент {item['index'] + 1}]\n{item['excerpt']}"
-                    for item in context_chunks
+                    f"[Фрагмент {item['index'] + 1}]\n{item['excerpt']}" for item in context_chunks
                 )
             else:
                 context_text = document_text[:6000]
@@ -130,8 +145,7 @@ class DocumentChat(DocumentProcessor):
             prompt = DOCUMENT_CHAT_PROMPT.format(document_text=context_text)
 
             result = await self.openai_service.ask_legal(
-                system_prompt=prompt,
-                user_message=question
+                system_prompt=prompt, user_message=question
             )
 
             if not result.get("ok"):
@@ -147,14 +161,14 @@ class DocumentChat(DocumentProcessor):
                 "relevant_fragments": relevant_fragments,
                 "context_chunks": context_chunks,
                 "document_id": document_id,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
             }
 
         except Exception as e:
             logger.error(f"Ошибка чата с документом: {e}")
             raise ProcessingError(f"Ошибка обработки вопроса: {str(e)}", "CHAT_ERROR")
 
-    async def process(self, file_path: Union[str, Path], **kwargs) -> DocumentResult:
+    async def process(self, file_path: str | Path, **kwargs) -> DocumentResult:
         """
         Основной метод для загрузки документа для чата
 
@@ -167,15 +181,15 @@ class DocumentChat(DocumentProcessor):
                 data={
                     "document_id": document_id,
                     "document_info": self.get_document_info(document_id),
-                    "message": "Документ загружен и готов для чата"
+                    "message": "Документ загружен и готов для чата",
                 },
-                message="Документ успешно загружен для интерактивного чата"
+                message="Документ успешно загружен для интерактивного чата",
             )
 
         except Exception as e:
             raise ProcessingError(f"Ошибка загрузки документа: {str(e)}", "LOAD_ERROR")
 
-    def get_document_info(self, document_id: str) -> Dict[str, Any]:
+    def get_document_info(self, document_id: str) -> dict[str, Any]:
         """Получить информацию о загруженном документе"""
         if document_id not in self.loaded_documents:
             return {}
@@ -186,17 +200,27 @@ class DocumentChat(DocumentProcessor):
             "file_path": doc_data["file_path"],
             "loaded_at": doc_data["loaded_at"].isoformat(),
             "metadata": doc_data["metadata"],
-            "chunks_count": len(doc_data["chunks"])
+            "chunks_count": len(doc_data["chunks"]),
         }
 
-    def _select_relevant_chunks(self, chunks: List[str], question: str, max_chunks: int = 3) -> List[Dict[str, Any]]:
+    def _select_relevant_chunks(
+        self, chunks: list[str], question: str, max_chunks: int = 3
+    ) -> list[dict[str, Any]]:
         """Определяет наиболее релевантные фрагменты документа для заданного вопроса."""
         if not chunks:
             return []
 
-        tokens = [token for token in re.findall(r"[\w-]+", question.lower()) if len(token) > 3 and token not in QUESTION_STOPWORDS]
+        tokens = [
+            token
+            for token in re.findall(r"[\w-]+", question.lower())
+            if len(token) > 3 and token not in QUESTION_STOPWORDS
+        ]
         if not tokens:
-            tokens = [token for token in re.findall(r"[\w-]+", question.lower()) if token not in QUESTION_STOPWORDS]
+            tokens = [
+                token
+                for token in re.findall(r"[\w-]+", question.lower())
+                if token not in QUESTION_STOPWORDS
+            ]
         if not tokens:
             tokens = [token for token in re.findall(r"[\w-]+", question.lower())]
 
@@ -223,20 +247,18 @@ class DocumentChat(DocumentProcessor):
         scored_chunks.sort(key=lambda item: item[0], reverse=True)
         selected = []
         for score, index, chunk in scored_chunks[:max_chunks]:
-            selected.append({
-                "index": index,
-                "score": float(score),
-                "text": chunk
-            })
+            selected.append({"index": index, "score": float(score), "text": chunk})
         return selected
 
-    def _find_relevant_fragments(self, document_text: str, question: str, answer: str) -> List[Dict[str, Any]]:
+    def _find_relevant_fragments(
+        self, document_text: str, question: str, answer: str
+    ) -> list[dict[str, Any]]:
         """Найти релевантные фрагменты документа"""
         fragments = []
 
         # Простой поиск ключевых слов из вопроса в документе
         question_words = set(question.lower().split())
-        sentences = document_text.split('.')
+        sentences = document_text.split(".")
 
         for i, sentence in enumerate(sentences):
             sentence = sentence.strip()
@@ -248,34 +270,36 @@ class DocumentChat(DocumentProcessor):
             # Проверяем пересечение слов
             overlap = len(question_words & sentence_words)
             if overlap >= 2:  # Минимум 2 совпадения
-                fragments.append({
-                    "text": sentence,
-                    "position": i,
-                    "relevance_score": overlap / len(question_words),
-                    "context": self._get_sentence_context(sentences, i)
-                })
+                fragments.append(
+                    {
+                        "text": sentence,
+                        "position": i,
+                        "relevance_score": overlap / len(question_words),
+                        "context": self._get_sentence_context(sentences, i),
+                    }
+                )
 
         # Сортируем по релевантности
         fragments.sort(key=lambda x: x["relevance_score"], reverse=True)
 
         return fragments[:5]  # Возвращаем топ 5 фрагментов
 
-    def _get_sentence_context(self, sentences: List[str], index: int, context_size: int = 1) -> str:
+    def _get_sentence_context(self, sentences: list[str], index: int, context_size: int = 1) -> str:
         """Получить контекст вокруг предложения"""
         start = max(0, index - context_size)
         end = min(len(sentences), index + context_size + 1)
 
         context_sentences = sentences[start:end]
-        return '. '.join(s.strip() for s in context_sentences if s.strip())
+        return ". ".join(s.strip() for s in context_sentences if s.strip())
 
-    def get_loaded_documents(self) -> List[Dict[str, Any]]:
+    def get_loaded_documents(self) -> list[dict[str, Any]]:
         """Получить список всех загруженных документов"""
         return [
             {
                 "document_id": doc_id,
                 "file_path": doc_data["file_path"],
                 "loaded_at": doc_data["loaded_at"].isoformat(),
-                "word_count": doc_data["metadata"]["word_count"]
+                "word_count": doc_data["metadata"]["word_count"],
             }
             for doc_id, doc_data in self.loaded_documents.items()
         ]

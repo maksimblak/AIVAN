@@ -1,4 +1,4 @@
-﻿"""
+"""
 UI компоненты для Telegram бота ИИ-Иван
 Содержит клавиатуры, эмодзи, шаблоны сообщений
 """
@@ -8,6 +8,7 @@ from __future__ import annotations
 # Callback классы больше не нужны без inline клавиатур
 
 # ============ ЭМОДЗИ КОНСТАНТЫ ============
+
 
 class Emoji:
     """Коллекция эмодзи для интерфейса"""
@@ -61,17 +62,22 @@ class Emoji:
     CLOCK = "🕐"
     CALENDAR = "📅"
 
+
 # ============ ЦВЕТОВЫЕ СХЕМЫ ============
+
 
 class Colors:
     """Цвета для форматирования (не используются напрямую в Telegram, но для документации)"""
-    PRIMARY = "#2196F3"    # Синий
-    SUCCESS = "#4CAF50"    # Зеленый
-    WARNING = "#FF9800"    # Оранжевый
-    ERROR = "#F44336"      # Красный
-    INFO = "#00BCD4"       # Голубой
+
+    PRIMARY = "#2196F3"  # Синий
+    SUCCESS = "#4CAF50"  # Зеленый
+    WARNING = "#FF9800"  # Оранжевый
+    ERROR = "#F44336"  # Красный
+    INFO = "#00BCD4"  # Голубой
+
 
 # ============ ШАБЛОНЫ СООБЩЕНИЙ ============
+
 
 class MessageTemplates:
     """Шаблоны сообщений с красивым форматированием"""
@@ -113,7 +119,7 @@ class MessageTemplates:
         f"{Emoji.SEARCH} Анализирую ваш вопрос...",
         f"{Emoji.LOADING} Ищу релевантную судебную практику...",
         f"{Emoji.DOCUMENT} Формирую структурированный ответ...",
-        f"{Emoji.MAGIC} Финализирую рекомендации..."
+        f"{Emoji.MAGIC} Финализирую рекомендации...",
     ]
 
     ERROR_GENERIC = f"""{Emoji.ERROR} **Произошла ошибка**
@@ -129,6 +135,7 @@ class MessageTemplates:
 
 Пожалуйста, отправьте текст юридического вопроса\\."""
 
+
 # ============ КЛАВИАТУРЫ УБРАНЫ ============
 # Все inline клавиатуры удалены по запросу пользователя
 
@@ -139,81 +146,107 @@ LEGAL_CATEGORIES = {
         "name": "Гражданское право",
         "emoji": Emoji.CIVIL,
         "description": "Имущественные и личные неимущественные отношения",
-        "examples": ["Договоры", "Собственность", "Обязательства", "Деликты"]
+        "examples": ["Договоры", "Собственность", "Обязательства", "Деликты"],
     },
     "corporate": {
         "name": "Корпоративное право",
         "emoji": Emoji.CORPORATE,
         "description": "Создание и деятельность юридических лиц",
-        "examples": ["Учреждение ООО", "Корпоративные споры", "Реорганизация", "M&A"]
+        "examples": ["Учреждение ООО", "Корпоративные споры", "Реорганизация", "M&A"],
     },
     "contract": {
         "name": "Договорное право",
         "emoji": Emoji.CONTRACT,
         "description": "Заключение, исполнение и расторжение договоров",
-        "examples": ["Поставка", "Подряд", "Аренда", "Займ"]
+        "examples": ["Поставка", "Подряд", "Аренда", "Займ"],
     },
     "labor": {
         "name": "Трудовое право",
         "emoji": Emoji.LABOR,
         "description": "Трудовые отношения и социальная защита",
-        "examples": ["Увольнение", "Зарплата", "Отпуска", "Дисциплина"]
+        "examples": ["Увольнение", "Зарплата", "Отпуска", "Дисциплина"],
     },
     "tax": {
         "name": "Налоговое право",
         "emoji": Emoji.TAX,
         "description": "Налогообложение и взаимодействие с ФНС",
-        "examples": ["НДС", "Налог на прибыль", "НДФЛ", "Проверки"]
+        "examples": ["НДС", "Налог на прибыль", "НДФЛ", "Проверки"],
     },
     "real_estate": {
         "name": "Право недвижимости",
         "emoji": Emoji.REAL_ESTATE,
         "description": "Сделки с недвижимостью и земельными участками",
-        "examples": ["Купля-продажа", "Аренда", "Ипотека", "Кадастр"]
+        "examples": ["Купля-продажа", "Аренда", "Ипотека", "Кадастр"],
     },
     "ip": {
         "name": "Интеллектуальная собственность",
         "emoji": Emoji.IP,
         "description": "Авторские права, товарные знаки, патенты",
-        "examples": ["Регистрация ТЗ", "Авторские права", "Патенты", "Лицензии"]
+        "examples": ["Регистрация ТЗ", "Авторские права", "Патенты", "Лицензии"],
     },
     "admin": {
         "name": "Административное право",
         "emoji": Emoji.ADMIN,
         "description": "Взаимодействие с госорганами и административная ответственность",
-        "examples": ["Лицензирование", "Штрафы", "Госуслуги", "Контроль"]
+        "examples": ["Лицензирование", "Штрафы", "Госуслуги", "Контроль"],
     },
     "criminal": {
         "name": "Уголовное право",
         "emoji": Emoji.CRIMINAL,
         "description": "Преступления и уголовная ответственность",
-        "examples": ["Экономические преступления", "Должностные", "Налоговые", "Защита"]
+        "examples": ["Экономические преступления", "Должностные", "Налоговые", "Защита"],
     },
     "family": {
         "name": "Семейное право",
         "emoji": Emoji.FAMILY,
         "description": "Брак, развод, алименты, опека",
-        "examples": ["Развод", "Алименты", "Раздел имущества", "Опека"]
-    }
+        "examples": ["Развод", "Алименты", "Раздел имущества", "Опека"],
+    },
 }
+
 
 def get_category_info(category_id: str) -> dict:
     """Получить информацию о категории права"""
-    return LEGAL_CATEGORIES.get(category_id, {
-        "name": "Неизвестная категория",
-        "emoji": Emoji.LAW,
-        "description": "Общие правовые вопросы",
-        "examples": []
-    })
+    return LEGAL_CATEGORIES.get(
+        category_id,
+        {
+            "name": "Неизвестная категория",
+            "emoji": Emoji.LAW,
+            "description": "Общие правовые вопросы",
+            "examples": [],
+        },
+    )
+
 
 # ============ ФОРМАТИРОВАНИЕ ============
 
+
 def escape_markdown_v2(text: str) -> str:
     """Экранирует специальные символы для MarkdownV2"""
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    special_chars = [
+        "_",
+        "*",
+        "[",
+        "]",
+        "(",
+        ")",
+        "~",
+        "`",
+        ">",
+        "#",
+        "+",
+        "-",
+        "=",
+        "|",
+        "{",
+        "}",
+        ".",
+        "!",
+    ]
     for char in special_chars:
-        text = text.replace(char, f'\\{char}')
+        text = text.replace(char, f"\\{char}")
     return text
+
 
 def format_legal_response(text: str, category: str | None = None) -> str:
     """Форматирует ответ с красивой разметкой MarkdownV2"""
@@ -224,8 +257,8 @@ def format_legal_response(text: str, category: str | None = None) -> str:
         header = f"{category_info['emoji']} **{escape_markdown_v2(category_info['name'])}**\n\n"
         text = header + text
 
-
     return text
+
 
 def create_progress_message(stage: int, total: int = 4) -> str:
     """Создает сообщение с прогрессом"""
@@ -236,6 +269,7 @@ def create_progress_message(stage: int, total: int = 4) -> str:
     percentage = int((stage / total) * 100)
 
     return f"{MessageTemplates.PROCESSING_STAGES[stage]}\n\n`{progress_bar}` {percentage}%"
+
 
 # ============ HTML ФОРМАТИРОВАНИЕ ДЛЯ STREAMING ============
 
@@ -253,14 +287,15 @@ def _md_links_to_anchors(line: str) -> str:
     last = 0
     for m in pattern.finditer(line):
         # escape non-link part
-        result_parts.append(html_escape(line[last:m.start()]))
+        result_parts.append(html_escape(line[last : m.start()]))
         text = html_escape(m.group(1))
         url = html_escape(m.group(2), quote=True)
         result_parts.append(f'<a href="{url}">{text}</a>')
         last = m.end()
     # tail
     result_parts.append(html_escape(line[last:]))
-    return ''.join(result_parts)
+    return "".join(result_parts)
+
 
 def sanitize_telegram_html(raw: str) -> str:
     """Allow only Telegram-supported HTML tags; escape the rest.
@@ -275,12 +310,18 @@ def sanitize_telegram_html(raw: str) -> str:
     esc = re.sub(r"&lt;br\s*/?&gt;", "<br>", esc, flags=re.IGNORECASE)
     # Restore simple tags exactly
     for tag in ("b", "i", "u", "s", "code", "pre"):
-        esc = re.sub(fr"&lt;{tag}&gt;", fr"<{tag}>", esc, flags=re.IGNORECASE)
-        esc = re.sub(fr"&lt;/{tag}&gt;", fr"</{tag}>", esc, flags=re.IGNORECASE)
+        esc = re.sub(rf"&lt;{tag}&gt;", rf"<{tag}>", esc, flags=re.IGNORECASE)
+        esc = re.sub(rf"&lt;/{tag}&gt;", rf"</{tag}>", esc, flags=re.IGNORECASE)
     # Restore anchors with http(s) only; keep entities like &amp; inside href
-    esc = re.sub(r"&lt;a href=&quot;(https?://[^&quot;]+)&quot;&gt;", r'<a href="\1">', esc, flags=re.IGNORECASE)
+    esc = re.sub(
+        r"&lt;a href=&quot;(https?://[^&quot;]+)&quot;&gt;",
+        r'<a href="\1">',
+        esc,
+        flags=re.IGNORECASE,
+    )
     esc = re.sub(r"&lt;/a&gt;", "</a>", esc, flags=re.IGNORECASE)
     return esc
+
 
 def render_legal_html(raw: str) -> str:
     """Beautify plain model text into simple, safe HTML.
@@ -295,7 +336,7 @@ def render_legal_html(raw: str) -> str:
         return ""
 
     # If looks like HTML from the model, sanitize and keep structure
-    if '<' in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
+    if "<" in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
         return sanitize_telegram_html(raw)
 
     def _auto_paragraph_breaks(text: str) -> str:
@@ -325,12 +366,12 @@ def render_legal_html(raw: str) -> str:
 
         return t
 
-    text = raw.replace('\r\n', '\n').replace('\r', '\n')
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
 
     # Always apply auto paragraph breaks for better structure
     text = _auto_paragraph_breaks(text)
 
-    lines = text.split('\n')
+    lines = text.split("\n")
     out: list[str] = []
 
     prev_was_empty = False
@@ -361,8 +402,9 @@ def render_legal_html(raw: str) -> str:
 
         # Enhanced heading detection (исключаем нумерованные элементы)
         is_heading = (
-            stripped.endswith(":") and not is_numbered_item or
-            stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ"))
+            stripped.endswith(":")
+            and not is_numbered_item
+            or stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ"))
         )
 
         # Special formatting for article references AFTER escaping
@@ -371,10 +413,10 @@ def render_legal_html(raw: str) -> str:
 
         # Check if this line should start a new paragraph
         is_paragraph_start = (
-            is_heading or
-            is_numbered_item or
-            re.match(r"^\s*[-•—]\s+", stripped) or     # Bullet point
-            (i > 0 and lines[i-1].strip() == "")       # After empty line
+            is_heading
+            or is_numbered_item
+            or re.match(r"^\s*[-•—]\s+", stripped)  # Bullet point
+            or (i > 0 and lines[i - 1].strip() == "")  # After empty line
         )
 
         if is_heading:
@@ -387,7 +429,7 @@ def render_legal_html(raw: str) -> str:
             out.append(html_line + "<br>")
 
     # Clean up multiple breaks and ensure proper paragraph separation
-    html_result = ''.join(out)
+    html_result = "".join(out)
 
     # Remove excessive breaks (more than 2 consecutive) but keep paragraph structure
     html_result = re.sub(r"(?:<br>\s*){3,}", "<br><br>", html_result)

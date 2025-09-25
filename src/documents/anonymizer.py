@@ -1,31 +1,36 @@
-﻿"""
+"""
 Модуль обезличивания (анонимизации) документов
 Удаление персональных данных из документов для безопасного обмена
 """
 
 from __future__ import annotations
+
+import logging
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Union, Optional, Set
-import logging
+from typing import Any
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
 
+
 class DocumentAnonymizer(DocumentProcessor):
     """Класс для обезличивания персональных данных в документах"""
 
     def __init__(self):
-        super().__init__(
-            name="DocumentAnonymizer",
-            max_file_size=50 * 1024 * 1024
-        )
-        self.supported_formats = ['.pdf', '.docx', '.doc', '.txt']
-        self.anonymization_map: Dict[str, str] = {}
+        super().__init__(name="DocumentAnonymizer", max_file_size=50 * 1024 * 1024)
+        self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
+        self.anonymization_map: dict[str, str] = {}
 
-    async def process(self, file_path: Union[str, Path], anonymization_mode: str = "replace", exclude_types: Optional[List[str]] = None, **kwargs) -> DocumentResult:
+    async def process(
+        self,
+        file_path: str | Path,
+        anonymization_mode: str = "replace",
+        exclude_types: list[str] | None = None,
+        **kwargs,
+    ) -> DocumentResult:
         """
         Обезличивание документа
 
@@ -47,7 +52,9 @@ class DocumentAnonymizer(DocumentProcessor):
         exclude_set = {item.lower() for item in (exclude_types or [])}
 
         # Обезличиваем текст
-        anonymized_text, report = self._anonymize_text(cleaned_text, anonymization_mode, exclude_set)
+        anonymized_text, report = self._anonymize_text(
+            cleaned_text, anonymization_mode, exclude_set
+        )
         report["excluded_types"] = sorted(exclude_set) if exclude_set else []
 
         result_data = {
@@ -55,24 +62,27 @@ class DocumentAnonymizer(DocumentProcessor):
             "anonymization_report": report,
             "anonymization_map": self.anonymization_map.copy(),
             "original_file": str(file_path),
-            "mode": anonymization_mode
+            "mode": anonymization_mode,
         }
 
         return DocumentResult.success_result(
-            data=result_data,
-            message="Обезличивание документа успешно завершено"
+            data=result_data, message="Обезличивание документа успешно завершено"
         )
 
-    def _anonymize_text(self, text: str, mode: str, exclude: Optional[Set[str]] = None) -> tuple[str, Dict[str, Any]]:
+    def _anonymize_text(
+        self, text: str, mode: str, exclude: set[str] | None = None
+    ) -> tuple[str, dict[str, Any]]:
         """Основная функция обезличивания"""
         anonymized_text = text
-        report: Dict[str, Any] = {"processed_items": [], "statistics": {}}
+        report: dict[str, Any] = {"processed_items": [], "statistics": {}}
         exclude_set = {item.lower() for item in (exclude or set())}
 
         def _should_process(kind: str) -> bool:
             return kind not in exclude_set
 
-        names_count = phones_count = emails_count = addresses_count = documents_count = bank_details_count = 0
+        names_count = phones_count = emails_count = addresses_count = documents_count = (
+            bank_details_count
+        ) = 0
 
         if _should_process("names"):
             anonymized_text, names_count = self._anonymize_names(anonymized_text, mode)
@@ -85,7 +95,9 @@ class DocumentAnonymizer(DocumentProcessor):
         if _should_process("documents"):
             anonymized_text, documents_count = self._anonymize_documents(anonymized_text, mode)
         if _should_process("bank_details"):
-            anonymized_text, bank_details_count = self._anonymize_bank_details(anonymized_text, mode)
+            anonymized_text, bank_details_count = self._anonymize_bank_details(
+                anonymized_text, mode
+            )
 
         report["statistics"] = {
             "names": names_count,
@@ -93,7 +105,7 @@ class DocumentAnonymizer(DocumentProcessor):
             "emails": emails_count,
             "addresses": addresses_count,
             "documents": documents_count,
-            "bank_details": bank_details_count
+            "bank_details": bank_details_count,
         }
 
         return anonymized_text, report
@@ -101,7 +113,7 @@ class DocumentAnonymizer(DocumentProcessor):
     def _anonymize_names(self, text: str, mode: str) -> tuple[str, int]:
         """Обезличивание ФИО"""
         # Простой паттерн для русских имен
-        name_pattern = r'\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b'
+        name_pattern = r"\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b"
         matches = re.findall(name_pattern, text)
 
         count = 0
@@ -115,10 +127,10 @@ class DocumentAnonymizer(DocumentProcessor):
     def _anonymize_phones(self, text: str, mode: str) -> tuple[str, int]:
         """Обезличивание номеров телефонов"""
         phone_patterns = [
-            r'\+7\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2}',
-            r'\+7\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2}',
-            r'8\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2}',
-            r'8\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2}',
+            r"\+7\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2}",
+            r"\+7\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2}",
+            r"8\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2}",
+            r"8\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2}",
         ]
 
         count = 0
@@ -133,7 +145,7 @@ class DocumentAnonymizer(DocumentProcessor):
 
     def _anonymize_emails(self, text: str, mode: str) -> tuple[str, int]:
         """Обезличивание email адресов"""
-        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        email_pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
         matches = re.findall(email_pattern, text)
 
         count = 0
@@ -148,10 +160,10 @@ class DocumentAnonymizer(DocumentProcessor):
         """Обезличивание адресов"""
         # Простые паттерны для адресов
         address_patterns = [
-            r'г\.\s*[А-ЯЁ][а-яё]+',  # г. Москва
-            r'ул\.\s*[А-ЯЁ][а-яё\s]+',  # ул. Ленина
-            r'д\.\s*\d+',  # д. 10
-            r'\d{6}',  # почтовый индекс
+            r"г\.\s*[А-ЯЁ][а-яё]+",  # г. Москва
+            r"ул\.\s*[А-ЯЁ][а-яё\s]+",  # ул. Ленина
+            r"д\.\s*\d+",  # д. 10
+            r"\d{6}",  # почтовый индекс
         ]
 
         count = 0
@@ -167,9 +179,9 @@ class DocumentAnonymizer(DocumentProcessor):
     def _anonymize_documents(self, text: str, mode: str) -> tuple[str, int]:
         """Обезличивание номеров документов"""
         doc_patterns = [
-            r'\b\d{4}\s*\d{6}\b',  # паспорт
-            r'\b\d{11}\b',  # СНИЛС
-            r'\b\d{10,12}\b',  # ИНН
+            r"\b\d{4}\s*\d{6}\b",  # паспорт
+            r"\b\d{11}\b",  # СНИЛС
+            r"\b\d{10,12}\b",  # ИНН
         ]
 
         count = 0
@@ -185,8 +197,8 @@ class DocumentAnonymizer(DocumentProcessor):
     def _anonymize_bank_details(self, text: str, mode: str) -> tuple[str, int]:
         """Обезличивание банковских реквизитов"""
         bank_patterns = [
-            r'\b\d{20}\b',  # расчетный счет
-            r'\b\d{9}\b',   # БИК
+            r"\b\d{20}\b",  # расчетный счет
+            r"\b\d{9}\b",  # БИК
         ]
 
         count = 0
@@ -209,17 +221,29 @@ class DocumentAnonymizer(DocumentProcessor):
         elif mode == "mask":
             replacement = "*" * len(original)
         else:  # replace mode
-            if data_type not in ["Лицо", "Организация", "Email", "Телефон", "Адрес", "Документ", "БанкРеквизит"]:
+            if data_type not in [
+                "Лицо",
+                "Организация",
+                "Email",
+                "Телефон",
+                "Адрес",
+                "Документ",
+                "БанкРеквизит",
+            ]:
                 data_type = "Данные"
 
             # Считаем количество уже замененных элементов этого типа
-            existing_count = sum(1 for v in self.anonymization_map.values() if v.startswith(data_type))
+            existing_count = sum(
+                1 for v in self.anonymization_map.values() if v.startswith(data_type)
+            )
             replacement = f"[{data_type}-{existing_count + 1}]"
 
         self.anonymization_map[original] = replacement
         return replacement
 
-    def restore_data(self, anonymized_text: str, restoration_key: Optional[Dict[str, str]] = None) -> str:
+    def restore_data(
+        self, anonymized_text: str, restoration_key: dict[str, str] | None = None
+    ) -> str:
         """Восстановление данных из обезличенного текста"""
         if not restoration_key:
             restoration_key = {v: k for k, v in self.anonymization_map.items()}

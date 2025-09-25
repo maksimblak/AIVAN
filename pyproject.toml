@@ -1,4 +1,4 @@
-﻿[tool.poetry]
+[tool.poetry]
 name = "telegram-legal-bot"
 version = "0.1.0"
 description = "Telegram bot for legal consultations powered by OpenAI GPT"
