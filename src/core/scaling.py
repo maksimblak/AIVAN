@@ -1,4 +1,4 @@
-"""
+﻿"""
 Компоненты для horizontal scaling и load balancing
 """
 
