@@ -9,6 +9,8 @@ import asyncio
 import logging
 import os
 import time
+import tempfile
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -45,6 +47,7 @@ from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
 from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, escape_markdown_v2
+from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db import Database
 from src.core.exceptions import (
@@ -104,6 +107,7 @@ db: Database | DatabaseAdvanced | None = None
 rate_limiter: RateLimiter | None = None
 access_service: AccessService | None = None
 openai_service: OpenAIService | None = None
+audio_service: AudioService | None = None
 session_store: SessionStore | None = None
 crypto_provider: CryptoPayProvider | None = None
 error_handler: ErrorHandler | None = None
@@ -579,7 +583,7 @@ async def cmd_start(message: Message):
 # ============ ОБРАБОТКА ВОПРОСОВ ============
 
 
-async def process_question(message: Message):
+async def process_question(message: Message, *, text_override: str | None = None):
     """Главный обработчик юридических вопросов"""
     if not message.from_user:
         return
@@ -594,7 +598,7 @@ async def process_question(message: Message):
     )
 
     user_session = get_user_session(user_id)
-    question_text = (message.text or "").strip()
+    question_text = ((text_override if text_override is not None else (message.text or ""))).strip()
     quota_msg_to_send: str | None = None
 
     # Проверяем, не ждем ли мы комментарий для рейтинга
@@ -602,7 +606,7 @@ async def process_question(message: Message):
         user_session.pending_feedback_request_id = None
 
     if user_session.pending_feedback_request_id is not None:
-        await handle_pending_feedback(message, user_session)
+        await handle_pending_feedback(message, user_session, question_text)
         return
     quota_is_trial: bool = False
 
@@ -818,6 +822,100 @@ async def process_question(message: Message):
             await send_rating_request(message, request_id)
 
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
+        return result.get("text", "")
+
+async def _download_voice_to_temp(message: Message) -> Path:
+    """Download Telegram voice message into a temporary file."""
+    if not message.bot:
+        raise RuntimeError("Bot instance is not available for voice download")
+    if not message.voice:
+        raise RuntimeError("Voice payload is missing")
+
+    file_info = await message.bot.get_file(message.voice.file_id)
+    file_path = file_info.file_path
+    if not file_path:
+        raise RuntimeError("Telegram did not return a file path for the voice message")
+
+    temp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+
+    file_stream = await message.bot.download_file(file_path)
+    try:
+        temp_path.write_bytes(file_stream.read())
+    finally:
+        close_method = getattr(file_stream, "close", None)
+        if callable(close_method):
+            close_method()
+
+    return temp_path
+
+
+async def process_voice_message(message: Message):
+    """Handle incoming Telegram voice messages via STT -> processing -> TTS."""
+    if not message.voice:
+        return
+
+    if audio_service is None or not config.voice_mode_enabled:
+        await message.answer("Voice mode is currently unavailable. Please send text.")
+        return
+
+    if not message.bot:
+        await message.answer("Unable to access bot context for processing the voice message.")
+        return
+
+    temp_voice_path: Path | None = None
+    tts_path: Path | None = None
+
+    try:
+        await audio_service.ensure_short_enough(message.voice.duration)
+
+        temp_voice_path = await _download_voice_to_temp(message)
+        transcript = await audio_service.transcribe(temp_voice_path)
+
+        preview = html_escape(transcript[:500])
+        if len(transcript) > 500:
+            preview += "..."
+        await message.answer(
+            f"{Emoji.ROBOT} Recognized: <i>{preview}</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        response_text = await process_question(message, text_override=transcript)
+        if not response_text:
+            return
+
+        try:
+            tts_path = await audio_service.synthesize(response_text)
+        except Exception as tts_error:
+            logger.warning("Text-to-speech failed: %s", tts_error)
+            return
+
+        await message.answer_voice(
+            FSInputFile(tts_path),
+            caption=f"{Emoji.ROBOT} Voice reply",
+        )
+
+    except ValueError as duration_error:
+        logger.warning("Voice message duration exceeded: %s", duration_error)
+        await message.answer(
+            f"{Emoji.WARNING} Voice message is too long. Maximum duration is {audio_service.max_duration_seconds} seconds.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.exception("Failed to process voice message: %s", exc)
+        await message.answer(
+            f"{Emoji.ERROR} Could not process the voice message. Please try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+    finally:
+        with suppress(Exception):
+            if temp_voice_path:
+                temp_voice_path.unlink()
+        with suppress(Exception):
+            if tts_path:
+                tts_path.unlink()
+
 
     except Exception as e:
         # Обрабатываем все исключения через централизованный обработчик
@@ -1089,14 +1187,15 @@ async def cmd_mystats(message: Message):
 # ============ СИСТЕМА РЕЙТИНГА ============
 
 
-async def handle_pending_feedback(message: Message, user_session: UserSession):
+async def handle_pending_feedback(message: Message, user_session: UserSession, text_override: str | None = None):
     """Обработка текстового комментария для рейтинга"""
-    if not message.text or not user_session.pending_feedback_request_id:
+    feedback_source = text_override if text_override is not None else (message.text or "")
+    if not feedback_source or not user_session.pending_feedback_request_id:
         return
 
     request_id = user_session.pending_feedback_request_id
     user_id = message.from_user.id
-    feedback_text = message.text.strip()
+    feedback_text = feedback_source.strip()
 
     # Очищаем pending состояние
     user_session.pending_feedback_request_id = None
@@ -1822,6 +1921,22 @@ async def main():
     openai_service = OpenAIService(
         cache=response_cache, enable_cache=False  # Временно отключаем кеш для тестирования
     )
+    if config.voice_mode_enabled:
+        audio_service = AudioService(
+            stt_model=config.voice_stt_model,
+            tts_model=config.voice_tts_model,
+            tts_voice=config.voice_tts_voice,
+            tts_format=config.voice_tts_format,
+            max_duration_seconds=config.voice_max_duration_seconds,
+        )
+        logger.info("Voice mode enabled (stt=%s, tts=%s, voice=%s, format=%s)",
+                    config.voice_stt_model,
+                    config.voice_tts_model,
+                    config.voice_tts_voice,
+                    config.voice_tts_format)
+    else:
+        audio_service = None
+        logger.info("Voice mode disabled")
     session_store = SessionStore(max_size=USER_SESSIONS_MAX, ttl_seconds=USER_SESSION_TTL_SECONDS)
     crypto_provider = CryptoPayProvider(asset=os.getenv("CRYPTO_ASSET", "USDT"))
     error_handler = ErrorHandler(logger=logger)
@@ -1973,6 +2088,9 @@ async def main():
     dp.message.register(
         handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
     )
+
+    if config.voice_mode_enabled:
+        dp.message.register(process_voice_message, F.voice)
 
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)

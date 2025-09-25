@@ -68,6 +68,13 @@ class Config:
     rate_limit_window_seconds: int
     rub_per_xtr: float | None
 
+    voice_mode_enabled: bool
+    voice_stt_model: str
+    voice_tts_model: str
+    voice_tts_voice: str
+    voice_tts_format: str
+    voice_max_duration_seconds: int
+
 
 _cached_config: Config | None = None
 
@@ -106,6 +113,12 @@ def load_config() -> Config:
         rate_limit_requests=_parse_int(os.getenv("RATE_LIMIT_REQUESTS", "10"), 10),
         rate_limit_window_seconds=_parse_int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"), 60),
         rub_per_xtr=_parse_float(os.getenv("RUB_PER_XTR")),
+        voice_mode_enabled=_bool(os.getenv("ENABLE_VOICE_MODE", "0"), False),
+        voice_stt_model=os.getenv("VOICE_STT_MODEL", "gpt-4o-mini-transcribe"),
+        voice_tts_model=os.getenv("VOICE_TTS_MODEL", "gpt-4o-mini-tts"),
+        voice_tts_voice=os.getenv("VOICE_TTS_VOICE", "alloy"),
+        voice_tts_format=os.getenv("VOICE_TTS_FORMAT", "ogg"),
+        voice_max_duration_seconds=_parse_int(os.getenv("VOICE_MAX_DURATION_SECONDS", "120"), 120),
     )
 
     _cached_config = cfg
