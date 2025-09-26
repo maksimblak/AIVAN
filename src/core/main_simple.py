@@ -11,6 +11,8 @@ import os
 import time
 import tempfile
 from contextlib import suppress
+import tempfile
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,6 +49,7 @@ from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
 from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, escape_markdown_v2
+from src.core.audio_service import AudioService
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db import Database
@@ -824,99 +827,6 @@ async def process_question(message: Message, *, text_override: str | None = None
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         return result.get("text", "")
 
-async def _download_voice_to_temp(message: Message) -> Path:
-    """Download Telegram voice message into a temporary file."""
-    if not message.bot:
-        raise RuntimeError("Bot instance is not available for voice download")
-    if not message.voice:
-        raise RuntimeError("Voice payload is missing")
-
-    file_info = await message.bot.get_file(message.voice.file_id)
-    file_path = file_info.file_path
-    if not file_path:
-        raise RuntimeError("Telegram did not return a file path for the voice message")
-
-    temp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
-    temp_path = Path(temp.name)
-    temp.close()
-
-    file_stream = await message.bot.download_file(file_path)
-    try:
-        temp_path.write_bytes(file_stream.read())
-    finally:
-        close_method = getattr(file_stream, "close", None)
-        if callable(close_method):
-            close_method()
-
-    return temp_path
-
-
-async def process_voice_message(message: Message):
-    """Handle incoming Telegram voice messages via STT -> processing -> TTS."""
-    if not message.voice:
-        return
-
-    if audio_service is None or not config.voice_mode_enabled:
-        await message.answer("Voice mode is currently unavailable. Please send text.")
-        return
-
-    if not message.bot:
-        await message.answer("Unable to access bot context for processing the voice message.")
-        return
-
-    temp_voice_path: Path | None = None
-    tts_path: Path | None = None
-
-    try:
-        await audio_service.ensure_short_enough(message.voice.duration)
-
-        temp_voice_path = await _download_voice_to_temp(message)
-        transcript = await audio_service.transcribe(temp_voice_path)
-
-        preview = html_escape(transcript[:500])
-        if len(transcript) > 500:
-            preview += "..."
-        await message.answer(
-            f"{Emoji.ROBOT} Recognized: <i>{preview}</i>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        response_text = await process_question(message, text_override=transcript)
-        if not response_text:
-            return
-
-        try:
-            tts_path = await audio_service.synthesize(response_text)
-        except Exception as tts_error:
-            logger.warning("Text-to-speech failed: %s", tts_error)
-            return
-
-        await message.answer_voice(
-            FSInputFile(tts_path),
-            caption=f"{Emoji.ROBOT} Voice reply",
-        )
-
-    except ValueError as duration_error:
-        logger.warning("Voice message duration exceeded: %s", duration_error)
-        await message.answer(
-            f"{Emoji.WARNING} Voice message is too long. Maximum duration is {audio_service.max_duration_seconds} seconds.",
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception as exc:
-        logger.exception("Failed to process voice message: %s", exc)
-        await message.answer(
-            f"{Emoji.ERROR} Could not process the voice message. Please try again later.",
-            parse_mode=ParseMode.HTML,
-        )
-    finally:
-        with suppress(Exception):
-            if temp_voice_path:
-                temp_voice_path.unlink()
-        with suppress(Exception):
-            if tts_path:
-                tts_path.unlink()
-
-
     except Exception as e:
         # Обрабатываем все исключения через централизованный обработчик
         if error_handler is not None:
@@ -1182,6 +1092,99 @@ async def cmd_mystats(message: Message):
     except Exception as e:
         logger.error(f"Error in cmd_mystats: {e}")
         await message.answer("❌ Ошибка получения статистики. Попробуйте позже.")
+
+
+async def _download_voice_to_temp(message: Message) -> Path:
+    """Download Telegram voice message into a temporary file."""
+    if not message.bot:
+        raise RuntimeError("Bot instance is not available for voice download")
+    if not message.voice:
+        raise RuntimeError("Voice payload is missing")
+
+    file_info = await message.bot.get_file(message.voice.file_id)
+    file_path = file_info.file_path
+    if not file_path:
+        raise RuntimeError("Telegram did not return a file path for the voice message")
+
+    temp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+
+    file_stream = await message.bot.download_file(file_path)
+    try:
+        temp_path.write_bytes(file_stream.read())
+    finally:
+        close_method = getattr(file_stream, "close", None)
+        if callable(close_method):
+            close_method()
+
+    return temp_path
+
+
+async def process_voice_message(message: Message):
+    """Handle incoming Telegram voice messages via STT -> processing -> TTS."""
+    if not message.voice:
+        return
+
+    if audio_service is None or not config.voice_mode_enabled:
+        await message.answer("Voice mode is currently unavailable. Please send text.")
+        return
+
+    if not message.bot:
+        await message.answer("Unable to access bot context for processing the voice message.")
+        return
+
+    temp_voice_path: Path | None = None
+    tts_path: Path | None = None
+
+    try:
+        await audio_service.ensure_short_enough(message.voice.duration)
+
+        temp_voice_path = await _download_voice_to_temp(message)
+        transcript = await audio_service.transcribe(temp_voice_path)
+
+        preview = html_escape(transcript[:500])
+        if len(transcript) > 500:
+            preview += "..."
+        await message.answer(
+            f"{Emoji.ROBOT} Recognized: <i>{preview}</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        response_text = await process_question(message, text_override=transcript)
+        if not response_text:
+            return
+
+        try:
+            tts_path = await audio_service.synthesize(response_text)
+        except Exception as tts_error:
+            logger.warning("Text-to-speech failed: %s", tts_error)
+            return
+
+        await message.answer_voice(
+            FSInputFile(tts_path),
+            caption=f"{Emoji.ROBOT} Voice reply",
+        )
+
+    except ValueError as duration_error:
+        logger.warning("Voice message duration exceeded: %s", duration_error)
+        await message.answer(
+            f"{Emoji.WARNING} Voice message is too long. Maximum duration is {audio_service.max_duration_seconds} seconds.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.exception("Failed to process voice message: %s", exc)
+        await message.answer(
+            f"{Emoji.ERROR} Could not process the voice message. Please try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+    finally:
+        with suppress(Exception):
+            if temp_voice_path:
+                temp_voice_path.unlink()
+        with suppress(Exception):
+            if tts_path:
+                tts_path.unlink()
 
 
 # ============ СИСТЕМА РЕЙТИНГА ============
@@ -1876,7 +1879,7 @@ async def main():
     logger.info("🚀 Starting AI-Ivan (simple)")
 
     # Инициализация глобальных переменных
-    global db, openai_service, rate_limiter, access_service, session_store, crypto_provider, error_handler, document_manager
+    global db, openai_service, audio_service, rate_limiter, access_service, session_store, crypto_provider, error_handler, document_manager
 
     # Выбираем тип базы данных
     use_advanced_db = os.getenv("USE_ADVANCED_DB", "1") == "1"
