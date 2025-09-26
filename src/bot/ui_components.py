@@ -363,6 +363,8 @@ def render_legal_html(raw: str) -> str:
 
         # Break long sentences with semicolons into separate lines
         t = re.sub(r";\s+(?=и\s+\d+\))", ";\n— ", t)
+        # Ensure text resumes on a new paragraph after closed parentheses or references
+        t = re.sub(r'(?<=\))(?=[A-Z\u0410-\u042f\u0401])', '\n\n', t)
 
         return t
 
@@ -394,6 +396,8 @@ def render_legal_html(raw: str) -> str:
 
         # Transform md links and escape other parts FIRST
         html_line = _md_links_to_anchors(line)
+        html_line = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', html_line)
+        html_line = re.sub(r'_(?!\s)([^_]+?)_(?!\s)', r'<i>\1</i>', html_line)
 
         # Check if this is a numbered list item
         is_numbered_item = re.match(r"^\s*\d+[\.)]\s+", stripped)
