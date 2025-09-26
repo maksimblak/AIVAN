@@ -6,65 +6,157 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from datetime import datetime
+from time import monotonic
 from html import escape as html_escape
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
 from .ui_components import Emoji
 
 
 class ProgressStatus:
+    PROGRESS_FLOW = [
+        {"label": "Анализирую ваш запрос", "progress": 1},
+        {"label": "Ищу законы и нормы права", "progress": 2},
+        {"label": "Изучаю позицию высших судов", "progress": 3},
+        {"label": "Формирую правовую позицию", "progress": 4},
+        {"label": "Разрабатываю аргументацию", "progress": 5},
+        {"label": "Проверяю точность и полноту", "progress": 6},
+        {"label": "Формирую ответ", "progress": 7},
+    ]
+
     """Класс для управления статусом обработки запроса"""
 
-    def __init__(self, bot: Bot, chat_id: int):
+    def __init__(
+        self,
+        bot: Bot,
+        chat_id: int,
+        *,
+        auto_interval: float = 1.8,
+        manual_hold: float = 2.5,
+    ):
         self.bot = bot
         self.chat_id = chat_id
         self.status_message: Message | None = None
         self.current_stage = 0
-        self.total_stages = 4
+        self.total_stages = len(self.PROGRESS_FLOW)
+        self.flow_index = -1
+        self._auto_interval = auto_interval
+        self._manual_hold_seconds = manual_hold
+        self._manual_hold_until = 0.0
+        self._auto_task: asyncio.Task | None = None
+        self._stop_event: asyncio.Event | None = None
 
-    async def start(self, initial_message: str = None) -> Message:
-        """Запускает показ статуса"""
+    async def start(
+        self,
+        initial_message: str | None = None,
+        *,
+        auto_cycle: bool = True,
+        interval: float | None = None,
+    ) -> Message:
+        """Запускает показ статуса и при необходимости цикл обновлений"""
         if not initial_message:
             initial_message = (
-                f"{Emoji.LOADING} **Обрабатываю ваш запрос\\.\\.\\.** \n\n_Пожалуйста, подождите_"
+                f"{Emoji.LOADING} **Обрабатываю ваш запрос\.\.\.** \n\n_Пожалуйста, подождите_"
             )
 
         formatted = self._format_status_text(initial_message)
-        self.status_message = await self.bot.send_message(
-            self.chat_id, formatted, parse_mode=ParseMode.HTML
-        )
+        try:
+            self.status_message = await self.bot.send_message(
+                self.chat_id, formatted, parse_mode=ParseMode.HTML
+            )
+        except TelegramBadRequest:
+            self.status_message = await self.bot.send_message(
+                self.chat_id, initial_message
+            )
+
+        if auto_cycle:
+            if interval is not None:
+                self._auto_interval = max(0.5, float(interval))
+            self._start_auto_cycle()
+
         return self.status_message
 
-    def _format_status_text(self, text: str, progress_bar: str | None = None, percentage: int | None = None) -> str:
-        safe = html_escape(text).replace('\n', '<br>')
+    def _start_auto_cycle(self) -> None:
+        if self._auto_task is not None or self.status_message is None:
+            return
+        self._manual_hold_until = monotonic() + self._manual_hold_seconds
+        self._stop_event = asyncio.Event()
+        self._auto_task = asyncio.create_task(self._auto_cycle_loop())
+
+    async def _auto_cycle_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._auto_interval)
+                if self._stop_event and self._stop_event.is_set():
+                    break
+                if monotonic() < self._manual_hold_until:
+                    continue
+                await self.advance()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._auto_task = None
+
+    async def advance(self) -> None:
+        if not self.status_message:
+            return
+        self.flow_index = (self.flow_index + 1) % len(self.PROGRESS_FLOW)
+        flow = self.PROGRESS_FLOW[self.flow_index]
+        stage = min(flow["progress"], self.total_stages)
+        message = flow["label"]
+        await self.update_stage(stage, message, auto=True)
+
+    def _format_status_text(
+        self,
+        text: str,
+        progress_bar: str | None = None,
+        percentage: int | None = None,
+    ) -> str:
+        safe = html_escape(text).replace("\n", "<br>")
         if progress_bar is not None and percentage is not None:
             bar = html_escape(progress_bar)
-            safe += f'<br><br><code>{bar}</code> {percentage}%'
+            safe += f"<br><br><code>{bar}</code> {percentage}%"
         return safe
 
-    async def update_stage(self, stage: int, message: str):
+    async def update_stage(self, stage: int, message: str, *, auto: bool = False) -> None:
         """Обновляет текущую стадию обработки"""
         if not self.status_message:
             return
 
+        stage = max(0, min(stage, self.total_stages))
         self.current_stage = stage
         progress_bar = self._create_progress_bar(stage, self.total_stages)
-        percentage = int((stage / self.total_stages) * 100)
+        percentage = int((stage / self.total_stages) * 100) if self.total_stages else 0
 
         status_text = self._format_status_text(message, progress_bar, percentage)
 
         try:
             await self.status_message.edit_text(status_text, parse_mode=ParseMode.HTML)
         except Exception:
-            # Игнорируем ошибки редактирования (слишком частые обновления)
             pass
 
-    async def complete(self):
+        if not auto:
+            self._manual_hold_until = monotonic() + self._manual_hold_seconds
+            if stage > 0:
+                self.flow_index = min(stage - 1, len(self.PROGRESS_FLOW) - 1)
+            else:
+                self.flow_index = -1
+
+    async def complete(self) -> None:
         """Завершает показ статуса"""
+        if self._stop_event:
+            self._stop_event.set()
+        if self._auto_task:
+            self._auto_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._auto_task
+            self._auto_task = None
         if self.status_message:
             try:
                 await self.status_message.delete()
@@ -74,8 +166,10 @@ class ProgressStatus:
 
     def _create_progress_bar(self, current: int, total: int, width: int = 10) -> str:
         """Создает ASCII прогресс-бар"""
+        if total <= 0:
+            total = 1
         filled = int((current / total) * width)
-        empty = width - filled
+        empty = max(0, width - filled)
         return "▓" * filled + "░" * empty
 
 
