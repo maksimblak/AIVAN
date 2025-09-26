@@ -11,6 +11,7 @@ import os
 import time
 import tempfile
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -74,6 +75,38 @@ setup_logging()
 logger = logging.getLogger("ai-ivan.simple")
 
 config = load_config()
+
+@dataclass(frozen=True)
+class WelcomeMedia:
+    path: Path
+    media_type: str
+
+
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
+ANIMATION_EXTENSIONS = {".gif"}
+PHOTO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _discover_welcome_media() -> WelcomeMedia | None:
+    try:
+        images_dir = Path(__file__).resolve().parents[2] / "images"
+        if not images_dir.exists():
+            return None
+        for candidate in sorted(images_dir.iterdir()):
+            if not candidate.is_file():
+                continue
+            suffix = candidate.suffix.lower()
+            if suffix in VIDEO_EXTENSIONS:
+                return WelcomeMedia(candidate, "video")
+            if suffix in ANIMATION_EXTENSIONS:
+                return WelcomeMedia(candidate, "animation")
+            if suffix in PHOTO_EXTENSIONS:
+                return WelcomeMedia(candidate, "photo")
+    except Exception as discover_error:
+        logger.debug("Welcome media discovery failed: %s", discover_error)
+    return None
+
+WELCOME_MEDIA = _discover_welcome_media()
 BOT_TOKEN = config.telegram_bot_token
 USE_ANIMATION = config.use_status_animation
 USE_STREAMING = os.getenv("USE_STREAMING", "1").lower() in ("1", "true", "yes", "on")
@@ -520,36 +553,44 @@ async def cmd_start(message: Message):
     # Подробное приветствие
 
 
+
+
     welcome_raw = f"""
  
  <b>Добро пожаловать, {user_name}!</b>
     
- Меня зовут <b>⚖️ ИИ-ИВАН ⚖️</b>, я ваш виртуальный юридический ассистент.
+ Меня зовут <b>ИИ-ИВАН</b>, я ваш виртуальный юридический ассистент.
  
  <i>Моя миссия</i> — сделать жизнь юристов проще и снять с них рутину.
     
+
+ <b>📌 ЧТО Я УМЕЮ ?</b>
+  ═══════════════════════════════════════════
+
+1. Консультировать по любой сфере права, оценивать существующую стратегию, 
+
+(я знаю все заканодательство РФ,  миллионы решений и могу дать ответ за 1 минуту)
+
+2. Искать и анализировать судебную практику
+    
+ <b>📌 ПРИМЕРЫ ОБРАЩЕНИЙ ?</b>
+  ═══════════════════════════════════════════
+ 
+ ▫️ “Администрация отказала по [описание причины], подбери стратегию как ее обойти со ссылками на судебную практику”
+ 
+ ▫️ “Чем отличатся статья [название] от статьи [название]”
+    
+ ▫️ “Подбери судебную практику по [описание дела]”
+    
+ ▫️ “Могут ли наследники [описание нюанса]”
+    
  ═══════════════════════════════════════════
     
- <b>🎯 Стратегический анализ:</b>
- “Администрация отказала по [описание причины], подбери стратегию как ее обойти со ссылками на судебную практику”
-    
- <b>📊 Сравнительный анализ:</b>
- “Чем отличатся статья [название] от статьи [название]”
-    
- <b>🔍 Поиск практики:</b>
- “Подбери судебную практику по [описание дела]”
-    
- <b>⚖️ Правовые вопросы :</b>
- “Могут ли наследники [описание нюанса]”
-    
- ═══════════════════════════════════════════
-    
-    Попробуй прямо сейчас👇
+    <b>ПОПРОБУЙ ПРЯМО СЕЙЧАС 👇</b>
     """
 
 
-    # Здесь избыточное экранирование не нужно — используем MarkdownV2 c вашим helper'ом
-    welcome_text = sanitize_telegram_html(welcome_raw)
+
 
     # Создаем inline клавиатуру с кнопками (компактное размещение)
     keyboard = InlineKeyboardMarkup(
@@ -572,7 +613,28 @@ async def cmd_start(message: Message):
         ]
     )
 
-    await message.answer(welcome_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+    if WELCOME_MEDIA and WELCOME_MEDIA.path.exists():
+        try:
+            await message.answer_video(
+                video=FSInputFile(WELCOME_MEDIA.path),
+                caption=sanitize_telegram_html(welcome_raw),  # текст под видео
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+                supports_streaming=True  # чтобы можно было смотреть без полного скачивания
+            )
+            return
+        except Exception as video_error:
+            logger.warning("Failed to send welcome video: %s", video_error)
+
+
+    # финальный фолбэк — просто текст
+    await message.answer(
+        sanitize_telegram_html(welcome_raw),
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
     logger.info("User %s started bot", message.from_user.id)
 
 
@@ -754,7 +816,7 @@ async def process_question(message: Message, *, text_override: str | None = None
                 )
             else:
                 await message.answer(
-                    f"""{Emoji.ERROR} <b>Произошла ошибка</b>
+f"""{Emoji.ERROR} <b>Произошла ошибка</b>
 
 Не удалось получить ответ. Попробуйте ещё раз чуть позже.
 

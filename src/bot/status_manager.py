@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from html import escape as html_escape
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -32,10 +33,18 @@ class ProgressStatus:
                 f"{Emoji.LOADING} **Обрабатываю ваш запрос\\.\\.\\.** \n\n_Пожалуйста, подождите_"
             )
 
+        formatted = self._format_status_text(initial_message)
         self.status_message = await self.bot.send_message(
-            self.chat_id, initial_message, parse_mode=ParseMode.MARKDOWN_V2
+            self.chat_id, formatted, parse_mode=ParseMode.HTML
         )
         return self.status_message
+
+    def _format_status_text(self, text: str, progress_bar: str | None = None, percentage: int | None = None) -> str:
+        safe = html_escape(text).replace('\n', '<br>')
+        if progress_bar is not None and percentage is not None:
+            bar = html_escape(progress_bar)
+            safe += f'<br><br><code>{bar}</code> {percentage}%'
+        return safe
 
     async def update_stage(self, stage: int, message: str):
         """Обновляет текущую стадию обработки"""
@@ -46,10 +55,10 @@ class ProgressStatus:
         progress_bar = self._create_progress_bar(stage, self.total_stages)
         percentage = int((stage / self.total_stages) * 100)
 
-        status_text = f"{message}\n\n`{progress_bar}` {percentage}%"
+        status_text = self._format_status_text(message, progress_bar, percentage)
 
         try:
-            await self.status_message.edit_text(status_text, parse_mode=ParseMode.MARKDOWN_V2)
+            await self.status_message.edit_text(status_text, parse_mode=ParseMode.HTML)
         except Exception:
             # Игнорируем ошибки редактирования (слишком частые обновления)
             pass
