@@ -11,8 +11,6 @@ import os
 import time
 import tempfile
 from contextlib import suppress
-import tempfile
-from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,8 +46,7 @@ from src.bot.logging_setup import setup_logging
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
 from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
 from src.bot.stream_manager import StreamingCallback, StreamManager
-from src.bot.ui_components import Emoji, escape_markdown_v2
-from src.core.audio_service import AudioService
+from src.bot.ui_components import Emoji, sanitize_telegram_html
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db import Database
@@ -521,42 +518,38 @@ async def cmd_start(message: Message):
     user_name = message.from_user.first_name or "Пользователь"
 
     # Подробное приветствие
+
+
     welcome_raw = f"""
-╔═══════════════════════════╗
-║  ⚖️ ИИ-Иван ⚖️  ║
-╚═══════════════════════════╝
+ 
+ <b>Добро пожаловать, {user_name}!</b>
+    
+ Меня зовут <b>⚖️ ИИ-ИВАН ⚖️</b>, я ваш виртуальный юридический ассистент.
+ 
+ <i>Моя миссия</i> — сделать жизнь юристов проще и снять с них рутину.
+    
+ ═══════════════════════════════════════════
+    
+ <b>🎯 Стратегический анализ:</b>
+ “Администрация отказала по [описание причины], подбери стратегию как ее обойти со ссылками на судебную практику”
+    
+ <b>📊 Сравнительный анализ:</b>
+ “Чем отличатся статья [название] от статьи [название]”
+    
+ <b>🔍 Поиск практики:</b>
+ “Подбери судебную практику по [описание дела]”
+    
+ <b>⚖️ Правовые вопросы :</b>
+ “Могут ли наследники [описание нюанса]”
+    
+ ═══════════════════════════════════════════
+    
+    Попробуй прямо сейчас👇
+    """
 
-🤖 Привет, {user_name}! Добро пожаловать!
 
-⭐️ Ваш персональный юридический ассистент
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✨ Что я умею:
-🔍 Анализирую судебную практику РФ
-📋 Ищу релевантные дела и решения
-💡 Готовлю черновики процессуальных документов  
-⚖️ Оцениваю правовые риски и перспективы
-
-🔥 Специализации:
-🏠 Гражданское и договорное право
-🏢 Корпоративное право и M&A
-👨‍💼 Трудовое и административное право
-💰 Налоговое право и споры с ФНС
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Примеры вопросов:
-
-📝 "Можно ли расторгнуть договор поставки за просрочку?"
-👨‍💼 "Как правильно уволить сотрудника за нарушения?"
-💰 "Какие риски при доначислении НДС?"
-🏢 "Порядок увеличения уставного капитала ООО"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔥 Готов к работе! Отправьте ваш правовой вопрос или выберите действие ниже:
-"""
     # Здесь избыточное экранирование не нужно — используем MarkdownV2 c вашим helper'ом
-    welcome_text = escape_markdown_v2(welcome_raw)
+    welcome_text = sanitize_telegram_html(welcome_raw)
 
     # Создаем inline клавиатуру с кнопками (компактное размещение)
     keyboard = InlineKeyboardMarkup(
@@ -579,7 +572,7 @@ async def cmd_start(message: Message):
         ]
     )
 
-    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
+    await message.answer(welcome_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     logger.info("User %s started bot", message.from_user.id)
 
 
@@ -897,7 +890,7 @@ async def send_rub_invoice(message: Message):
     if not RUB_PROVIDER_TOKEN:
         await message.answer(
             f"{Emoji.WARNING} Оплата картами временно недоступна. Попробуйте Telegram Stars или криптовалюту (/buy)",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
         )
         return
     prices = [LabeledPrice(label="Подписка на 30 дней", amount=SUB_PRICE_RUB_KOPEKS)]
@@ -950,7 +943,7 @@ async def cmd_buy(message: Message):
         f"Стоимость: {SUB_PRICE_RUB} ₽ \\({dynamic_xtr} ⭐\\) за 30 дней\n\n"
         f"Выберите способ оплаты:"
     )
-    await message.answer(text, parse_mode=ParseMode.MARKDOWN_V2)
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
     # Банковские карты (если настроен токен)
     if RUB_PROVIDER_TOKEN:
@@ -963,7 +956,7 @@ async def cmd_buy(message: Message):
         logger.warning("Failed to send stars invoice: %s", e)
         await message.answer(
             f"{Emoji.WARNING} Telegram Stars временно недоступны. Попробуйте другой способ оплаты.",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
         )
 
     # Крипта: инвойс через CryptoBot
@@ -972,7 +965,7 @@ async def cmd_buy(message: Message):
         logger.warning("Crypto provider not initialized; skipping crypto invoice")
         await message.answer(
             f"{Emoji.IDEA} Криптовалюта: временно недоступна (настройте CRYPTO_PAY_TOKEN)",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -985,18 +978,18 @@ async def cmd_buy(message: Message):
         if inv.get("ok") and "url" in inv:
             await message.answer(
                 f"{Emoji.DOWNLOAD} Оплата криптовалютой: перейдите по ссылке\n{inv['url']}",
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=ParseMode.HTML,
             )
         else:
             await message.answer(
                 f"{Emoji.IDEA} Криптовалюта: временно недоступна (настройте CRYPTO_PAY_TOKEN)",
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=ParseMode.HTML,
             )
     except Exception as e:
         logger.warning("Crypto invoice failed: %s", e)
         await message.answer(
             f"{Emoji.IDEA} Криптовалюта: временно недоступна",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
         )
 
 
@@ -1430,7 +1423,7 @@ async def handle_help_info_callback(callback: CallbackQuery):
 
         help_text = MessageTemplates.HELP
 
-        await callback.message.answer(help_text, parse_mode=ParseMode.MARKDOWN_V2)
+        await callback.message.answer(help_text, parse_mode=ParseMode.HTML)
 
         logger.info(f"Help info requested by user {callback.from_user.id}")
 
@@ -1790,7 +1783,7 @@ async def on_successful_payment(message: Message):
 
         await message.answer(
             f"{Emoji.SUCCESS} Оплата получена\\! Подписка активирована на {SUB_DURATION_DAYS} дней.\nДо: {until_text}",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
         )
     except Exception:
         logger.exception("Failed to handle successful payment")
