@@ -2099,17 +2099,25 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        try:
-            import uvloop  # type: ignore
-
-            uvloop.install()
-            logger.info("🚀 Включен uvloop для повышенной производительности")
-        except ImportError:
-            logger.info("⚡ uvloop не доступен, используем стандартный event loop")
+        # Настройка event loop для Windows
+        import sys
+        if sys.platform == "win32":
+            # Для Windows используем WindowsProactorEventLoopPolicy
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            logger.info("Настроен ProactorEventLoop для Windows")
+        else:
+            # Для других платформ пробуем uvloop
+            try:
+                import uvloop  # type: ignore
+                uvloop.install()
+                logger.info("Включен uvloop для повышенной производительности")
+            except ImportError:
+                logger.info("uvloop не доступен, используем стандартный event loop")
 
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("👋 Бот остановлен")
+        logger.info("Бот остановлен")
     except Exception as e:
-        logger.exception("💥 Критическая ошибка: %s", e)
+        logger.exception("Критическая ошибка: %s", e)
         raise
+
