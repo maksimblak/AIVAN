@@ -4,7 +4,9 @@
 
 import asyncio
 import logging
+import re
 import time
+from contextlib import suppress
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -15,16 +17,18 @@ from .ui_components import render_legal_html
 
 logger = logging.getLogger(__name__)
 
+SAFE_LIMIT = 3900  # безопасный лимит для HTML
+
 
 class StreamManager:
-    """Управляет streaming ответами в Telegram с буферизацией и редактированием сообщений"""
+    """Управляет streaming-ответами в Telegram с буферизацией и редактированием сообщения."""
 
     def __init__(
         self,
         bot: Bot,
         chat_id: int,
-        update_interval: float = 1.5,  # Интервал обновления в секундах
-        buffer_size: int = 50,  # Минимальный размер буфера для обновления
+        update_interval: float = 1.5,
+        buffer_size: int = 50,
         max_retries: int = 3,
     ):
         self.bot = bot
@@ -36,96 +40,71 @@ class StreamManager:
         # Состояние
         self.message: Message | None = None
         self.last_update_time = 0.0
-        self.last_sent_text = ""
-        self.pending_text = ""
+        self.last_sent_text = ""   # последний отправленный (HTML)
+        self.last_raw_text = ""    # последний сырой (plain)
+        self.pending_text = ""     # текущий сырой буфер
         self.is_final = False
+        self._stopped = False
         self.update_task: asyncio.Task | None = None
 
     async def start_streaming(self, initial_text: str = "🤔 Обдумываю ответ...") -> Message:
-        """Начинает streaming, отправляет начальное сообщение"""
-        try:
-            self.message = await self.bot.send_message(
-                chat_id=self.chat_id, text=initial_text, parse_mode=ParseMode.HTML
-            )
-            self.last_sent_text = initial_text
-            self.last_update_time = time.time()
-
-            # Запускаем фоновую задачу обновления
-            self.update_task = asyncio.create_task(self._update_loop())
-
-            logger.info(
-                f"Started streaming for chat {self.chat_id}, message {self.message.message_id}"
-            )
-            return self.message
-
-        except Exception as e:
-            logger.error(f"Failed to start streaming: {e}")
-            raise
+        """Отправляет начальное сообщение и запускает цикл обновлений."""
+        self.message = await self.bot.send_message(
+            chat_id=self.chat_id,
+            text=initial_text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        self.last_sent_text = initial_text
+        self.last_raw_text = ""
+        self.last_update_time = time.time()
+        self.update_task = asyncio.create_task(self._update_loop())
+        logger.info("Started streaming for chat %s, msg %s", self.chat_id, self.message.message_id)
+        return self.message
 
     async def update_text(self, new_text: str, is_final: bool = False):
-        """Обновляет текст для streaming"""
-        self.pending_text = new_text
+        """Обновляет сырой буфер (plain)."""
+        self.pending_text = new_text or ""
         self.is_final = is_final
-
         if is_final:
-            # Для финального обновления отправляем сразу
             await self._force_update()
 
     async def _update_loop(self):
-        """Фоновая задача для периодического обновления сообщения"""
         while not self.is_final:
             try:
                 await asyncio.sleep(self.update_interval)
-
-                # Проверяем нужно ли обновление
                 if self._should_update():
                     await self._do_update()
-
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"Error in update loop: {e}")
+                logger.warning("Error in update loop: %s", e)
 
     def _should_update(self) -> bool:
-        """Определяет нужно ли обновлять сообщение"""
         if not self.pending_text or not self.message:
             return False
-
-        # Если текст не изменился
-        if self.pending_text == self.last_sent_text:
+        if self.pending_text == self.last_raw_text:
             return False
-
-        # Если прошло достаточно времени
-        time_passed = time.time() - self.last_update_time
-        if time_passed >= self.update_interval:
+        if (time.time() - self.last_update_time) >= self.update_interval:
             return True
-
-        # Если накопилось достаточно нового текста
-        text_diff = len(self.pending_text) - len(self.last_sent_text)
-        if text_diff >= self.buffer_size:
+        if len(self.pending_text) - len(self.last_raw_text) >= self.buffer_size:
             return True
-
         return False
 
     async def _force_update(self):
-        """Принудительное обновление сообщения"""
         if self.pending_text and self.message:
             await self._do_update()
 
     async def _do_update(self):
-        """Выполняет обновление сообщения"""
         if not self.message or not self.pending_text:
             return
 
-        # Форматируем текст
-        formatted_text = render_legal_html(self.pending_text)
+        formatted = render_legal_html(self.pending_text)  # универсальный красивый рендер
+        if len(formatted) > SAFE_LIMIT:
+            formatted = formatted[: SAFE_LIMIT - 10] + "…"
 
-        # Обрезаем если слишком длинный для Telegram
-        if len(formatted_text) > 4000:
-            formatted_text = formatted_text[:3990] + "..."
-
-        # Пропускаем если текст не изменился
-        if formatted_text == self.last_sent_text:
+        if formatted == self.last_sent_text:
+            self.last_raw_text = self.pending_text
             return
 
         for retry in range(self.max_retries):
@@ -133,98 +112,124 @@ class StreamManager:
                 await self.bot.edit_message_text(
                     chat_id=self.chat_id,
                     message_id=self.message.message_id,
-                    text=formatted_text,
+                    text=formatted,
                     parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
                 )
-
-                self.last_sent_text = formatted_text
+                self.last_sent_text = formatted
+                self.last_raw_text = self.pending_text
                 self.last_update_time = time.time()
-
-                logger.debug(
-                    f"Updated message {self.message.message_id}, length: {len(formatted_text)}"
-                )
                 break
 
             except TelegramRetryAfter as e:
-                logger.warning(f"Rate limit hit, waiting {e.retry_after} seconds")
+                logger.warning("Rate limit hit, waiting %s s", e.retry_after)
                 await asyncio.sleep(e.retry_after)
 
             except TelegramBadRequest as e:
-                if "message is not modified" in str(e).lower():
-                    # Сообщение не изменилось, это нормально
+                low = str(e).lower()
+                # Если Telegram не смог распарсить HTML — фолбэк в plain text
+                if "can't parse entities" in low or "parse entities" in low:
+                    safe_plain = re.sub(r"<[^>]+>", "", formatted)
+                    if len(safe_plain) > SAFE_LIMIT:
+                        safe_plain = safe_plain[: SAFE_LIMIT - 10] + "…"
+                    await self.bot.edit_message_text(
+                        chat_id=self.chat_id,
+                        message_id=self.message.message_id,
+                        text=safe_plain or " ",
+                        disable_web_page_preview=True,
+                    )
+                    self.last_sent_text = safe_plain
+                    self.last_raw_text = self.pending_text
+                    self.last_update_time = time.time()
                     break
-                elif "message to edit not found" in str(e).lower():
+                if "message is not modified" in low:
+                    self.last_raw_text = self.pending_text
+                    break
+                if "message to edit not found" in low:
                     logger.error("Message to edit not found, stopping stream")
                     await self.stop()
                     break
-                else:
-                    logger.warning(f"Telegram bad request on retry {retry}: {e}")
-                    if retry == self.max_retries - 1:
-                        logger.error(f"Failed to update message after {self.max_retries} retries")
+                logger.warning("TelegramBadRequest on retry %d: %s", retry, e)
+                if retry == self.max_retries - 1:
+                    logger.error("Failed to update message after %d retries", self.max_retries)
 
             except Exception as e:
-                logger.warning(f"Failed to update message on retry {retry}: {e}")
+                logger.warning("Failed to update on retry %d: %s", retry, e)
                 if retry == self.max_retries - 1:
-                    logger.error(f"Failed to update message after {self.max_retries} retries")
+                    logger.error("Failed to update message after %d retries", self.max_retries)
 
-    async def finalize(self, final_text: str):
-        """Завершает streaming с финальным текстом"""
+    async def finalize(self, final_text: str | None = None):
+        """Закрывает стрим и один раз красиво форматирует полный текст."""
+        if self._stopped:
+            return
+        self._stopped = True
         self.is_final = True
-        self.pending_text = final_text
 
-        # Останавливаем фоновую задачу
         if self.update_task:
             self.update_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self.update_task
-            except asyncio.CancelledError:
-                pass
 
-        # Отправляем финальное обновление
-        await self._force_update()
+        if not self.message:
+            return
 
-        logger.info(
-            f"Finalized streaming for message {self.message.message_id if self.message else 'unknown'}"
-        )
+        full_text = (final_text if isinstance(final_text, str) else None) or (self.pending_text or "")
+        try:
+            formatted = render_legal_html(full_text) if full_text else "—"
+            if len(formatted) > SAFE_LIMIT:
+                formatted = formatted[: SAFE_LIMIT - 10] + "…"
+
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self.message.message_id,
+                text=formatted,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self.last_sent_text = formatted
+            self.last_raw_text = full_text
+
+        except Exception:
+            # Фолбэк: plain text
+            safe_plain = re.sub(r"<[^>]+>", "", full_text or "")
+            if len(safe_plain) > SAFE_LIMIT:
+                safe_plain = safe_plain[: SAFE_LIMIT - 10] + "…"
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self.message.message_id,
+                text=safe_plain or " ",
+                disable_web_page_preview=True,
+            )
+            self.last_sent_text = safe_plain
+            self.last_raw_text = full_text
 
     async def stop(self):
-        """Останавливает streaming"""
+        """Останавливает streaming (без принудительного редактирования)."""
         self.is_final = True
-
+        self._stopped = True
         if self.update_task:
             self.update_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self.update_task
-            except asyncio.CancelledError:
-                pass
-
-        logger.info(
-            f"Stopped streaming for message {self.message.message_id if self.message else 'unknown'}"
-        )
+        logger.info("Stopped streaming for message %s", getattr(self.message, "message_id", "unknown"))
 
 
 class StreamingCallback:
-    """Callback класс для интеграции с OpenAI streaming"""
+    """Callback для интеграции с OpenAI streaming."""
 
     def __init__(self, stream_manager: StreamManager):
         self.stream_manager = stream_manager
         self.total_calls = 0
 
     async def __call__(self, partial_text: str, is_final: bool):
-        """Callback функция для OpenAI streaming"""
         self.total_calls += 1
-
         try:
             if is_final:
                 await self.stream_manager.finalize(partial_text)
             else:
                 await self.stream_manager.update_text(partial_text, is_final=False)
-
         except Exception as e:
-            logger.error(f"Error in streaming callback: {e}")
-            # В случае ошибки все равно пытаемся завершить stream
+            logger.error("Error in streaming callback: %s", e)
             if is_final:
-                try:
+                with suppress(Exception):
                     await self.stream_manager.stop()
-                except:
-                    pass

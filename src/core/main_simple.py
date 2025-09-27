@@ -48,7 +48,7 @@ from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
 from src.bot.status_manager import ProgressStatus, progress_router
 
 from src.bot.stream_manager import StreamingCallback, StreamManager
-from src.bot.ui_components import Emoji, sanitize_telegram_html
+from src.bot.ui_components import Emoji, sanitize_telegram_html, render_legal_html
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db import Database
@@ -644,6 +644,8 @@ async def process_question(message: Message, *, text_override: str | None = None
 
         request_error_type = None
         stream_manager = None
+        had_stream_content = False
+        result: dict[str, Any] = {}
         request_start_time = time.time()
 
         try:
@@ -660,29 +662,67 @@ async def process_question(message: Message, *, text_override: str | None = None
                 selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
                 user_session.practice_search_mode = False
 
-            # Запрос к OpenAI
+            # Запрос к OpenAI (стрим/нестрим)
             if openai_service is None:
                 raise SystemException("OpenAI service not initialized", error_context)
+
+            result = {}
+            had_stream_content = False
+            stream_manager = None
 
             if USE_STREAMING and message.bot:
                 stream_manager = StreamManager(
                     bot=message.bot,
                     chat_id=message.chat.id,
                     update_interval=1.5,
-                    buffer_size=100,
+                    buffer_size=120,
                 )
-                await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")
+                await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")  # начальное сообщение
                 callback = StreamingCallback(stream_manager)
-                result = await openai_service.ask_legal_stream(
-                    selected_prompt, question_text, callback=callback
-                )
-            elif message.bot:
-                # обычный запрос без TypingContext
-                result = await openai_service.ask_legal(selected_prompt, question_text)
-            else:
-                result = await openai_service.ask_legal(selected_prompt, question_text)
 
-            ok_flag = bool(result.get("ok"))
+                try:
+                    # Стриминговый вызов
+                    result = await openai_service.ask_legal_stream(
+                        selected_prompt, question_text, callback=callback
+                    )
+                    had_stream_content = bool((stream_manager.pending_text or "").strip())
+
+                    # Считаем удачей, если либо API вернул ok, либо мы реально что-то уже показали
+                    ok_flag = bool(isinstance(result, dict) and result.get("ok")) or had_stream_content
+
+                    if not ok_flag:
+                        # Фолбэк на обычный запрос
+                        result = await openai_service.ask_legal(selected_prompt, question_text)
+                        ok_flag = bool(result.get("ok"))
+
+                except Exception as e:
+                    # Если уже есть накопленный контент — НЕ падаем, используем его
+                    had_stream_content = bool((stream_manager.pending_text or "").strip())
+                    if had_stream_content:
+                        logger.warning("Streaming failed, but content exists — using stream buffer: %s", e)
+                        result = {"ok": True, "text": stream_manager.pending_text}
+                        ok_flag = True
+                        # Попробуем красиво закончить стрим (не критично, если не выйдет)
+                        with suppress(Exception):
+                            await stream_manager.finalize(stream_manager.pending_text)
+                    else:
+                        # Контента нет — это действительно ошибка
+                        with suppress(Exception):
+                            await stream_manager.stop()
+                        # Классифицируем и пробрасываем, чтобы сработал общий обработчик
+                        low = str(e).lower()
+                        if "rate limit" in low or "quota" in low:
+                            raise OpenAIException(str(e), error_context, is_quota_error=True)
+                        elif "timeout" in low or "network" in low:
+                            raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
+                        else:
+                            raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
+
+            else:
+                # Нестриминговый вызов
+                result = await openai_service.ask_legal(selected_prompt, question_text)
+                ok_flag = bool(result.get("ok"))
+
         except Exception as e:
             request_error_type = type(e).__name__
             if stream_manager:
@@ -697,43 +737,45 @@ async def process_question(message: Message, *, text_override: str | None = None
             else:
                 raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
         finally:
-            # гарантированно завершаем прогресс
+            # гарантированно завершаем прогресс с учётом ok_flag
             await _stop_status_indicator(status, ok=ok_flag)
 
         timer.stop()
 
-        # Обработка результата
-        if not result.get("ok"):
-            error_text = result.get("error", "Неизвестная ошибка")
-            logger.error("OpenAI error for user %s: %s", user_id, error_text)
+        # --- Итоговая обработка результата (стрим / фоллбэк) ---
+        # 1) Собираем текст ответа: если стрим уже что-то отдал — не дублируем;
+        #    если нет, берем текст из нестримового результата (фоллбэк).
+        result_text = ""
+        if USE_STREAMING and stream_manager:
+            # had_stream_content установлен выше при стриме
+            if not had_stream_content and isinstance(result, dict):
+                result_text = (result.get("text") or "").strip()
+        else:
+            if isinstance(result, dict):
+                result_text = (result.get("text") or "").strip()
 
-            if USE_STREAMING and stream_manager:
-                await stream_manager.finalize(
-                    f"""{Emoji.ERROR} <b>Произошла ошибка</b>
+        # 2) Если совсем нет ни ок-флага, ни текста — считаем это ошибкой и показываем понятное сообщение
+        if not ok_flag and not result_text:
+            error_text = ""
+            if isinstance(result, dict):
+                error_text = (result.get("error") or "").strip()
 
-Не удалось получить ответ. Попробуйте ещё раз чуть позже.
-
-{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса
-
-<code>{html_escape(error_text[:300])}</code>"""
-                )
-            else:
-                await message.answer(
-                    f"""{Emoji.ERROR} <b>Произошла ошибка</b>
-
-Не удалось получить ответ. Попробуйте ещё раз чуть позже.
-
-{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса
-
-<code>{html_escape(error_text[:300])}</code>""",
-                    parse_mode=ParseMode.HTML,
-                )
+            logger.error("OpenAI error or empty stream for user %s: %s", user_id, error_text)
+            await message.answer(
+                (
+                        f"{Emoji.ERROR} <b>Произошла ошибка</b><br><br>"
+                        f"Не удалось получить ответ. Попробуйте ещё раз чуть позже.<br><br>"
+                        f"{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса"
+                        + (f"<br><br><code>{html_escape(error_text[:300])}</code>" if error_text else "")
+                ),
+                parse_mode=ParseMode.HTML,
+            )
             return
 
-        # Нестриминговый ответ — отправляем HTML-чанками
-        if not USE_STREAMING:
-            response_text = render_legal_html(result.get("text", ""))
-            await _send_html_chunks(message, response_text)
+        # 3) Если текст есть и мы НЕ стримили (или стрим был пустой) — отправляем красиво оформленные абзацы
+        if result_text:
+            response_html = render_legal_html(result_text)
+            await _send_html_chunks(message, response_html)
 
         # Время ответа отдельным сообщением
         time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
