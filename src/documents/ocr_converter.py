@@ -82,115 +82,310 @@ class OCRConverter(DocumentProcessor):
 
     async def _ocr_image(self, image_path: Path) -> tuple[str, float]:
         """OCR распознавание изображения"""
+        # Сначала пробуем PaddleOCR (основной движок)
         try:
-            # Попробуем использовать Tesseract через pytesseract
-            try:
-                import pytesseract
-                from PIL import Image
-
-                # Загружаем изображение
-                image = Image.open(image_path)
-
-                # Распознаем текст с получением данных о уверенности
-                ocr_data = pytesseract.image_to_data(
-                    image, output_type=pytesseract.Output.DICT, lang="rus+eng"
-                )
-
-                # Собираем текст и вычисляем среднюю уверенность
-                words = []
-                confidences = []
-
-                for i in range(len(ocr_data["text"])):
-                    word = ocr_data["text"][i].strip()
-                    confidence = int(ocr_data["conf"][i])
-
-                    if word and confidence > 0:
-                        words.append(word)
-                        confidences.append(confidence)
-
-                text = " ".join(words)
-                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
-
-                return text, avg_confidence
-
-            except ImportError:
-                # Fallback - возвращаем заглушку
-                logger.warning("pytesseract не установлен. Используется заглушка OCR.")
-                return self._mock_ocr_result(image_path)
-
+            result = await self._paddleocr_image(image_path)
+            if result[0]:  # Если текст получен
+                logger.info("Успешно использован PaddleOCR")
+                return result
         except Exception as e:
-            logger.error(f"Ошибка OCR изображения: {e}")
-            return self._mock_ocr_result(image_path)
+            logger.warning(f"PaddleOCR не удался: {e}. Переключаемся на Tesseract.")
+
+
+        # Fallback на Tesseract
+        try:
+            result = await self._tesseract_image(image_path)
+            if result[0]:  # Если текст получен
+                logger.info("Успешно использован Tesseract (fallback)")
+                return result
+        except Exception as e:
+            logger.error(f"Tesseract не удался: {e}")
+
+        # Если оба не сработали
+        logger.error("Не удалось выполнить OCR ни с PaddleOCR, ни с Tesseract")
+        return self._mock_ocr_result(image_path)
+
+    async def _paddleocr_image(self, image_path: Path) -> tuple[str, float]:
+        """OCR распознавание изображения с помощью PaddleOCR"""
+        try:
+            from paddleocr import PaddleOCR
+
+            # Инициализируем PaddleOCR для русского и английского языков
+            ocr = PaddleOCR(use_angle_cls=True, lang='ch')  # ch поддерживает больше языков
+
+            # Выполняем OCR
+            result = ocr.ocr(str(image_path), cls=True)
+
+            if not result or not result[0]:
+                return "", 0.0
+
+            # Собираем текст и вычисляем среднюю уверенность
+            texts = []
+            confidences = []
+
+            for line in result[0]:
+                if line and len(line) >= 2:
+                    bbox, (text, confidence) = line[0], line[1]
+                    if text and text.strip():
+                        texts.append(text.strip())
+                        confidences.append(confidence * 100)  # Переводим в проценты
+
+            full_text = " ".join(texts)
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+            return full_text, avg_confidence
+
+        except ImportError:
+            raise Exception("PaddleOCR не установлен")
+        except Exception as e:
+            raise Exception(f"Ошибка PaddleOCR: {str(e)}")
+
+    async def _tesseract_image(self, image_path: Path) -> tuple[str, float]:
+        """OCR распознавание изображения с помощью Tesseract (fallback)"""
+        try:
+            import pytesseract
+            from PIL import Image
+
+            # Загружаем изображение
+            image = Image.open(image_path)
+
+            # Распознаем текст с получением данных о уверенности
+            ocr_data = pytesseract.image_to_data(
+                image, output_type=pytesseract.Output.DICT, lang="rus+eng"
+            )
+
+            # Собираем текст и вычисляем среднюю уверенность
+            words = []
+            confidences = []
+
+            for i in range(len(ocr_data["text"])):
+                word = ocr_data["text"][i].strip()
+                confidence = int(ocr_data["conf"][i])
+
+                if word and confidence > 0:
+                    words.append(word)
+                    confidences.append(confidence)
+
+            text = " ".join(words)
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+            return text, avg_confidence
+
+        except ImportError:
+            raise Exception("pytesseract не установлен")
+        except Exception as e:
+            raise Exception(f"Ошибка Tesseract: {str(e)}")
 
     async def _ocr_pdf(self, pdf_path: Path) -> tuple[str, float]:
-        """OCR распознавание PDF (если это скан)"""
+        """Улучшенное распознавание PDF с множественными стратегиями"""
+        logger.info(f"Начало обработки PDF: {pdf_path}")
+
+        # Стратегия 1: Извлечение встроенного текста (быстро)
+        extracted_text, text_confidence = await self._extract_pdf_text(pdf_path)
+
+        # Проверяем качество извлеченного текста
+        text_quality = self._analyze_extracted_text_quality(extracted_text)
+        logger.info(f"Качество извлеченного текста: {text_quality}")
+
+        # Если текст хорошего качества, возвращаем его
+        if text_quality >= 0.7 and len(extracted_text.strip()) > 50:
+            logger.info("Использован встроенный текст PDF")
+            return extracted_text, text_confidence
+
+        # Стратегия 2: Гибридный подход (текст + OCR)
+        if text_quality > 0.3:
+            logger.info("Применяем гибридный подход (текст + OCR)")
+            ocr_text, ocr_confidence = await self._hybrid_pdf_processing(pdf_path, extracted_text)
+            return ocr_text, ocr_confidence
+
+        # Стратегия 3: Полный OCR (медленно, но точно)
+        logger.info("Применяем полный OCR")
+        return await self._full_pdf_ocr(pdf_path)
+
+    async def _extract_pdf_text(self, pdf_path: Path) -> tuple[str, float]:
+        """Извлечение встроенного текста из PDF с PyMuPDF"""
         try:
-            # Сначала попробуем извлечь текст обычным способом
-            try:
-                import PyPDF2
+            import fitz  # PyMuPDF
 
-                with open(pdf_path, "rb") as f:
-                    pdf_reader = PyPDF2.PdfReader(f)
-                    text = ""
-                    for page in pdf_reader.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
+            doc = fitz.open(str(pdf_path))
+            text_parts = []
 
-                # Если текста достаточно, значит это не скан
-                if len(text.strip()) > 100:
-                    return text, 100.0  # Максимальная уверенность для текстового PDF
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                page_text = page.get_text()
+                if page_text.strip():
+                    text_parts.append(page_text)
 
-            except ImportError:
-                pass
+            doc.close()
 
-            # Если текста мало или нет, пробуем OCR
-            try:
-                import pdf2image
-                import pytesseract
+            if text_parts:
+                return "\n\n".join(text_parts), 100.0
+            else:
+                return "", 0.0
 
-                # Конвертируем PDF в изображения
-                pages = pdf2image.convert_from_path(pdf_path)
+        except ImportError:
+            logger.error("PyMuPDF не установлен")
+            return "", 0.0
+        except Exception as e:
+            logger.error(f"Ошибка извлечения текста из PDF: {e}")
+            return "", 0.0
 
-                all_text = []
-                all_confidences = []
+    def _analyze_extracted_text_quality(self, text: str) -> float:
+        """Анализ качества извлеченного текста"""
+        if not text or len(text.strip()) < 10:
+            return 0.0
 
-                for i, page in enumerate(pages):
-                    logger.info(f"OCR страницы {i+1}/{len(pages)}")
+        # Подсчитываем различные характеристики
+        total_chars = len(text)
+        alpha_chars = sum(1 for c in text if c.isalpha())
+        suspicious_chars = sum(1 for c in text if c in '����□■●○♦♠♣♥')
 
-                    # OCR каждой страницы
-                    ocr_data = pytesseract.image_to_data(
-                        page, output_type=pytesseract.Output.DICT, lang="rus+eng"
-                    )
+        # Соотношения
+        alpha_ratio = alpha_chars / total_chars if total_chars > 0 else 0
+        suspicious_ratio = suspicious_chars / total_chars if total_chars > 0 else 0
 
-                    page_words = []
-                    page_confidences = []
+        # Проверка на наличие осмысленных слов
+        words = text.split()
+        meaningful_words = sum(1 for word in words if len(word) > 2 and word.isalpha())
+        word_ratio = meaningful_words / len(words) if words else 0
 
-                    for j in range(len(ocr_data["text"])):
-                        word = ocr_data["text"][j].strip()
-                        confidence = int(ocr_data["conf"][j])
+        # Итоговая оценка качества
+        quality_score = (
+            alpha_ratio * 0.4 +  # Доля букв
+            word_ratio * 0.4 +   # Доля осмысленных слов
+            (1 - suspicious_ratio) * 0.2  # Отсутствие подозрительных символов
+        )
 
-                        if word and confidence > 0:
-                            page_words.append(word)
-                            page_confidences.append(confidence)
+        return min(1.0, quality_score)
 
-                    if page_words:
-                        all_text.append(" ".join(page_words))
-                        all_confidences.extend(page_confidences)
+    async def _hybrid_pdf_processing(self, pdf_path: Path, extracted_text: str) -> tuple[str, float]:
+        """Гибридная обработка: комбинирование извлеченного текста и OCR"""
+        try:
+            # Получаем OCR текст
+            ocr_text, ocr_confidence = await self._full_pdf_ocr(pdf_path)
 
-                text = "\n\n".join(all_text)
-                avg_confidence = (
-                    sum(all_confidences) / len(all_confidences) if all_confidences else 0
-                )
+            if not ocr_text:
+                return extracted_text, 50.0
 
-                return text, avg_confidence
-
-            except ImportError:
-                logger.warning("pdf2image или pytesseract не установлены")
-                return self._mock_ocr_result(pdf_path)
+            # Простая эвристика для объединения
+            if len(ocr_text) > len(extracted_text) * 1.5:
+                # OCR дал больше текста - вероятно лучше
+                logger.info("OCR дал больше текста, используем его")
+                return ocr_text, ocr_confidence
+            else:
+                # Комбинируем тексты
+                combined = f"{extracted_text}\n\n--- OCR ДОПОЛНЕНИЕ ---\n\n{ocr_text}"
+                avg_confidence = (50.0 + ocr_confidence) / 2
+                logger.info("Объединяем извлеченный текст и OCR")
+                return combined, avg_confidence
 
         except Exception as e:
-            logger.error(f"Ошибка OCR PDF: {e}")
+            logger.error(f"Ошибка гибридной обработки: {e}")
+            return extracted_text, 30.0
+
+    async def _full_pdf_ocr(self, pdf_path: Path) -> tuple[str, float]:
+        """Полный OCR обработка PDF с ocrmypdf"""
+        try:
+            import ocrmypdf
+            import tempfile
+            import asyncio
+
+            # Создаем временный файл для результата OCR
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_output:
+                tmp_output_path = Path(tmp_output.name)
+
+            try:
+                logger.info(f"Запуск OCR обработки с ocrmypdf")
+
+                # Запускаем ocrmypdf в отдельном потоке
+                def run_ocrmypdf():
+                    ocrmypdf.ocr(
+                        input_file=str(pdf_path),
+                        output_file=str(tmp_output_path),
+                        language=['rus', 'eng'],
+                        force_ocr=True,
+                        skip_text=False,
+                        redo_ocr=True,
+                        optimize=1,
+                        jpeg_quality=95,
+                        png_quality=95
+                    )
+
+                # Выполняем OCR асинхронно
+                await asyncio.to_thread(run_ocrmypdf)
+
+                # Извлекаем текст из обработанного PDF
+                ocr_text, confidence = await self._extract_pdf_text(tmp_output_path)
+
+                logger.info(f"OCR завершен, получено {len(ocr_text)} символов")
+                return ocr_text, confidence if confidence > 0 else 85.0
+
+            finally:
+                # Удаляем временный файл
+                if tmp_output_path.exists():
+                    tmp_output_path.unlink()
+
+        except ImportError:
+            logger.error("ocrmypdf не установлен")
+            return await self._fallback_pdf_ocr(pdf_path)
+        except Exception as e:
+            logger.error(f"Ошибка OCR с ocrmypdf: {e}")
+            return await self._fallback_pdf_ocr(pdf_path)
+
+    async def _fallback_pdf_ocr(self, pdf_path: Path) -> tuple[str, float]:
+        """Fallback OCR через PyMuPDF + PaddleOCR/Tesseract"""
+        try:
+            import fitz
+            import tempfile
+            import os
+
+            doc = fitz.open(str(pdf_path))
+            all_text = []
+            all_confidences = []
+
+            for page_num in range(len(doc)):
+                logger.info(f"OCR страницы {page_num + 1}/{len(doc)}")
+                page = doc[page_num]
+
+                # Конвертируем страницу в изображение
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # Увеличиваем разрешение
+
+                # Сохраняем как временное изображение
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    pix.save(tmp_file.name)
+                    tmp_path = Path(tmp_file.name)
+
+                try:
+                    # Сначала пробуем PaddleOCR
+                    try:
+                        page_text, page_confidence = await self._paddleocr_image(tmp_path)
+                        if page_text:
+                            all_text.append(page_text)
+                            all_confidences.append(page_confidence)
+                            continue
+                    except Exception as e:
+                        logger.warning(f"PaddleOCR не удался для страницы {page_num + 1}: {e}")
+
+                    # Fallback на Tesseract
+                    page_text, page_confidence = await self._tesseract_image(tmp_path)
+                    if page_text:
+                        all_text.append(page_text)
+                        all_confidences.append(page_confidence)
+
+                finally:
+                    # Удаляем временный файл
+                    if tmp_path.exists():
+                        os.unlink(tmp_path)
+
+            doc.close()
+
+            text = "\n\n".join(all_text)
+            avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
+
+            return text, avg_confidence
+
+        except Exception as e:
+            logger.error(f"Ошибка fallback OCR: {e}")
             return self._mock_ocr_result(pdf_path)
 
     def _mock_ocr_result(self, file_path: Path) -> tuple[str, float]:
@@ -264,8 +459,11 @@ class OCRConverter(DocumentProcessor):
     def get_required_dependencies(self) -> list[str]:
         """Получить список требуемых зависимостей для OCR"""
         return [
+            "ocrmypdf>=16.11.0",
+            "pymupdf>=1.26.4",
+            "paddlepaddle>=2.6.0",
+            "paddleocr>=2.8.0",
             "pytesseract>=0.3.10",
             "pillow>=9.0.0",
-            "pdf2image>=1.16.0",
             "tesseract-ocr (системная утилита)",
         ]
