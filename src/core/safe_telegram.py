@@ -30,8 +30,9 @@ def format_safe_html(raw_text: str) -> str:
         safe_html = sanitize_telegram_html(html)
     except Exception as e:
         logger.warning("sanitize_telegram_html failed: %s", e)
-        # фолбэк — вырезаем любые теги
-        safe_html = re.sub(r"<[^>]+>", "", html)
+        # безопасный фолбэк — экранируем все HTML
+        from html import escape
+        safe_html = escape(html)
     return safe_html
 
 

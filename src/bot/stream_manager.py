@@ -64,9 +64,14 @@ class StreamManager:
     async def update_text(self, new_text: str, is_final: bool = False):
         """Вызывается коллбэком стрима OpenAI — обновляет буфер и (если final) форсит апдейт."""
         self.pending_text = new_text or ""
-        self.is_final = bool(is_final)
         if is_final:
+            self.is_final = True
+            # Останавливаем update_loop перед финальным обновлением
+            if self.update_task and not self.update_task.done():
+                self.update_task.cancel()
             await self._force_update()
+        else:
+            self.is_final = False
 
     def _should_update(self) -> bool:
         """Решаем, обновлять ли сообщение прямо сейчас."""
@@ -106,8 +111,16 @@ class StreamManager:
         formatted = format_safe_html(self.pending_text)
 
         # Во время стрима редактируем одно сообщение → держим ≤ 3900
+        # Но обрезаем умно, чтобы не ломать HTML-теги
         if len(formatted) > 3900:
-            formatted = formatted[:3890] + "…"
+            # Ищем безопасное место для обрезки (после закрывающего тега или пробела)
+            cutoff = 3890
+            safe_cut = formatted.rfind('>', 0, cutoff)
+            if safe_cut == -1:
+                safe_cut = formatted.rfind(' ', 0, cutoff)
+            if safe_cut == -1:
+                safe_cut = cutoff
+            formatted = formatted[:safe_cut] + "…"
 
         # Если реально нет изменений — выходим
         if formatted == self.last_sent_text:

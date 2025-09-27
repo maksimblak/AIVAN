@@ -476,18 +476,11 @@ async def cmd_start(message: Message):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="🔍 Поиск судебной практики", callback_data="search_practice"
-                ),
+                InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
                 InlineKeyboardButton(text="📋 Консультация", callback_data="general_consultation"),
             ],
             [
-                InlineKeyboardButton(
-                    text="📄 Подготовка документов", callback_data="prepare_documents"
-                ),
-                InlineKeyboardButton(
-                    text="🗂️ Работа с документами", callback_data="document_processing"
-                ),
+                InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
             ],
             [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info")],
         ]
@@ -694,7 +687,7 @@ async def process_question(message: Message, *, text_override: str | None = None
                     f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n"
                     f"Не удалось получить ответ. Попробуйте ещё раз чуть позже.\n\n"
                     f"{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса"
-                    + (f"<br><br><code>{html_escape(error_text[:300])}</code>" if error_text else "")
+                    + (f"\n\n<code>{html_escape(error_text[:300])}</code>" if error_text else "")
                 ),
                 parse_mode=ParseMode.HTML,
             )
@@ -1370,18 +1363,18 @@ async def handle_document_processing(callback: CallbackQuery):
         buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
 
         message_text = (
-            "🗂️ <b>Работа с документами</b><br><br>"
-            "Выберите операцию для работы с документами:<br><br>"
-            "📋 <b>Саммаризация</b> — краткая выжимка документа<br>"
-            "⚠️ <b>Анализ рисков</b> — поиск проблемных мест<br>"
-            "💬 <b>Чат с документом</b> — задавайте вопросы по тексту<br>"
-            "🔒 <b>Обезличивание</b> — удаление персональных данных<br>"
-            "🌍 <b>Перевод</b> — перевод на другие языки<br>"
-            "👁️ <b>OCR</b> — распознавание сканированных документов<br><br>"
+            "🗂️ <b>Работа с документами</b>\n\n"
+            "Выберите операцию для работы с документами:\n\n"
+            "📋 <b>Саммаризация</b> — краткая выжимка документа\n"
+            "⚠️ <b>Анализ рисков</b> — поиск проблемных мест\n"
+            "💬 <b>Чат с документом</b> — задавайте вопросы по тексту\n"
+            "🔒 <b>Обезличивание</b> — удаление персональных данных\n"
+            "🌍 <b>Перевод</b> — перевод на другие языки\n"
+            "👁️ <b>OCR</b> — распознавание сканированных документов\n\n"
             "Поддерживаемые форматы: PDF, DOCX, DOC, TXT, изображения"
         )
 
-        await callback.message.edit_text(
+        await callback.message.answer(
             message_text,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -1412,13 +1405,13 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
         formats = ", ".join(operation_info.get("formats", []))
 
         message_text = (
-            f"{emoji} <b>{name}</b><br><br>"
-            f"{html_escape(description)}<br><br>"
-            f"<b>Поддерживаемые форматы:</b> {html_escape(formats)}<br><br>"
+            f"{emoji} <b>{name}</b>\n\n"
+            f"{html_escape(description)}\n\n"
+            f"<b>Поддерживаемые форматы:</b> {html_escape(formats)}\n\n"
             "📎 <b>Загрузите документ</b> для обработки или отправьте файл."
         )
 
-        await callback.message.edit_text(
+        await callback.message.answer(
             message_text,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(
@@ -1494,8 +1487,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
         operation_name = operation_info.get("name", operation)
 
         status_msg = await message.answer(
-            f"📄 Обрабатываем документ <b>{html_escape(file_name)}</b>...<br><br>"
-            f"⏳ Операция: {html_escape(operation_name)}<br>"
+            f"📄 Обрабатываем документ <b>{html_escape(file_name)}</b>...\n\n"
+            f"⏳ Операция: {html_escape(operation_name)}\n"
             f"📊 Размер: {file_size // 1024} КБ",
             parse_mode=ParseMode.HTML,
         )
@@ -1554,7 +1547,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 )
             else:
                 await message.answer(
-                    f"❌ <b>Ошибка обработки документа</b><br><br>{html_escape(str(result.message))}",
+                    f"❌ <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
                     parse_mode=ParseMode.HTML,
                 )
 
@@ -1566,7 +1559,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 pass
 
             await message.answer(
-                f"❌ <b>Ошибка обработки документа</b><br><br>{html_escape(str(e))}",
+                f"❌ <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
                 parse_mode=ParseMode.HTML,
             )
             logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
