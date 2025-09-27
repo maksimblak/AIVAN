@@ -362,24 +362,30 @@ async def _start_status_indicator(message):
         message.bot,
         message.chat.id,
         show_checklist=True,
+        show_context_toggle=False,   # ⟵ прячем кнопку
         min_edit_interval=0.9,
-        auto_advance_stages=True,   # автопродвижение
-        # percent_thresholds=[1, 10, 30, 50, 70, 85, 95],  # опционально
+        auto_advance_stages=True,
+        # percent_thresholds=[1, 10, 30, 50, 70, 85, 95],
     )
-    await status.start(auto_cycle=True, interval=2.0)
+    await status.start(auto_cycle=True, interval=1.0)  # см. пункт 2 ниже
     return status
 
-async def _stop_status_indicator(status: ProgressStatus | None, ok: bool):
-    if not status:
+async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> None:
+    if status is None:
         return
+
     try:
         if ok:
-            await status.complete()   # ставит «выполнено», фиксирует время
+            await status.complete()  # ставит «выполнено», фиксирует время
         else:
             await status.fail("Ошибка при формировании ответа")
     except Exception:
-        pass
+        return  # опционально залогируй
 
+    # по запросу: удаляем прогресс-бар, когда ответ пришёл
+    if ok and getattr(status, "message_id", None):
+        with suppress(Exception):
+            await status.bot.delete_message(status.chat_id, status.message_id)
 
 # ============ ФУНКЦИИ РЕЙТИНГА И UI ============
 
