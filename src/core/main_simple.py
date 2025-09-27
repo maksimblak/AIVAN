@@ -184,6 +184,8 @@ def get_user_session(user_id: int) -> UserSession:
     return session_store.get_or_create(user_id)
 
 
+
+
 # ============ УТИЛИТЫ ============
 
 
@@ -235,119 +237,9 @@ def _md_links_to_anchors(line: str) -> str:
     return "".join(result_parts)
 
 
-def sanitize_telegram_html(raw: str) -> str:
-    """Allow only Telegram-supported HTML tags; escape the rest.
-
-    Allowed: b, i, u, s, code, pre, a[href=http/https], br
-    """
-    if not raw:
-        return ""
-    # Start from fully escaped text
-    esc = html_escape(raw, quote=True)
-    # Restore <br>, <br/>, <br />
-    esc = re.sub(r"&lt;br\s*/?&gt;", "<br>", esc, flags=re.IGNORECASE)
-    # Restore simple tags exactly
-    for tag in ("b", "i", "u", "s", "code", "pre"):
-        esc = re.sub(rf"&lt;{tag}&gt;", rf"<{tag}>", esc, flags=re.IGNORECASE)
-        esc = re.sub(rf"&lt;/{tag}&gt;", rf"</{tag}>", esc, flags=re.IGNORECASE)
-    # Restore anchors with http(s) only; keep entities like &amp; inside href
-    esc = re.sub(
-        r"&lt;a href=&quot;(https?://[^&quot;]+)&quot;&gt;",
-        r'<a href="\1">',
-        esc,
-        flags=re.IGNORECASE,
-    )
-    esc = re.sub(r"&lt;/a&gt;", "</a>", esc, flags=re.IGNORECASE)
-    return esc
 
 
-def render_legal_html(raw: str) -> str:
-    """Beautify plain model text into simple, safe HTML.
 
-    - Escapes HTML by default
-    - Converts [text](url) markdown links to <a>
-    - Bolds headings (lines ending with ':' or starting with 'N) ' or 'TL;DR')
-    - Normalizes bullets (leading '-', '—', '•') to an em dash '— '
-    - Replaces newlines with <br>
-    """
-    if not raw:
-        return ""
-
-    # If looks like HTML from the model, sanitize and keep structure
-    if "<" in raw and re.search(r"<\s*(b|i|u|s|code|pre|a|br)\b", raw, re.IGNORECASE):
-        return sanitize_telegram_html(raw)
-
-    def _auto_paragraph_breaks(text: str) -> str:
-        # Normalize spaces but preserve intentional structure
-        t = re.sub(r"[ \t]+", " ", text)  # Only normalize spaces/tabs, keep newlines
-
-        # Insert breaks before numbered items like "1) ", "2) ", "1.", "2."
-        t = re.sub(r"(?<!\n)(?=\b\d+[\.)]\s)", "\n\n", t)
-
-        # Insert breaks before section markers
-        t = re.sub(r"(?<!\n)(?=\b(?:Коротко|Далее|Вариант|Итак|Резюме|Заключение)\b)", "\n\n", t)
-
-        # Break after sentence end before em dash bullets or numbers
-        t = re.sub(r"(?<=[\.!?])\s+(?=(?:—|•|-|\d+[\.)]\s))", "\n", t)
-
-        # Insert breaks before article references like "ст. 304", "Статья 222"
-        t = re.sub(r"(?<=[\.!?])\s+(?=(?:—\s*)?(?:ст\.|Статья)\s*\d+)", "\n", t)
-
-        # Break long sentences with semicolons into separate lines
-        t = re.sub(r";\s+(?=и\s+\d+\))", ";\n— ", t)
-
-        return t
-
-    text = raw.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Always apply auto paragraph breaks for better structure
-    text = _auto_paragraph_breaks(text)
-
-    lines = text.split("\n")
-    out: list[str] = []
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "":
-            out.append("<br>")
-            continue
-
-        # Enhanced bullet detection
-        if re.match(r"^\s*[-•—]\s+", line):
-            line = re.sub(r"^\s*[-•—]\s+", "— ", line)
-
-        # Transform md links and escape other parts FIRST
-        html_line = _md_links_to_anchors(line)
-
-        # Numbered lists with proper formatting AFTER escaping
-        if re.match(r"^\s*\d+[\.)]\s+", stripped):
-            html_line = re.sub(r"(\d+[\.)]\s+)", r"<b>\1</b>", html_line)
-
-        # Enhanced heading detection
-        is_heading = (
-            stripped.endswith(":")
-            or stripped.upper().startswith(("КОРОТКО", "TL;DR", "РЕЗЮМЕ", "ЗАКЛЮЧЕНИЕ"))
-            or re.match(r"^\s*\d+\.\s+[А-ЯA-Z]", stripped) is not None  # "1. Какие статьи"
-        )
-
-        # Special formatting for article references AFTER escaping
-        if re.search(r"\b(?:ст\.|Статья)\s*\d+", stripped):
-            html_line = re.sub(r"(\b(?:ст\.|Статья)\s*\d+[^\s]*)", r"<b>\1</b>", html_line)
-
-        if is_heading:
-            html_line = f"<b>{html_line}</b>"
-            out.append(html_line + "<br><br>")
-        else:
-            out.append(html_line + "<br>")
-
-    # Improved br collapse - better paragraph separation
-    html_result = "".join(out)
-    html_result = re.sub(r"(?:<br>\s*){4,}", "<br><br><br>", html_result)  # Max 3 <br> tags
-    html_result = re.sub(
-        r"(?:<br>\s*){3,}", "<br><br>", html_result
-    )  # Usually 2 <br> for paragraphs
-
-    return html_result
 
 
 def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
@@ -674,7 +566,7 @@ async def cmd_start(message: Message):
     logger.info("User %s started bot", message.from_user.id)
 
 
-# ============ ОБРАБОТКА ВОПРОСОВ ============
+
 
 
 async def process_question(message: Message, *, text_override: str | None = None):
