@@ -1,452 +1,210 @@
-"""
-Менеджер статусов и прогресса для красивого UX
-Отвечает за анимацию загрузки, прогресс-бары и статусные сообщения
-"""
+# status_manager.py
+# Полноценный прогресс-бар для Telegram (aiogram v3):
+# - единое сообщение с полосой, таймером и чек-листом из 7 шагов;
+# - авто-цикл процентов, безопасное редактирование с троттлингом;
+# - тумблер «Отображать контекстные вопросы» (inline-кнопка).
 
 from __future__ import annotations
-
 import asyncio
-from contextlib import suppress
-from datetime import datetime
-from time import monotonic
-from html import escape as html_escape
+import time
+from typing import Optional, Callable
 
-from aiogram import Bot
-from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
+from aiogram import Router, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-from .ui_components import Emoji
-
+progress_router = Router()  # Роутер для обработчика тумблера
 
 class ProgressStatus:
     PROGRESS_FLOW = [
-        {"label": "Анализирую ваш запрос", "progress": 1},
-        {"label": "Ищу законы и нормы права", "progress": 2},
-        {"label": "Изучаю позицию высших судов", "progress": 3},
-        {"label": "Формирую правовую позицию", "progress": 4},
-        {"label": "Разрабатываю аргументацию", "progress": 5},
-        {"label": "Проверяю точность и полноту", "progress": 6},
-        {"label": "Формирую ответ", "progress": 7},
+        {"label": "Анализирую ваш запрос"},
+        {"label": "Ищу законы и нормы права"},
+        {"label": "Изучаю позицию высших судов"},
+        {"label": "Формирую правовую позицию"},
+        {"label": "Разрабатываю аргументацию"},
+        {"label": "Проверяю точность и полноту"},
+        {"label": "Формирую ответ"},
     ]
-
-    """Класс для управления статусом обработки запроса"""
 
     def __init__(
         self,
-        bot: Bot,
+        bot,
         chat_id: int,
         *,
-        auto_interval: float = 1.8,
-        manual_hold: float = 2.5,
+        show_checklist: bool = True,
+        show_context_toggle: bool = True,
+        context_enabled_default: bool = False,
+        min_edit_interval: float = 0.9,
+        total_stages: int = 100,
+        on_context_toggle: Optional[Callable[[bool], None]] = None,
     ):
         self.bot = bot
         self.chat_id = chat_id
-        self.status_message: Message | None = None
-        self.current_stage = 0
-        self.total_stages = len(self.PROGRESS_FLOW)
-        self.flow_index = -1
-        self._auto_interval = auto_interval
-        self._manual_hold_seconds = manual_hold
-        self._manual_hold_until = 0.0
-        self._auto_task: asyncio.Task | None = None
-        self._stop_event: asyncio.Event | None = None
+        self.show_checklist = show_checklist
+        self.show_context_toggle = show_context_toggle
+        self.context_enabled = context_enabled_default
+        self.min_edit_interval = float(min_edit_interval)
+        self.total_stages = total_stages
+        self.on_context_toggle = on_context_toggle
 
-    async def start(
-        self,
-        initial_message: str | None = None,
-        *,
-        auto_cycle: bool = True,
-        interval: float | None = None,
-    ) -> Message:
-        """Запускает показ статуса и при необходимости цикл обновлений"""
-        if not initial_message:
-            initial_message = (
-                f"{Emoji.LOADING} **Обрабатываю ваш запрос\.\.\.** \n\n_Пожалуйста, подождите_"
-            )
+        self.message_id: Optional[int] = None
+        self.current_percent: int = 0
+        self.current_stage: int = 0  # 0..7
+        self._last_edit_ts: float = 0.0
+        self._running: bool = False
+        self.start_time: Optional[float] = None
+        self._lock = asyncio.Lock()
 
-        formatted = self._format_status_text(initial_message)
-        try:
-            self.status_message = await self.bot.send_message(
-                self.chat_id, formatted, parse_mode=ParseMode.HTML
-            )
-        except TelegramBadRequest:
-            self.status_message = await self.bot.send_message(
-                self.chat_id, initial_message
-            )
+    # -------------------- ПУБЛИЧНЫЕ МЕТОДЫ --------------------
+
+    async def start(self, auto_cycle: bool = True, interval: float = 2.0) -> None:
+        """Создаёт сообщение прогресса и, при необходимости, запускает тикер."""
+        self.start_time = time.monotonic()
+        self._running = True
+        content = self._render()
+        msg = await self.bot.send_message(
+            self.chat_id,
+            content,
+            parse_mode="HTML",
+            reply_markup=self._kb() if self.show_context_toggle else None,
+            disable_web_page_preview=True,
+        )
+        self.message_id = msg.message_id
+
+        # регистрируемся, чтобы callback мог найти объект
+        reg = getattr(self.bot, "_ps_registry", None)
+        if reg is None:
+            reg = self.bot._ps_registry = {}
+        reg[(self.chat_id, self.message_id)] = self
 
         if auto_cycle:
-            if interval is not None:
-                self._auto_interval = max(0.5, float(interval))
-            self._start_auto_cycle()
+            asyncio.create_task(self._ticker(float(interval)))
 
-        return self.status_message
-
-    def _start_auto_cycle(self) -> None:
-        if self._auto_task is not None or self.status_message is None:
-            return
-        self._manual_hold_until = monotonic() + self._manual_hold_seconds
-        self._stop_event = asyncio.Event()
-        self._auto_task = asyncio.create_task(self._auto_cycle_loop())
-
-    async def _auto_cycle_loop(self) -> None:
+    async def complete(self, note: Optional[str] = None) -> None:
+        """Успешное завершение."""
+        self._running = False
+        self.current_percent = 100
+        if self.current_stage < len(self.PROGRESS_FLOW):
+            self.current_stage = len(self.PROGRESS_FLOW)
+        await self._safe_edit(self._render(completed=True, note=note))
         try:
-            while True:
-                await asyncio.sleep(self._auto_interval)
-                if self._stop_event and self._stop_event.is_set():
-                    break
-                if monotonic() < self._manual_hold_until:
-                    continue
-                await self.advance()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._auto_task = None
-
-    async def advance(self) -> None:
-        if not self.status_message:
-            return
-        self.flow_index = (self.flow_index + 1) % len(self.PROGRESS_FLOW)
-        flow = self.PROGRESS_FLOW[self.flow_index]
-        stage = min(flow["progress"], self.total_stages)
-        message = flow["label"]
-        await self.update_stage(stage, message, auto=True)
-
-    def _format_status_text(
-        self,
-        text: str,
-        progress_bar: str | None = None,
-        percentage: int | None = None,
-    ) -> str:
-        safe = html_escape(text).replace("\n", "<br>")
-        if progress_bar is not None and percentage is not None:
-            bar = html_escape(progress_bar)
-            safe += f"<br><br><code>{bar}</code> {percentage}%"
-        return safe
-
-    async def update_stage(self, stage: int, message: str, *, auto: bool = False) -> None:
-        """Обновляет текущую стадию обработки"""
-        if not self.status_message:
-            return
-
-        stage = max(0, min(stage, self.total_stages))
-        self.current_stage = stage
-        progress_bar = self._create_progress_bar(stage, self.total_stages)
-        percentage = int((stage / self.total_stages) * 100) if self.total_stages else 0
-
-        status_text = self._format_status_text(message, progress_bar, percentage)
-
-        try:
-            await self.status_message.edit_text(status_text, parse_mode=ParseMode.HTML)
+            getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
         except Exception:
             pass
 
-        if not auto:
-            self._manual_hold_until = monotonic() + self._manual_hold_seconds
-            if stage > 0:
-                self.flow_index = min(stage - 1, len(self.PROGRESS_FLOW) - 1)
-            else:
-                self.flow_index = -1
-
-    async def complete(self) -> None:
-        """Завершает показ статуса"""
-        if self._stop_event:
-            self._stop_event.set()
-        if self._auto_task:
-            self._auto_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._auto_task
-            self._auto_task = None
-        if self.status_message:
-            try:
-                await self.status_message.delete()
-            except Exception:
-                pass
-            self.status_message = None
-
-    def _create_progress_bar(self, current: int, total: int, width: int = 10) -> str:
-        """Создает ASCII прогресс-бар"""
-        if total <= 0:
-            total = 1
-        filled = int((current / total) * width)
-        empty = max(0, width - filled)
-        return "▓" * filled + "░" * empty
-
-
-class AnimatedStatus:
-    """Класс для анимированного статуса загрузки"""
-
-    LOADING_FRAMES = [
-        f"{Emoji.LOADING} Думаю\\.\\.\\.",
-        f"{Emoji.LOADING} Думаю\\.\\.\\.",
-        f"{Emoji.LOADING} Анализирую\\.\\.\\.",
-        f"{Emoji.LOADING} Анализирую\\.\\.\\.",
-        f"{Emoji.SEARCH} Ищу практику\\.\\.\\.",
-        f"{Emoji.SEARCH} Ищу практику\\.\\.\\.",
-        f"{Emoji.DOCUMENT} Составляю ответ\\.\\.\\.",
-        f"{Emoji.DOCUMENT} Составляю ответ\\.\\.\\.",
-    ]
-
-    def __init__(self, bot: Bot, chat_id: int):
-        self.bot = bot
-        self.chat_id = chat_id
-        self.status_message: Message | None = None
-        self.is_running = False
-        self.current_frame = 0
-
-    async def start(self) -> Message:
-        """Запускает анимацию"""
-        self.is_running = True
-        self.current_frame = 0
-
-        self.status_message = await self.bot.send_message(
-            self.chat_id, self.LOADING_FRAMES[0], parse_mode=ParseMode.MARKDOWN_V2
-        )
-
-        # Запускаем анимацию в фоне
-        asyncio.create_task(self._animate())
-
-        return self.status_message
-
-    async def stop(self):
-        """Останавливает анимацию"""
-        self.is_running = False
-        if self.status_message:
-            try:
-                await self.status_message.delete()
-            except Exception:
-                pass
-            self.status_message = None
-
-    async def _animate(self):
-        """Анимирует статусное сообщение"""
-        while self.is_running and self.status_message:
-            try:
-                await asyncio.sleep(0.8)  # Интервал анимации
-                if not self.is_running:
-                    break
-
-                self.current_frame = (self.current_frame + 1) % len(self.LOADING_FRAMES)
-
-                await self.status_message.edit_text(
-                    self.LOADING_FRAMES[self.current_frame], parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception:
-                # Останавливаем анимацию при ошибке
-                break
-
-
-class StatusMessages:
-    """Готовые статусные сообщения"""
-
-    STAGES = [
-        f"{Emoji.SEARCH} Анализирую ваш вопрос\\.\\.\\.",
-        f"{Emoji.LOADING} Ищу релевантную судебную практику\\.\\.\\.",
-        f"{Emoji.DOCUMENT} Формирую структурированный ответ\\.\\.\\.",
-        f"{Emoji.MAGIC} Финализирую рекомендации\\.\\.\\.",
-    ]
-
-    @staticmethod
-    def get_stage_message(stage: int) -> str:
-        """Получить сообщение для стадии"""
-        if 0 <= stage < len(StatusMessages.STAGES):
-            return StatusMessages.STAGES[stage]
-        return StatusMessages.STAGES[-1]
-
-    @staticmethod
-    def get_completion_message() -> str:
-        """Сообщение о завершении"""
-        return f"{Emoji.SUCCESS} **Готово\\!**"
-
-
-class TypingSimulator:
-    """Имитирует печатание для более живого интерфейса"""
-
-    def __init__(self, bot: Bot, chat_id: int):
-        self.bot = bot
-        self.chat_id = chat_id
-        self._typing_task: asyncio.Task | None = None
-        self._is_typing = False
-
-    async def start_typing(self):
-        """Начинает показ индикатора печатания"""
-        if self._is_typing:
-            return
-
-        self._is_typing = True
-        self._typing_task = asyncio.create_task(self._typing_loop())
-
-    async def stop_typing(self):
-        """Останавливает показ индикатора печатания"""
-        self._is_typing = False
-        if self._typing_task:
-            self._typing_task.cancel()
-            try:
-                await self._typing_task
-            except asyncio.CancelledError:
-                pass
-
-    async def _typing_loop(self):
-        """Цикл отправки индикатора печатания"""
+    async def fail(self, note: Optional[str] = None) -> None:
+        """Завершение с ошибкой."""
+        self._running = False
+        await self._safe_edit(self._render(failed=True, note=note))
         try:
-            while self._is_typing:
-                await self.bot.send_chat_action(self.chat_id, "typing")
-                await asyncio.sleep(4.5)  # Telegram показывает typing 5 сек
-        except asyncio.CancelledError:
+            getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
+        except Exception:
             pass
 
+    async def update_stage(self, percent: int, label: Optional[str] = None) -> None:
+        """Обновить проценты и (опционально) продвинуть чек-лист до шага по label."""
+        self.current_percent = max(self.current_percent, min(int(percent), 100))
+        if label:
+            for idx, item in enumerate(self.PROGRESS_FLOW, start=1):
+                if item["label"] == label:
+                    self.current_stage = max(self.current_stage, idx)
+                    break
+        await self._safe_edit(self._render())
 
-class QuickStatus:
-    """Быстрые статусные методы"""
+    def duration_text(self) -> str:
+        if not self.start_time:
+            return "00:00"
+        sec = int(time.monotonic() - self.start_time)
+        return f"{sec // 60:02d}:{sec % 60:02d}"
+
+    # -------------------- ВНУТРЕННЕЕ --------------------
+
+    async def _ticker(self, interval: float) -> None:
+        """Небольшой автопрогресс, пока ждём ответ модели."""
+        while self._running:
+            await asyncio.sleep(interval)
+            if self.current_percent < 90:
+                self.current_percent += 1
+            await self._safe_edit(self._render())
+
+    async def _safe_edit(self, html: str) -> None:
+        """Безопасно редактирует сообщение с троттлингом и блокировкой."""
+        if not self.message_id:
+            return
+        now = time.monotonic()
+        if now - self._last_edit_ts < self.min_edit_interval:
+            return
+        async with self._lock:
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=self.chat_id,
+                    message_id=self.message_id,
+                    text=html,
+                    parse_mode="HTML",
+                    reply_markup=self._kb() if self.show_context_toggle else None,
+                    disable_web_page_preview=True,
+                )
+                self._last_edit_ts = now
+            except Exception:
+                # Игнорируем редкие гонки/ограничения Telegram
+                pass
+
+    def _kb(self) -> Optional[InlineKeyboardMarkup]:
+        if not self.show_context_toggle:
+            return None
+        title = "Отображать контекстные вопросы: " + ("Вкл" if self.context_enabled else "Выкл")
+        btn = InlineKeyboardButton(
+            text=title,
+            callback_data=f"ctx:{self.chat_id}:{self.message_id}",
+        )
+        return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+
+    def _render(self, *, completed: bool = False, failed: bool = False, note: Optional[str] = None) -> str:
+        status = (
+            "Действие выполнено" if completed else
+            "Ошибка" if failed else
+            "Действие выполняется"
+        )
+        bar = self._progress_bar(self.current_percent)
+        lines = [
+            f"<b>{status}</b> за <code>{self.duration_text()}</code>",
+            bar,
+            "",
+        ]
+        if self.show_checklist:
+            for i, step in enumerate(self.PROGRESS_FLOW, start=1):
+                mark = "●" if i <= self.current_stage else "○"
+                lines.append(f"{mark} {step['label']}")
+        if note:
+            lines += ["", note]
+        # небольшой запас до лимита 4096 с учётом тегов
+        return "\n".join(lines)[:3990]
 
     @staticmethod
-    async def send_processing(bot: Bot, chat_id: int) -> Message:
-        """Отправляет сообщение об обработке"""
-        return await bot.send_message(
-            chat_id,
-            f"{Emoji.LOADING} **Обрабатываю\\.\\.\\.**\n\n_Это займет несколько секунд_",
-            parse_mode=ParseMode.MARKDOWN_V2,
-        )
+    def _progress_bar(pct: int) -> str:
+        pct = max(0, min(100, int(pct)))
+        blocks = 20
+        filled = int(blocks * pct / 100)
+        return "▰" * filled + "▱" * (blocks - filled) + f"  {pct}%"
 
-    @staticmethod
-    async def send_searching(bot: Bot, chat_id: int) -> Message:
-        """Отправляет сообщение о поиске"""
-        return await bot.send_message(
-            chat_id,
-            f"{Emoji.SEARCH} **Ищу информацию\\.\\.\\.**\n\n_Проверяю базы данных судебной практики_",
-            parse_mode=ParseMode.MARKDOWN_V2,
-        )
+# -------------------- CALLBACK: тумблер «контекстные вопросы» --------------------
 
-    @staticmethod
-    async def send_analyzing(bot: Bot, chat_id: int) -> Message:
-        """Отправляет сообщение об анализе"""
-        return await bot.send_message(
-            chat_id,
-            f"{Emoji.DOCUMENT} **Анализирую найденную информацию\\.\\.\\.**\n\n_Формирую правовую позицию_",
-            parse_mode=ParseMode.MARKDOWN_V2,
-        )
-
-    @staticmethod
-    async def send_error(bot: Bot, chat_id: int, error_text: str = "") -> Message:
-        """Отправляет сообщение об ошибке"""
-        message = (
-            f"{Emoji.ERROR} **Произошла ошибка**\n\n_Попробуйте позже или переформулируйте вопрос_"
-        )
-
-        if error_text:
-            message += f"\n\n`{error_text[:100]}`"
-
-        return await bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN_V2)
-
-
-# ============ КОНТЕКСТНЫЕ МЕНЕДЖЕРЫ ============
-
-
-class StatusContext:
-    """Контекстный менеджер для статусов"""
-
-    def __init__(self, bot: Bot, chat_id: int, use_animation: bool = False):
-        self.bot = bot
-        self.chat_id = chat_id
-        self.use_animation = use_animation
-        self.status = None
-
-    async def __aenter__(self):
-        if self.use_animation:
-            self.status = AnimatedStatus(self.bot, self.chat_id)
-        else:
-            self.status = ProgressStatus(self.bot, self.chat_id)
-
-        await self.status.start()
-        return self.status
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.status:
-            if hasattr(self.status, "complete"):
-                await self.status.complete()
-            else:
-                await self.status.stop()
-
-
-class TypingContext:
-    """Контекстный менеджер для индикатора печатания"""
-
-    def __init__(self, bot: Bot, chat_id: int):
-        self.typing = TypingSimulator(bot, chat_id)
-
-    async def __aenter__(self):
-        await self.typing.start_typing()
-        return self.typing
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.typing.stop_typing()
-
-
-# ============ ДЕКОРАТОРЫ ============
-
-
-def with_status(use_animation: bool = False):
-    """Декоратор для автоматического управления статусом"""
-
-    def decorator(func):
-        async def wrapper(message: Message, *args, **kwargs):
-            bot = message.bot
-            chat_id = message.chat.id
-
-            async with StatusContext(bot, chat_id, use_animation) as status:
-                return await func(message, status, *args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def with_typing(func):
-    """Декоратор для автоматического показа индикатора печатания"""
-
-    async def wrapper(message: Message, *args, **kwargs):
-        bot = message.bot
-        chat_id = message.chat.id
-
-        async with TypingContext(bot, chat_id):
-            return await func(message, *args, **kwargs)
-
-    return wrapper
-
-
-# ============ СТАТИСТИКА ВРЕМЕНИ ============
-
-
-class ResponseTimer:
-    """Таймер для измерения времени ответа"""
-
-    def __init__(self):
-        self.start_time: datetime | None = None
-        self.end_time: datetime | None = None
-
-    def start(self):
-        """Начать измерение"""
-        self.start_time = datetime.now()
-
-    def stop(self):
-        """Закончить измерение"""
-        self.end_time = datetime.now()
-
-    @property
-    def duration(self) -> float:
-        """Длительность в секундах"""
-        if not self.start_time or not self.end_time:
-            return 0.0
-        return (self.end_time - self.start_time).total_seconds()
-
-    def get_duration_text(self) -> str:
-        """Получить текст с длительностью"""
-        duration = self.duration
-        if duration < 1:
-            return f"{int(duration * 1000)}мс"
-        elif duration < 60:
-            return f"{duration:.1f}с"
-        else:
-            minutes = int(duration // 60)
-            seconds = int(duration % 60)
-            return f"{minutes}м {seconds}с"
+@progress_router.callback_query(F.data.startswith("ctx:"))
+async def _toggle_context(cb: CallbackQuery):
+    try:
+        _, chat_id, message_id = cb.data.split(":")
+        key = (int(chat_id), int(message_id))
+        reg = getattr(cb.bot, "_ps_registry", {})
+        ps: Optional[ProgressStatus] = reg.get(key)
+        if not ps or not cb.message or cb.message.chat.id != int(chat_id):
+            await cb.answer()
+            return
+        ps.context_enabled = not ps.context_enabled
+        await ps._safe_edit(ps._render())
+        if callable(ps.on_context_toggle):
+            try:
+                await asyncio.shield(ps.on_context_toggle(ps.context_enabled))  # если on_context_toggle async
+            except TypeError:
+                ps.on_context_toggle(ps.context_enabled)  # если sync
+        await cb.answer("Переключено")
+    except Exception:
+        await cb.answer()

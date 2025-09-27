@@ -45,7 +45,8 @@ from dotenv import load_dotenv
 
 from src.bot.logging_setup import setup_logging
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
-from src.bot.status_manager import AnimatedStatus, ProgressStatus, ResponseTimer, TypingContext
+from src.bot.status_manager import ProgressStatus, progress_router
+
 from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, sanitize_telegram_html
 from src.core.audio_service import AudioService
@@ -80,6 +81,22 @@ config = load_config()
 class WelcomeMedia:
     path: Path
     media_type: str
+
+class ResponseTimer:
+    def __init__(self) -> None:
+        self._t0 = None
+        self.duration = 0.0
+
+    def start(self) -> None:
+        self._t0 = time.monotonic()
+
+    def stop(self) -> None:
+        if self._t0 is not None:
+            self.duration = max(0.0, time.monotonic() - self._t0)
+
+    def get_duration_text(self) -> str:
+        s = int(self.duration)
+        return f"{s//60:02d}:{s%60:02d}"
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
@@ -120,7 +137,7 @@ SUB_DURATION_DAYS = config.sub_duration_days
 # RUB платеж через Telegram Payments (провайдер-эквайринг)
 RUB_PROVIDER_TOKEN = config.telegram_provider_token_rub
 SUB_PRICE_RUB = config.subscription_price_rub  # руб.
-SUB_PRICE_RUB_KOPEKS = SUB_PRICE_RUB * 100
+SUB_PRICE_RUB_KOPEKS = int(float(SUB_PRICE_RUB) * 100)
 
 # Telegram Stars (XTR)
 STARS_PROVIDER_TOKEN = config.telegram_provider_token_stars
@@ -477,27 +494,25 @@ async def _rate_limit_guard(user_id: int, message: Message) -> bool:
     return False
 
 
-async def _start_status_indicator(message: Message):
-    if not message.bot:
-        return None
-
-    if USE_ANIMATION:
-        status = AnimatedStatus(message.bot, message.chat.id)
-        await status.start()
-        return status
-    status = ProgressStatus(message.bot, message.chat.id)
-    await status.start("Обрабатываю ваш запрос...")  # уже экранировано для HTML
+async def _start_status_indicator(message):
+    status = ProgressStatus(
+        message.bot, message.chat.id,
+        show_checklist=True,          # кружочки со стадиями
+        total_stages=100,             # проценты
+        min_edit_interval=0.9,
+    )
+    # ВАЖНО: запускаем авто-цикл (двигает индикатор, пока вы не дергаете вручную)
+    await status.start(auto_cycle=True, interval=2.0)
     return status
 
-
-async def _stop_status_indicator(status) -> None:
-    if status is None:
+async def _stop_status_indicator(status: ProgressStatus | None, ok: bool):
+    if not status:
         return
     try:
-        if hasattr(status, "complete"):
-            await status.complete()
+        if ok:
+            await status.complete()   # ставит «выполнено», фиксирует время
         else:
-            await status.stop()
+            await status.fail("Ошибка при формировании ответа")
     except Exception:
         pass
 
@@ -561,28 +576,48 @@ async def cmd_start(message: Message):
     
  Меня зовут <b>ИИ-ИВАН</b>, я ваш виртуальный юридический ассистент.
  
- <i>Моя миссия</i> — сделать жизнь юристов проще и снять с них рутину.
     
-
  <b>📌 ЧТО Я УМЕЮ ?</b>
   ═══════════════════════════════════════════
 
-1. Консультировать по любой сфере права, оценивать существующую стратегию, 
+<b>💼 ПРАВОВОЕ КОНСУЛЬТИРОВАНИЕ</b>
+• Консультации по любой сфере права
+• Оценка существующих стратегий  
+• Экспертные заключения за 1 минуту
+<i>(владею всем законодательством РФ и миллионами судебных решений)</i>
 
-(я знаю все заканодательство РФ,  миллионы решений и могу дать ответ за 1 минуту)
+<b>⚖️ СУДЕБНАЯ ПРАКТИКА</b>
+• Поиск релевантных решений
+• Анализ судебной практики
+• Стратегические рекомендации
 
-2. Искать и анализировать судебную практику
+<b>📝 ДОКУМЕНТООБОРОТ</b>
+• Исковые заявления и жалобы
+• Ходатайства и договоры  
+• Анализ рисков документов
+• Проверка соответствия законодательству
+
+<b>🔒 КОНФИДЕНЦИАЛЬНОСТЬ</b>
+• Обезличивание документов
+• Безопасная передача третьим лицам
+
+<b>🌐 ЦИФРОВЫЕ РЕШЕНИЯ</b>
+• Переводы юридических документов
+• OCR-распознавание текста  
+• Краткие аналитические сводки
+• Интерактивный анализ загруженных файлов
+
     
- <b>📌 ПРИМЕРЫ ОБРАЩЕНИЙ ?</b>
+ <b>📌 ПРИМЕРЫ ОБРАЩЕНИЙ </b>
   ═══════════════════════════════════════════
  
- ▫️ “Администрация отказала по [описание причины], подбери стратегию как ее обойти со ссылками на судебную практику”
+ ▫️  <i>“Администрация отказала по [описание причины], подбери стратегию как ее обойти со ссылками на судебную практику”</i> 
  
- ▫️ “Чем отличатся статья [название] от статьи [название]”
+ ▫️  <i>“Чем отличатся статья [название] от статьи [название]”</i> 
     
- ▫️ “Подбери судебную практику по [описание дела]”
+ ▫️  <i>“Подбери судебную практику по [описание дела]”</i> 
     
- ▫️ “Могут ли наследники [описание нюанса]”
+ ▫️  <i>“Могут ли наследники [описание нюанса]”</i> 
     
  ═══════════════════════════════════════════
     
@@ -650,7 +685,6 @@ async def process_question(message: Message, *, text_override: str | None = None
     chat_id = message.chat.id
     message_id = message.message_id
 
-    # Создаем контекст для обработки ошибок
     error_context = ErrorContext(
         user_id=user_id, chat_id=chat_id, message_id=message_id, function_name="process_question"
     )
@@ -659,20 +693,17 @@ async def process_question(message: Message, *, text_override: str | None = None
     question_text = ((text_override if text_override is not None else (message.text or ""))).strip()
     quota_msg_to_send: str | None = None
 
-    # Проверяем, не ждем ли мы комментарий для рейтинга
     if not hasattr(user_session, "pending_feedback_request_id"):
         user_session.pending_feedback_request_id = None
-
     if user_session.pending_feedback_request_id is not None:
         await handle_pending_feedback(message, user_session, question_text)
         return
-    quota_is_trial: bool = False
 
-    # Проверяем, что это не команда
+    # Игнорим команды
     if question_text.startswith("/"):
         return
 
-    # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+    # Валидация
     if error_handler is None:
         raise SystemException("Error handler not initialized", error_context)
     cleaned = await _validate_question_or_reply(message, question_text, user_id)
@@ -680,19 +711,20 @@ async def process_question(message: Message, *, text_override: str | None = None
         return
     question_text = cleaned
 
-    # Timer
+    # Таймер
     timer = ResponseTimer()
     timer.start()
 
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
 
     try:
-        # Global rate limit per user
+        # Rate limit
         if not await _rate_limit_guard(user_id, message):
             return
 
-        # Контроль доступа через сервис доступа (ООП)
+        # Доступ/квота
         quota_text = ""
+        quota_is_trial: bool = False
         if access_service is not None:
             decision = await access_service.check_and_consume(user_id)
             if not decision.allowed:
@@ -713,97 +745,75 @@ async def process_question(message: Message, *, text_override: str | None = None
                 )
                 quota_msg_to_send = f"{Emoji.STATS} <b>{quota_msg_core}</b>"
 
-        # Показываем статус
+        # Прогресс-бар
         status = await _start_status_indicator(message)
+        ok_flag = False  # финальный флаг для complete()/fail()
+
+        request_error_type = None
+        stream_manager = None
+        request_start_time = time.time()
 
         try:
-            # Имитация этапов
+            # Имитация первых этапов (если анимация отключена)
             if not USE_ANIMATION and hasattr(status, "update_stage"):
                 await asyncio.sleep(0.5)
                 await status.update_stage(1, f"{Emoji.SEARCH} Анализирую ваш вопрос...")
-                await asyncio.sleep(1)
-                await status.update_stage(
-                    2, f"{Emoji.LOADING} Ищу релевантную судебную практику..."
-                )
+                await asyncio.sleep(1.0)
+                await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику...")
 
-            # Основной запрос к ИИ
-            if openai_service is None:
-                raise SystemException("OpenAI service not initialized", error_context)
-
-            request_start_time = time.time()
-            stream_manager = None
-
-            # Выбираем промпт в зависимости от режима пользователя
+            # Выбор промпта
             selected_prompt = LEGAL_SYSTEM_PROMPT
             if hasattr(user_session, "practice_search_mode") and user_session.practice_search_mode:
                 selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
-                # Сбрасываем режим после использования
                 user_session.practice_search_mode = False
 
-            try:
-                if USE_STREAMING and message.bot:
-                    # Streaming режим
-                    stream_manager = StreamManager(
-                        bot=message.bot,
-                        chat_id=message.chat.id,
-                        update_interval=1.5,
-                        buffer_size=100,
-                    )
+            # Запрос к OpenAI
+            if openai_service is None:
+                raise SystemException("OpenAI service not initialized", error_context)
 
-                    # Запускаем streaming
-                    await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")
-
-                    # Создаем callback
-                    callback = StreamingCallback(stream_manager)
-
-                    # Выполняем streaming запрос
-                    result = await openai_service.ask_legal_stream(
-                        selected_prompt, question_text, callback=callback
-                    )
-                # Обычный режим
-                elif message.bot:
-                    async with TypingContext(message.bot, message.chat.id):
-                        result = await openai_service.ask_legal(selected_prompt, question_text)
-                else:
-                    result = await openai_service.ask_legal(selected_prompt, question_text)
-
-                request_error_type = None
-            except Exception as e:
-                request_error_type = type(e).__name__
-
-                # Останавливаем streaming в случае ошибки
-                if stream_manager:
-                    try:
-                        await stream_manager.stop()
-                    except:
-                        pass
-
-                # Специфичная обработка ошибок OpenAI
-                if "rate limit" in str(e).lower() or "quota" in str(e).lower():
-                    raise OpenAIException(str(e), error_context, is_quota_error=True)
-                elif "timeout" in str(e).lower() or "network" in str(e).lower():
-                    raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
-                else:
-                    raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
-
-            if not USE_STREAMING and not USE_ANIMATION and hasattr(status, "update_stage"):
-                await status.update_stage(
-                    3, f"{Emoji.DOCUMENT} Формирую структурированный ответ..."
+            if USE_STREAMING and message.bot:
+                stream_manager = StreamManager(
+                    bot=message.bot,
+                    chat_id=message.chat.id,
+                    update_interval=1.5,
+                    buffer_size=100,
                 )
-                await asyncio.sleep(0.4)
-                await status.update_stage(4, f"{Emoji.MAGIC} Финализирую рекомендации...")
+                await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")
+                callback = StreamingCallback(stream_manager)
+                result = await openai_service.ask_legal_stream(
+                    selected_prompt, question_text, callback=callback
+                )
+            elif message.bot:
+                # обычный запрос без TypingContext
+                result = await openai_service.ask_legal(selected_prompt, question_text)
+            else:
+                result = await openai_service.ask_legal(selected_prompt, question_text)
 
+            ok_flag = bool(result.get("ok"))
+        except Exception as e:
+            request_error_type = type(e).__name__
+            if stream_manager:
+                with suppress(Exception):
+                    await stream_manager.stop()
+            # Классификация ошибок
+            low = str(e).lower()
+            if "rate limit" in low or "quota" in low:
+                raise OpenAIException(str(e), error_context, is_quota_error=True)
+            elif "timeout" in low or "network" in low:
+                raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
+            else:
+                raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
         finally:
-            await _stop_status_indicator(status)
+            # гарантированно завершаем прогресс
+            await _stop_status_indicator(status, ok=ok_flag)
 
         timer.stop()
 
-        # Обрабатываем результат
+        # Обработка результата
         if not result.get("ok"):
             error_text = result.get("error", "Неизвестная ошибка")
             logger.error("OpenAI error for user %s: %s", user_id, error_text)
 
-            # Для streaming показываем ошибку в том же сообщении
             if USE_STREAMING and stream_manager:
                 await stream_manager.finalize(
                     f"""{Emoji.ERROR} <b>Произошла ошибка</b>
@@ -816,7 +826,7 @@ async def process_question(message: Message, *, text_override: str | None = None
                 )
             else:
                 await message.answer(
-f"""{Emoji.ERROR} <b>Произошла ошибка</b>
+                    f"""{Emoji.ERROR} <b>Произошла ошибка</b>
 
 Не удалось получить ответ. Попробуйте ещё раз чуть позже.
 
@@ -827,69 +837,49 @@ f"""{Emoji.ERROR} <b>Произошла ошибка</b>
                 )
             return
 
-        # Для streaming ответ уже отправлен через callback
+        # Нестриминговый ответ — отправляем HTML-чанками
         if not USE_STREAMING:
-            # Форматируем ответ для HTML
             response_text = render_legal_html(result.get("text", ""))
-
-            # Отправляем основной текст чанками
             await _send_html_chunks(message, response_text)
 
-        # Информация о времени ответа — отдельным сообщением
+        # Время ответа отдельным сообщением
         time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
-        try:
+        with suppress(Exception):
             await message.answer(time_info, parse_mode=ParseMode.HTML)
-        except Exception:
-            await message.answer(time_info)
 
-        # if non-trial quota footer is present, send it separately
+        # Квота/подписка
         if "quota_text" in locals() and quota_text and not quota_is_trial:
-            try:
+            with suppress(Exception):
                 await message.answer(quota_text, parse_mode=ParseMode.HTML)
-            except Exception:
-                await message.answer(quota_text)
-
         if quota_msg_to_send:
-            try:
+            with suppress(Exception):
                 await message.answer(quota_msg_to_send, parse_mode=ParseMode.HTML)
-            except Exception:
-                await message.answer(quota_msg_to_send)
 
-        # Обновляем статистику в сессии
+        # Статистика в сессии
         user_session.add_question_stats(timer.duration)
 
-        # Записываем статистику в базу данных (если это продвинутая версия БД)
-        request_id = None
-        if db is not None and hasattr(db, "record_request") and "request_start_time" in locals():
-            try:
+        # Статистика в БД (если доступна)
+        if db is not None and hasattr(db, "record_request"):
+            with suppress(Exception):
                 request_time_ms = int((time.time() - request_start_time) * 1000)
-                request_id = await db.record_request(
+                await db.record_request(
                     user_id=user_id,
                     request_type="legal_question",
-                    tokens_used=0,  # Пока не подсчитываем токены
+                    tokens_used=0,  # нет подсчёта
                     response_time_ms=request_time_ms,
-                    success=result.get("ok", False),
-                    error_type=None if result.get("ok", False) else "openai_error",
+                    success=True,
+                    error_type=None,
                 )
-                logger.debug(f"Recorded request with ID: {request_id}")
-            except Exception as db_error:
-                logger.warning("Failed to record request statistics: %s", db_error)
-
-        # Отправляем запрос на оценку ответа (только если запрос был успешным)
-        if request_id is not None and result.get("ok", False):
-            await send_rating_request(message, request_id)
 
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         return result.get("text", "")
 
     except Exception as e:
-        # Обрабатываем все исключения через централизованный обработчик
+        # Централизованная обработка
         if error_handler is not None:
             try:
                 custom_exc = await error_handler.handle_exception(e, error_context)
-                user_message = getattr(
-                    custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже."
-                )
+                user_message = getattr(custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже.")
             except Exception:
                 logger.exception("Error handler failed for user %s", user_id)
                 user_message = "Произошла системная ошибка. Попробуйте позже."
@@ -897,45 +887,35 @@ f"""{Emoji.ERROR} <b>Произошла ошибка</b>
             logger.exception("Error processing question for user %s (no error handler)", user_id)
             user_message = "Произошла ошибка. Попробуйте позже."
 
-        # Записываем статистику неудачного запроса (если это продвинутая версия БД)
+        # Статистика о неудаче (если доступна)
         if hasattr(db, "record_request"):
-            try:
+            with suppress(Exception):
                 request_time_ms = (
                     int((time.time() - request_start_time) * 1000)
-                    if "request_start_time" in locals()
-                    else 0
+                    if "request_start_time" in locals() else 0
                 )
-                error_type = (
-                    request_error_type if "request_error_type" in locals() else type(e).__name__
-                )
+                err_type = request_error_type if "request_error_type" in locals() else type(e).__name__
                 await db.record_request(
                     user_id=user_id,
                     request_type="legal_question",
                     tokens_used=0,
                     response_time_ms=request_time_ms,
                     success=False,
-                    error_type=str(error_type),
+                    error_type=str(err_type),
                 )
-            except Exception as db_error:
-                logger.warning("Failed to record failed request statistics: %s", db_error)
 
-        # Попробуем отправить пользователю понятное сообщение об ошибке
-        try:
+        # Ответ пользователю
+        with suppress(Exception):
             await message.answer(
-                f"❌ <b>Ошибка обработки запроса</b>\n\n"
+                "❌ <b>Ошибка обработки запроса</b>\n\n"
                 f"{user_message}\n\n"
-                f"💡 <b>Рекомендации:</b>\n"
-                f"• Переформулируйте вопрос\n"
-                f"• Попробуйте через несколько минут\n"
-                f"• Обратитесь в поддержку, если проблема повторяется",
+                "💡 <b>Рекомендации:</b>\n"
+                "• Переформулируйте вопрос\n"
+                "• Попробуйте через несколько минут\n"
+                "• Обратитесь в поддержку, если проблема повторяется",
                 parse_mode=ParseMode.HTML,
             )
-        except Exception as send_error:
-            logger.error(f"Failed to send error message to user {user_id}: {send_error}")
-            try:
-                await message.answer("Произошла ошибка. Попробуйте позже.")
-            except Exception:
-                pass  # Уже ничего не сделать
+
 
 
 # ============ ПОДПИСКИ И ПЛАТЕЖИ ============
@@ -1001,8 +981,8 @@ async def cmd_buy(message: Message):
         default_xtr=SUB_PRICE_XTR,
     )
     text = (
-        f"{Emoji.MAGIC} **Оплата подписки**\n\n"
-        f"Стоимость: {SUB_PRICE_RUB} ₽ \\({dynamic_xtr} ⭐\\) за 30 дней\n\n"
+        f"{Emoji.MAGIC} <b>Оплата подписки</b>\n\n"
+        f"Стоимость: <b>{SUB_PRICE_RUB} ₽</b> (≈{dynamic_xtr} ⭐) за 30 дней\n\n"
         f"Выберите способ оплаты:"
     )
     await message.answer(text, parse_mode=ParseMode.HTML)
@@ -1507,33 +1487,26 @@ async def handle_document_processing(callback: CallbackQuery):
             emoji = op_info.get("emoji", "📄")
             name = op_info.get("name", op_key)
             buttons.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"{emoji} {name}", callback_data=f"doc_operation_{op_key}"
-                    )
-                ]
+                [InlineKeyboardButton(text=f"{emoji} {name}", callback_data=f"doc_operation_{op_key}")]
             )
 
         buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
 
-        message_text = """
-🗂️ **Работа с документами**
-
-Выберите операцию для работы с документами:
-
-📋 **Саммаризация** - краткая выжимка документа
-⚠️ **Анализ рисков** - поиск проблемных мест
-💬 **Чат с документом** - задавайте вопросы по тексту
-🔒 **Обезличивание** - удаление персональных данных
-🌍 **Перевод** - перевод на другие языки
-👁️ **OCR** - распознавание сканированных документов
-
-Поддерживаемые форматы: PDF, DOCX, DOC, TXT, изображения
-        """
+        message_text = (
+            "🗂️ <b>Работа с документами</b><br><br>"
+            "Выберите операцию для работы с документами:<br><br>"
+            "📋 <b>Саммаризация</b> — краткая выжимка документа<br>"
+            "⚠️ <b>Анализ рисков</b> — поиск проблемных мест<br>"
+            "💬 <b>Чат с документом</b> — задавайте вопросы по тексту<br>"
+            "🔒 <b>Обезличивание</b> — удаление персональных данных<br>"
+            "🌍 <b>Перевод</b> — перевод на другие языки<br>"
+            "👁️ <b>OCR</b> — распознавание сканированных документов<br><br>"
+            "Поддерживаемые форматы: PDF, DOCX, DOC, TXT, изображения"
+        )
 
         await callback.message.edit_text(
             message_text,
-            parse_mode="Markdown",
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
         await callback.answer()
@@ -1561,26 +1534,19 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
         description = operation_info.get("description", "")
         formats = ", ".join(operation_info.get("formats", []))
 
-        message_text = f"""
-{emoji} **{name}**
-
-{description}
-
-**Поддерживаемые форматы:** {formats}
-
-📎 **Загрузите документ** для обработки или отправьте файл.
-        """
+        message_text = (
+            f"{emoji} <b>{name}</b><br><br>"
+            f"{html_escape(description)}<br><br>"
+            f"<b>Поддерживаемые форматы:</b> {html_escape(formats)}<br><br>"
+            "📎 <b>Загрузите документ</b> для обработки или отправьте файл."
+        )
 
         await callback.message.edit_text(
             message_text,
-            parse_mode="Markdown",
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="◀️ Назад к операциям", callback_data="document_processing"
-                        )
-                    ]
+                    [InlineKeyboardButton(text="◀️ Назад к операциям", callback_data="document_processing")]
                 ]
             ),
         )
@@ -1592,7 +1558,6 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         await callback.answer(f"Ошибка: {e}")
         logger.error(f"Ошибка в handle_document_operation: {e}", exc_info=True)
-
 
 async def handle_back_to_menu(callback: CallbackQuery, state: FSMContext):
     """Возврат в главное меню"""
@@ -1607,6 +1572,10 @@ async def handle_back_to_menu(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         await callback.answer(f"Ошибка: {e}")
         logger.error(f"Ошибка в handle_back_to_menu: {e}", exc_info=True)
+
+# --- progress router hookup ---
+def register_progressbar(dp: Dispatcher) -> None:
+    dp.include_router(progress_router)
 
 
 async def handle_document_upload(message: Message, state: FSMContext):
@@ -1648,10 +1617,10 @@ async def handle_document_upload(message: Message, state: FSMContext):
         operation_name = operation_info.get("name", operation)
 
         status_msg = await message.answer(
-            f"📄 Обрабатываем документ **{file_name}**...\n\n"
-            f"⏳ Операция: {operation_name}\n"
+            f"📄 Обрабатываем документ <b>{html_escape(file_name)}</b>...<br><br>"
+            f"⏳ Операция: {html_escape(operation_name)}<br>"
             f"📊 Размер: {file_size // 1024} КБ",
-            parse_mode="Markdown",
+            parse_mode=ParseMode.HTML,
         )
 
         try:
@@ -1685,7 +1654,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 formatted_result = document_manager.format_result_for_telegram(result, operation)
 
                 # Отправляем результат
-                await message.answer(formatted_result, parse_mode="Markdown")
+                await message.answer(formatted_result, parse_mode=ParseMode.HTML)
 
                 exports = result.data.get("exports") or []
                 for export in exports:
@@ -1708,7 +1677,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 )
             else:
                 await message.answer(
-                    f"❌ **Ошибка обработки документа**\n\n{result.message}", parse_mode="Markdown"
+                    f"❌ <b>Ошибка обработки документа</b><br><br>{html_escape(str(result.message))}",
+                    parse_mode=ParseMode.HTML,
                 )
 
         except Exception as e:
@@ -1719,7 +1689,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 pass
 
             await message.answer(
-                f"❌ **Ошибка обработки документа**\n\n{str(e)}", parse_mode="Markdown"
+                f"❌ <b>Ошибка обработки документа</b><br><br>{html_escape(str(e))}",
+                parse_mode=ParseMode.HTML,
             )
             logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
@@ -1844,7 +1815,7 @@ async def on_successful_payment(message: Message):
                 until_text = datetime.fromtimestamp(user.subscription_until).strftime("%Y-%m-%d")
 
         await message.answer(
-            f"{Emoji.SUCCESS} Оплата получена\\! Подписка активирована на {SUB_DURATION_DAYS} дней.\nДо: {until_text}",
+            f"{Emoji.SUCCESS} <b>Оплата получена!</b> Подписка активирована на {SUB_DURATION_DAYS} дней.\nДо: {until_text}",
             parse_mode=ParseMode.HTML,
         )
     except Exception:
@@ -1902,6 +1873,7 @@ async def main():
     # Создаем бота и диспетчер
     bot = Bot(BOT_TOKEN, session=session)
     dp = Dispatcher()
+    register_progressbar(dp)
 
     # Инициализация системы метрик/кэша/т.п.
     from src.core.background_tasks import (
