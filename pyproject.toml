@@ -27,6 +27,8 @@ python-docx = "^1.1.0"
 pytesseract = "^0.3.10"
 pdf2image = "^1.17.0"
 Pillow = "^10.4.0"
+paddlepaddle = "^2.6.0"
+paddleocr = "^2.8.0"
 reportlab = "^4.2.0"
 # Advanced database support
 aiosqlite = "^0.20.0"
@@ -44,6 +46,9 @@ psutil = {version = "^5.9.0", optional = true}
 pydantic = {version = "^2.5.0", optional = true}
 pytest = "^8.4.2"
 pytest-asyncio = "^1.2.0"
+numpy = ">=2,<2.3"
+ocrmypdf = "^16.11.0"
+pymupdf = "^1.26.4"
 
 [tool.poetry.extras]
 prod = ["redis", "prometheus-client", "psutil", "pydantic", "textract"]
