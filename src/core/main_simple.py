@@ -1675,6 +1675,134 @@ async def handle_document_upload(message: Message, state: FSMContext):
         await state.clear()
 
 
+async def handle_photo_upload(message: Message, state: FSMContext):
+    """Обработка загруженной фотографии для OCR"""
+    try:
+        if not message.photo:
+            await message.answer("❌ Ошибка: фотография не найдена")
+            return
+
+        # Получаем данные из состояния
+        data = await state.get_data()
+        operation = data.get("document_operation")
+        options = dict(data.get("operation_options") or {})
+
+        if not operation:
+            await message.answer("❌ Операция не выбрана. Начните заново с /start")
+            await state.clear()
+            return
+
+        # Переходим в состояние обработки
+        await state.set_state(DocumentProcessingStates.processing_document)
+
+        # Получаем самую большую версию фотографии
+        photo = message.photo[-1]
+        file_name = f"photo_{photo.file_id}.jpg"
+        file_size = photo.file_size or 0
+        mime_type = "image/jpeg"
+
+        # Проверяем размер файла (максимум 20MB для фотографий)
+        max_size = 20 * 1024 * 1024
+        if file_size > max_size:
+            await message.answer(
+                f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
+            )
+            await state.clear()
+            return
+
+        # Показываем статус обработки
+        operation_info = document_manager.get_operation_info(operation) or {}
+        operation_name = operation_info.get("name", operation)
+
+        status_msg = await message.answer(
+            f"📷 Обрабатываем фотографию для OCR...\n\n"
+            f"⏳ Операция: {html_escape(operation_name)}\n"
+            f"📏 Размер: {file_size // 1024} КБ",
+            parse_mode=ParseMode.HTML,
+        )
+
+        try:
+            # Скачиваем фотографию
+            file_info = await message.bot.get_file(photo.file_id)
+            file_path = file_info.file_path
+
+            if not file_path:
+                raise ProcessingError("Не удалось получить путь к фотографии", "FILE_ERROR")
+
+            file_content = await message.bot.download_file(file_path)
+
+            # Обрабатываем фотографию через document_manager
+            result = await document_manager.process_document(
+                user_id=message.from_user.id,
+                file_content=file_content.read(),
+                original_name=file_name,
+                mime_type=mime_type,
+                operation=operation,
+                **options,
+            )
+
+            # Удаляем статусное сообщение
+            try:
+                await status_msg.delete()
+            except:
+                pass
+
+            if result.success:
+                # Форматируем результат для Telegram
+                formatted_result = document_manager.format_result_for_telegram(result, operation)
+
+                # Отправляем результат
+                await message.answer(formatted_result, parse_mode=ParseMode.HTML)
+
+                # Отправляем экспортированные файлы, если есть
+                exports = result.data.get("exports") or []
+                for export in exports:
+                    export_path = export.get("path")
+                    if not export_path:
+                        continue
+                    try:
+                        caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
+                        await message.answer_document(FSInputFile(export_path), caption=caption)
+                    except Exception as send_error:
+                        logger.error(
+                            f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
+                        )
+                        await message.answer(
+                            f"⚠️ Не удалось отправить файл {Path(export_path).name}"
+                        )
+
+                logger.info(
+                    f"Successfully processed photo {file_name} for user {message.from_user.id}"
+                )
+            else:
+                await message.answer(
+                    f"❌ <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
+                    parse_mode=ParseMode.HTML,
+                )
+
+        except Exception as e:
+            # Удаляем статусное сообщение
+            try:
+                await status_msg.delete()
+            except:
+                pass
+
+            await message.answer(
+                f"❌ <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
+                parse_mode=ParseMode.HTML,
+            )
+            logger.error(f"Error processing photo {file_name}: {e}", exc_info=True)
+
+        finally:
+            # Очищаем состояние
+            await state.clear()
+
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка: {str(e)}")
+        logger.error(f"Error in handle_photo_upload: {e}", exc_info=True)
+        await state.clear()
+
+
 async def cmd_ratings_stats(message: Message):
     """Команда для просмотра статистики рейтингов (только для админов)"""
     if message.from_user.id not in ADMIN_IDS:
@@ -2088,6 +2216,9 @@ async def main():
     dp.callback_query.register(handle_back_to_menu, F.data == "back_to_menu")
     dp.message.register(
         handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
+    )
+    dp.message.register(
+        handle_photo_upload, DocumentProcessingStates.waiting_for_document, F.photo
     )
 
     if config.voice_mode_enabled:

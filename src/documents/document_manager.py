@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
@@ -127,7 +128,7 @@ class DocumentManager:
             fmt = str(export.get("format", "file")).upper()
             path_value = export.get("path", "")
             file_name = Path(path_value).name if path_value else path_value
-            lines.append(f"• {fmt}: {file_name}")
+            lines.append(f"• {html_escape(fmt)}: {html_escape(file_name)}")
 
         return base_text + "\n\n📎 Доступные файлы:\n" + "\n".join(lines)
 
@@ -386,7 +387,7 @@ class DocumentManager:
         emoji = operation_info.get("emoji", "📄")
         name = operation_info.get("name", operation.title())
 
-        header = f"{emoji} **{name}**\n"
+        header = f"{emoji} <b>{html_escape(name)}</b>\n"
         header += f"⏱️ Время обработки: {result.processing_time:.1f}с\n\n"
 
         if operation == "summarize":
@@ -564,28 +565,28 @@ class DocumentManager:
 
         confidence_emoji = "🟢" if confidence >= 80 else "🟡" if confidence >= 60 else "🔴"
 
-        result = f"{header}**👁️ OCR распознавание завершено**\n"
+        result = f"{header}<b>👁️ OCR распознавание завершено</b>\n"
         result += f"{confidence_emoji} Уверенность: {confidence:.1f}%\n"
-        result += f"📊 Качество: {quality.get('quality_level', 'неизвестно')}\n\n"
+        result += f"📊 Качество: {html_escape(quality.get('quality_level', 'неизвестно'))}\n\n"
 
         processing_info = data.get("processing_info", {})
         if processing_info:
-            result += "**📈 Статистика:**\n"
+            result += "<b>📈 Статистика:</b>\n"
             result += f"• Слов распознано: {processing_info.get('word_count', 0)}\n"
             result += f"• Символов: {processing_info.get('text_length', 0)}\n\n"
 
         recognized_text = data.get("recognized_text", "")
         if len(recognized_text) > 2000:
-            preview = recognized_text[:2000] + "..."
-            result += f"**📄 Распознанный текст:**\n{preview}\n\n*(Полный текст доступен в файле)*"
+            preview = html_escape(recognized_text[:2000]) + "..."
+            result += f"<b>📄 Распознанный текст:</b>\n{preview}\n\n<i>(Полный текст доступен в файле)</i>"
         else:
-            result += f"**📄 Распознанный текст:**\n{recognized_text}"
+            result += f"<b>📄 Распознанный текст:</b>\n{html_escape(recognized_text)}"
 
         recommendations = quality.get("recommendations", [])
         if recommendations:
-            result += "\n\n**💡 Рекомендации:**\n"
+            result += "\n\n<b>💡 Рекомендации:</b>\n"
             for rec in recommendations[:2]:
-                result += f"• {rec}\n"
+                result += f"• {html_escape(rec)}\n"
 
         return self._append_export_note(result, data)
 
