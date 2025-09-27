@@ -496,12 +496,13 @@ async def _rate_limit_guard(user_id: int, message: Message) -> bool:
 
 async def _start_status_indicator(message):
     status = ProgressStatus(
-        message.bot, message.chat.id,
-        show_checklist=True,          # кружочки со стадиями
-        total_stages=100,             # проценты
+        message.bot,
+        message.chat.id,
+        show_checklist=True,
         min_edit_interval=0.9,
+        auto_advance_stages=True,   # автопродвижение
+        # percent_thresholds=[1, 10, 30, 50, 70, 85, 95],  # опционально
     )
-    # ВАЖНО: запускаем авто-цикл (двигает индикатор, пока вы не дергаете вручную)
     await status.start(auto_cycle=True, interval=2.0)
     return status
 

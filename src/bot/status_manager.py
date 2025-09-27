@@ -1,41 +1,49 @@
-# status_manager.py
-# Полноценный прогресс-бар для Telegram (aiogram v3):
-# - единое сообщение с полосой, таймером и чек-листом из 7 шагов;
-# - авто-цикл процентов, безопасное редактирование с троттлингом;
-# - тумблер «Отображать контекстные вопросы» (inline-кнопка).
-
+# src/bot/status_manager.py
 from __future__ import annotations
 import asyncio
 import time
-from typing import Optional, Callable
+import math
+from typing import Optional, Callable, List, Dict
+from html import escape as esc
 
 from aiogram import Router, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-progress_router = Router()  # Роутер для обработчика тумблера
+__all__ = ["ProgressStatus", "progress_router"]
+
+# Роутер для callback-кнопки в самом сообщении прогресса
+progress_router = Router()
+
 
 class ProgressStatus:
-    PROGRESS_FLOW = [
-        {"label": "Анализирую ваш запрос"},
-        {"label": "Ищу законы и нормы права"},
-        {"label": "Изучаю позицию высших судов"},
-        {"label": "Формирую правовую позицию"},
-        {"label": "Разрабатываю аргументацию"},
-        {"label": "Проверяю точность и полноту"},
-        {"label": "Формирую ответ"},
-    ]
+    """
+    Двухстрочный прогресс:
+      <b>● Текущий шаг</b>
+      ○ Следующий шаг
+
+    Предыдущие завершённые шаги не отображаются.
+    После complete() шаги скрываются (только заголовок/полоса/таймер).
+    """
+
+    BAR_WIDTH = 30  # ширина текстовой полосы прогресса
 
     def __init__(
         self,
         bot,
         chat_id: int,
         *,
+        steps: Optional[List[Dict[str, str]] | List[str]] = None,
         show_checklist: bool = True,
         show_context_toggle: bool = True,
         context_enabled_default: bool = False,
         min_edit_interval: float = 0.9,
         total_stages: int = 100,
         on_context_toggle: Optional[Callable[[bool], None]] = None,
+        auto_advance_stages: bool = True,
+        percent_thresholds: Optional[List[int]] = None,
+        two_step_only: bool = True,
+        bold_current: bool = True,
+        hide_steps_on_complete: bool = True,
     ):
         self.bot = bot
         self.chat_id = chat_id
@@ -46,69 +54,90 @@ class ProgressStatus:
         self.total_stages = total_stages
         self.on_context_toggle = on_context_toggle
 
+        default_steps = [
+            {"icon": "🔎", "label": "Анализирую ваш запрос"},
+            {"icon": "📚", "label": "Ищу законы и нормы права"},
+            {"icon": "⚖️", "label": "Изучаю позицию высших судов"},
+            {"icon": "🧠", "label": "Формирую правовую позицию"},
+            {"icon": "🧩", "label": "Разрабатываю аргументацию"},
+            {"icon": "✅", "label": "Проверяю точность и полноту"},
+            {"icon": "📝", "label": "Формирую ответ"},
+        ]
+        self.steps: List[Dict[str, str]] = self._normalize_steps(steps) if steps else default_steps
+
+        self.auto_advance = auto_advance_stages
+        self.percent_thresholds = percent_thresholds
+
+        self.two_step_only = bool(two_step_only)
+        self.bold_current = bool(bold_current)
+        self.hide_steps_on_complete = bool(hide_steps_on_complete)
+
         self.message_id: Optional[int] = None
         self.current_percent: int = 0
-        self.current_stage: int = 0  # 0..7
+        self.current_stage: int = 1  # 1..len(self.steps)
         self._last_edit_ts: float = 0.0
         self._running: bool = False
         self.start_time: Optional[float] = None
         self._lock = asyncio.Lock()
 
-    # -------------------- ПУБЛИЧНЫЕ МЕТОДЫ --------------------
+    # ---------- ПУБЛИЧНЫЕ МЕТОДЫ ----------
 
     async def start(self, auto_cycle: bool = True, interval: float = 2.0) -> None:
-        """Создаёт сообщение прогресса и, при необходимости, запускает тикер."""
         self.start_time = time.monotonic()
         self._running = True
-        content = self._render()
         msg = await self.bot.send_message(
             self.chat_id,
-            content,
+            self._render(),
             parse_mode="HTML",
             reply_markup=self._kb() if self.show_context_toggle else None,
             disable_web_page_preview=True,
         )
         self.message_id = msg.message_id
-
-        # регистрируемся, чтобы callback мог найти объект
-        reg = getattr(self.bot, "_ps_registry", None)
-        if reg is None:
-            reg = self.bot._ps_registry = {}
+        reg = getattr(self.bot, "_ps_registry", None) or {}
         reg[(self.chat_id, self.message_id)] = self
-
+        self.bot._ps_registry = reg
         if auto_cycle:
             asyncio.create_task(self._ticker(float(interval)))
 
     async def complete(self, note: Optional[str] = None) -> None:
-        """Успешное завершение."""
         self._running = False
         self.current_percent = 100
-        if self.current_stage < len(self.PROGRESS_FLOW):
-            self.current_stage = len(self.PROGRESS_FLOW)
+        self.current_stage = len(self.steps)
         await self._safe_edit(self._render(completed=True, note=note))
-        try:
-            getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
-        except Exception:
-            pass
+        getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
 
     async def fail(self, note: Optional[str] = None) -> None:
-        """Завершение с ошибкой."""
         self._running = False
         await self._safe_edit(self._render(failed=True, note=note))
-        try:
-            getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
-        except Exception:
-            pass
+        getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
 
-    async def update_stage(self, percent: int, label: Optional[str] = None) -> None:
-        """Обновить проценты и (опционально) продвинуть чек-лист до шага по label."""
-        self.current_percent = max(self.current_percent, min(int(percent), 100))
-        if label:
-            for idx, item in enumerate(self.PROGRESS_FLOW, start=1):
-                if item["label"] == label:
-                    self.current_stage = max(self.current_stage, idx)
+    async def update_stage(
+        self,
+        percent: Optional[int] = None,
+        label: Optional[str] = None,
+        step: Optional[int] = None,
+    ) -> None:
+        if percent is not None:
+            self.current_percent = max(self.current_percent, min(int(percent), 100))
+
+        target_stage = None
+        if isinstance(step, int) and 1 <= step <= len(self.steps):
+            target_stage = step
+        elif label:
+            norm = self._norm(label)
+            for idx, s in enumerate(self.steps, start=1):
+                if self._norm(s["label"]) == norm:
+                    target_stage = idx
                     break
+        if target_stage is not None:
+            self.current_stage = max(self.current_stage, target_stage)
+
         await self._safe_edit(self._render())
+
+    async def set_stage(self, step: int) -> None:
+        if 1 <= step <= len(self.steps):
+            self.current_stage = max(self.current_stage, step)
+            await self._safe_edit(self._render())
 
     def duration_text(self) -> str:
         if not self.start_time:
@@ -116,18 +145,35 @@ class ProgressStatus:
         sec = int(time.monotonic() - self.start_time)
         return f"{sec // 60:02d}:{sec % 60:02d}"
 
-    # -------------------- ВНУТРЕННЕЕ --------------------
+    # ---------- ВНУТРЕННЕЕ ----------
 
     async def _ticker(self, interval: float) -> None:
-        """Небольшой автопрогресс, пока ждём ответ модели."""
         while self._running:
             await asyncio.sleep(interval)
             if self.current_percent < 90:
                 self.current_percent += 1
+            if self.auto_advance:
+                new_stage = self._stage_by_percent(self.current_percent)
+                if new_stage is not None:
+                    self.current_stage = max(self.current_stage, new_stage)
             await self._safe_edit(self._render())
 
+    def _stage_by_percent(self, pct: int) -> Optional[int]:
+        if not self.steps:
+            return None
+        pct = max(0, min(100, int(pct)))
+        if self.percent_thresholds:
+            stage = 1
+            for i, thr in enumerate(self.percent_thresholds, start=1):
+                if pct >= int(thr):
+                    stage = i
+            return max(1, min(stage, len(self.steps)))
+        bins = len(self.steps)
+        if bins <= 1:
+            return 1
+        return max(1, min(len(self.steps), math.ceil(pct / (100 / bins))))
+
     async def _safe_edit(self, html: str) -> None:
-        """Безопасно редактирует сообщение с троттлингом и блокировкой."""
         if not self.message_id:
             return
         now = time.monotonic()
@@ -145,48 +191,67 @@ class ProgressStatus:
                 )
                 self._last_edit_ts = now
             except Exception:
-                # Игнорируем редкие гонки/ограничения Telegram
                 pass
 
     def _kb(self) -> Optional[InlineKeyboardMarkup]:
         if not self.show_context_toggle:
             return None
         title = "Отображать контекстные вопросы: " + ("Вкл" if self.context_enabled else "Выкл")
-        btn = InlineKeyboardButton(
-            text=title,
-            callback_data=f"ctx:{self.chat_id}:{self.message_id}",
-        )
-        return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=title, callback_data=f"ctx:{self.chat_id}:{self.message_id}")
+        ]])
 
-    def _render(self, *, completed: bool = False, failed: bool = False, note: Optional[str] = None) -> str:
-        status = (
-            "Действие выполнено" if completed else
-            "Ошибка" if failed else
-            "Действие выполняется"
-        )
-        bar = self._progress_bar(self.current_percent)
-        lines = [
-            f"<b>{status}</b> за <code>{self.duration_text()}</code>",
-            bar,
+    def _render(self, *, completed: bool = False, failed: bool = False, note: str | None = None) -> str:
+        header = "✅ ГОТОВО" if completed else "❌ ОШИБКА" if failed else "📱 ВЫПОЛНЕНИЕ..."
+        pct = max(0, min(100, int(self.current_percent)))
+        lines: list[str] = [
+            f"<b>{header}</b>",
+            f"<code>{'━' * self.BAR_WIDTH}</code>",
+            f"<code>{self._progress_bar(pct)}</code>",
+            f"{pct}% • {esc(self.duration_text())}",
             "",
         ]
-        if self.show_checklist:
-            for i, step in enumerate(self.PROGRESS_FLOW, start=1):
-                mark = "●" if i <= self.current_stage else "○"
-                lines.append(f"{mark} {step['label']}")
+
+        # Только текущий и следующий; предыдущие шаги не показываем
+        if self.show_checklist and self.steps:
+            if not (completed and self.hide_steps_on_complete):
+                idx = max(1, min(self.current_stage, len(self.steps)))
+                cur_label = esc(self.steps[idx - 1].get("label", ""))
+                cur_line = f"● {cur_label}"
+                if self.bold_current:
+                    cur_line = f"<b>{cur_line}</b>"
+                lines.append(cur_line)
+
+                if idx < len(self.steps):  # следующий (если есть)
+                    next_label = esc(self.steps[idx].get("label", ""))
+                    lines.append(f"○ {next_label}")
+
         if note:
-            lines += ["", note]
-        # небольшой запас до лимита 4096 с учётом тегов
+            lines += ["", esc(note)]
         return "\n".join(lines)[:3990]
 
-    @staticmethod
-    def _progress_bar(pct: int) -> str:
+    def _progress_bar(self, pct: int) -> str:
         pct = max(0, min(100, int(pct)))
-        blocks = 20
-        filled = int(blocks * pct / 100)
-        return "▰" * filled + "▱" * (blocks - filled) + f"  {pct}%"
+        filled = int(round(self.BAR_WIDTH * pct / 100))
+        return "█" * filled + "░" * (self.BAR_WIDTH - filled)
 
-# -------------------- CALLBACK: тумблер «контекстные вопросы» --------------------
+    @staticmethod
+    def _normalize_steps(steps: List[Dict[str, str]] | List[str]) -> List[Dict[str, str]]:
+        norm: List[Dict[str, str]] = []
+        for s in steps:
+            if isinstance(s, str):
+                norm.append({"icon": "•", "label": s})
+            elif isinstance(s, dict):
+                norm.append({"label": s.get("label", ""), "icon": s.get("icon", "•")})
+        return norm
+
+    @staticmethod
+    def _norm(s: str) -> str:
+        import re
+        s = re.sub(r"[^\w\sА-Яа-яЁё-]+", "", s, flags=re.UNICODE)
+        s = re.sub(r"\s+", " ", s).strip().lower()
+        return s
+
 
 @progress_router.callback_query(F.data.startswith("ctx:"))
 async def _toggle_context(cb: CallbackQuery):
@@ -202,9 +267,9 @@ async def _toggle_context(cb: CallbackQuery):
         await ps._safe_edit(ps._render())
         if callable(ps.on_context_toggle):
             try:
-                await asyncio.shield(ps.on_context_toggle(ps.context_enabled))  # если on_context_toggle async
+                await asyncio.shield(ps.on_context_toggle(ps.context_enabled))
             except TypeError:
-                ps.on_context_toggle(ps.context_enabled)  # если sync
+                ps.on_context_toggle(ps.context_enabled)
         await cb.answer("Переключено")
     except Exception:
         await cb.answer()
