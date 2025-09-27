@@ -119,8 +119,8 @@ async def ask_legal_stream(system_prompt: str, user_text: str, callback=None):
 async def _ask_legal_internal(
     system_prompt: str, user_text: str, stream: bool = False, callback=None
 ) -> dict[str, Any]:
-    """Внутренняя реализация запроса к Responses API с поддержкой streaming.
-
+    """
+    Внутренняя реализация запроса к Responses API с поддержкой streaming.
     Возвращает dict: { ok: bool, text?: str, usage?: Any, error?: str }
     """
     model = os.getenv("OPENAI_MODEL", "gpt-5")
@@ -138,11 +138,12 @@ async def _ask_legal_internal(
         reasoning={"effort": effort},
         max_output_tokens=max_out,
     )
-    if not _bool(os.getenv("DISABLE_WEB", "0"), False):
+    # web-инструмент по умолчанию можно отключить переменной окружения
+    if not (os.getenv("DISABLE_WEB", "0").strip() in ("1", "true", "yes", "on")):
         base |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     async with await _make_async_client() as oai:
-        # Проверяем модель с ретраями
+        # Проверка модели с небольшим ретраем
         last_err = None
         for i in range(2):
             try:
@@ -155,82 +156,108 @@ async def _ask_legal_internal(
                 await asyncio.sleep(0.6)
 
         attempts = [base]
+        # Повтор без tools
         attempts.append({k: v for k, v in base.items() if k != "tools"})
+        # Буст по количеству токенов
         boosted = attempts[-1] | {"max_output_tokens": max_out * 2}
 
         for payload in (attempts[0], attempts[1], boosted):
             try:
-                # Добавляем stream параметр
-                if stream:
-                    payload["stream"] = True
-
                 if stream and callback:
-                    # Streaming режим
+                    # --- ПРАВИЛЬНЫЙ streaming через responses.stream ---
                     accumulated_text = ""
                     usage_info = None
 
                     try:
-                        async for chunk in await oai.responses.create(**payload):
-                            # Обрабатываем chunk для получения текста
-                            chunk_text = _extract_text_from_chunk(chunk)
-                            if chunk_text:
-                                accumulated_text += chunk_text
-                                # Вызываем callback с накопленным текстом
+                        async with oai.responses.stream(**payload) as s:
+                            async for event in s:
+                                etype = getattr(event, "type", "") or ""
+
+                                # Основные дельты текста
+                                if etype.endswith(".delta"):
+                                    # Пытаемся достать текст из разных мест (зависит от версии SDK)
+                                    delta = getattr(event, "delta", None)
+                                    piece = ""
+                                    if isinstance(delta, dict):
+                                        piece = delta.get("text") or ""
+                                    if not piece:
+                                        piece = getattr(event, "output_text", "") or ""
+
+                                    if piece:
+                                        accumulated_text += piece
+                                        try:
+                                            if asyncio.iscoroutinefunction(callback):
+                                                await callback(accumulated_text, False)
+                                            else:
+                                                callback(accumulated_text, False)
+                                        except Exception as cb_err:
+                                            logger.warning(f"Callback error during streaming: {cb_err}")
+
+                                # Можно ловить финал/usage
+                                if etype == "response.completed":
+                                    pass
+
+                            # финальный объект ответа
+                            final = await s.get_final_response()
+                            usage_info = getattr(final, "usage", None)
+                            # Сам текст
+                            text = getattr(final, "output_text", None)
+                            if not text:
+                                # запасной разбор
+                                items = getattr(final, "output", []) or []
+                                chunks: list[str] = []
+                                for it in items:
+                                    for c in getattr(it, "content", []) or []:
+                                        t = getattr(c, "text", None)
+                                        if t:
+                                            chunks.append(t)
+                                text = "\n\n".join(chunks) if chunks else ""
+
+                            # Финальный колбэк
+                            if callback and (accumulated_text or text):
                                 try:
+                                    full = text or accumulated_text
                                     if asyncio.iscoroutinefunction(callback):
-                                        await callback(accumulated_text, False)
+                                        await callback(full, True)
                                     else:
-                                        callback(accumulated_text, False)
-                                except Exception as cb_error:
-                                    logger.warning(f"Callback error during streaming: {cb_error}")
+                                        callback(full, True)
+                                except Exception as cb_err:
+                                    logger.warning(f"Final callback error: {cb_err}")
 
-                            # Получаем usage информацию из финального chunk
-                            if hasattr(chunk, "usage") and chunk.usage:
-                                usage_info = chunk.usage
-
-                        # Финальный callback
-                        if callback and accumulated_text:
-                            try:
-                                if asyncio.iscoroutinefunction(callback):
-                                    await callback(accumulated_text, True)
-                                else:
-                                    callback(accumulated_text, True)
-                            except Exception as cb_error:
-                                logger.warning(f"Final callback error: {cb_error}")
+                            full_text = (text or accumulated_text or "").strip()
+                            if full_text:
+                                return {"ok": True, "text": full_text, "usage": usage_info}
 
                     except Exception as stream_error:
                         logger.error(f"Streaming error: {stream_error}")
-                        raise
+                        raise  # пойдём в обычный режим/следующую попытку
 
-                    if accumulated_text.strip():
-                        return {"ok": True, "text": accumulated_text.strip(), "usage": usage_info}
-                else:
-                    # Обычный режим
-                    resp = await oai.responses.create(**payload)
-                    text = getattr(resp, "output_text", None)
-                    if text and text.strip():
-                        return {
-                            "ok": True,
-                            "text": text.strip(),
-                            "usage": getattr(resp, "usage", None),
-                        }
-                    # запасной парсер
-                    items = getattr(resp, "output", []) or []
-                    chunks: list[str] = []
-                    for it in items:
-                        for c in getattr(it, "content", []) or []:
-                            t = getattr(c, "text", None)
-                            if t:
-                                chunks.append(t)
-                    if chunks:
-                        return {
-                            "ok": True,
-                            "text": "\n\n".join(chunks).strip(),
-                            "usage": getattr(resp, "usage", None),
-                        }
-            except Exception as e:  # noqa: PERF203
+                # --- Обычный (нестриминговый) режим ---
+                resp = await oai.responses.create(**payload)
+                text = getattr(resp, "output_text", None)
+                if text and text.strip():
+                    return {"ok": True, "text": text.strip(), "usage": getattr(resp, "usage", None)}
+
+                # запасной парсер
+                items = getattr(resp, "output", []) or []
+                chunks: list[str] = []
+                for it in items:
+                    for c in getattr(it, "content", []) or []:
+                        t = getattr(c, "text", None)
+                        if t:
+                            chunks.append(t)
+                if chunks:
+                    return {
+                        "ok": True,
+                        "text": "\n\n".join(chunks).strip(),
+                        "usage": getattr(resp, "usage", None),
+                    }
+
+            except Exception as e:  # переходим к следующей попытке
                 last_err = str(e)
+
         return {"ok": False, "error": last_err or "unknown_error"}
+
 
 
 def _extract_text_from_chunk(chunk) -> str:

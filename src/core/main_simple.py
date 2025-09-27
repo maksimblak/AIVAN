@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
 
 if TYPE_CHECKING:
@@ -309,37 +310,7 @@ def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
     return [b.strip() for b in final if b.strip()]
 
 
-async def _send_html_chunks(message, html_text: str) -> None:
-    """Отправляем длинный HTML несколькими сообщениями, без превью ссылок."""
-    parts = _split_html_safely(html_text, SAFE_LIMIT)
-    logger.info(f"Sending {len(parts)} HTML chunks to user {message.from_user.id}")
-    for i, chunk in enumerate(parts):
-        logger.debug(f"Chunk {i+1}: {chunk[:100]}...")
-        try:
-            await message.answer(chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-            logger.debug(f"Successfully sent chunk {i+1}")
-        except Exception as e:
-            logger.warning(f"Error sending chunk {i+1} to user {message.from_user.id}: {e}")
-            # если вдруг разорвали тег — санитайз и повтор
-            try:
-                from html import escape as _esc
 
-                # грубая санация: экранируем всё и восстанавливаем допустимые теги
-                safe = _esc(chunk, quote=True)
-                # Восстанавливаем все нужные HTML теги
-                safe = re.sub(r"&lt;br\s*/?&gt;", "<br>", safe, flags=re.IGNORECASE)
-                safe = re.sub(r"&lt;b&gt;", "<b>", safe, flags=re.IGNORECASE)
-                safe = re.sub(r"&lt;/b&gt;", "</b>", safe, flags=re.IGNORECASE)
-                safe = re.sub(r"&lt;i&gt;", "<i>", safe, flags=re.IGNORECASE)
-                safe = re.sub(r"&lt;/i&gt;", "</i>", safe, flags=re.IGNORECASE)
-                safe = re.sub(r"&lt;code&gt;", "<code>", safe, flags=re.IGNORECASE)
-                safe = re.sub(r"&lt;/code&gt;", "</code>", safe, flags=re.IGNORECASE)
-                await message.answer(safe, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-            except Exception:
-                # финальный фоллбек — голый текст
-                await message.answer(re.sub(r"<[^>]+>", "", chunk))
-        if i < len(parts) - 1:
-            await asyncio.sleep(0.1)
 
 
 async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> str | None:
@@ -473,32 +444,7 @@ async def cmd_start(message: Message):
  <b>📌 ЧТО Я УМЕЮ ?</b>
   ═══════════════════════════════════════════
 
-<b>💼 ПРАВОВОЕ КОНСУЛЬТИРОВАНИЕ</b>
-• Консультации по любой сфере права
-• Оценка существующих стратегий  
-• Экспертные заключения за 1 минуту
-<i>(владею всем законодательством РФ и миллионами судебных решений)</i>
 
-<b>⚖️ СУДЕБНАЯ ПРАКТИКА</b>
-• Поиск релевантных решений
-• Анализ судебной практики
-• Стратегические рекомендации
-
-<b>📝 ДОКУМЕНТООБОРОТ</b>
-• Исковые заявления и жалобы
-• Ходатайства и договоры  
-• Анализ рисков документов
-• Проверка соответствия законодательству
-
-<b>🔒 КОНФИДЕНЦИАЛЬНОСТЬ</b>
-• Обезличивание документов
-• Безопасная передача третьим лицам
-
-<b>🌐 ЦИФРОВЫЕ РЕШЕНИЯ</b>
-• Переводы юридических документов
-• OCR-распознавание текста  
-• Краткие аналитические сводки
-• Интерактивный анализ загруженных файлов
 
     
  <b>📌 ПРИМЕРЫ ОБРАЩЕНИЙ </b>
@@ -586,6 +532,7 @@ async def process_question(message: Message, *, text_override: str | None = None
     question_text = ((text_override if text_override is not None else (message.text or ""))).strip()
     quota_msg_to_send: str | None = None
 
+    # Если ждём текстовый комментарий к рейтингу — обрабатываем его
     if not hasattr(user_session, "pending_feedback_request_id"):
         user_session.pending_feedback_request_id = None
     if user_session.pending_feedback_request_id is not None:
@@ -604,7 +551,7 @@ async def process_question(message: Message, *, text_override: str | None = None
         return
     question_text = cleaned
 
-    # Таймер
+    # Таймер ответа
     timer = ResponseTimer()
     timer.start()
 
@@ -622,7 +569,11 @@ async def process_question(message: Message, *, text_override: str | None = None
             decision = await access_service.check_and_consume(user_id)
             if not decision.allowed:
                 await message.answer(
-                    f"{Emoji.WARNING} <b>Лимит бесплатных запросов исчерпан</b>\n\nВы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy",
+                    (
+                        f"{Emoji.WARNING} <b>Лимит бесплатных запросов исчерпан</b>\n\n"
+                        f"Вы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. "
+                        f"Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy"
+                    ),
                     parse_mode=ParseMode.HTML,
                 )
                 return
@@ -640,10 +591,10 @@ async def process_question(message: Message, *, text_override: str | None = None
 
         # Прогресс-бар
         status = await _start_status_indicator(message)
-        ok_flag = False  # финальный флаг для complete()/fail()
 
+        ok_flag = False
         request_error_type = None
-        stream_manager = None
+        stream_manager: StreamManager | None = None
         had_stream_content = False
         result: dict[str, Any] = {}
         request_start_time = time.time()
@@ -658,17 +609,13 @@ async def process_question(message: Message, *, text_override: str | None = None
 
             # Выбор промпта
             selected_prompt = LEGAL_SYSTEM_PROMPT
-            if hasattr(user_session, "practice_search_mode") and user_session.practice_search_mode:
+            if getattr(user_session, "practice_search_mode", False):
                 selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
                 user_session.practice_search_mode = False
 
-            # Запрос к OpenAI (стрим/нестрим)
+            # --- Запрос к OpenAI (стрим/нестрим) ---
             if openai_service is None:
                 raise SystemException("OpenAI service not initialized", error_context)
-
-            result = {}
-            had_stream_content = False
-            stream_manager = None
 
             if USE_STREAMING and message.bot:
                 stream_manager = StreamManager(
@@ -677,39 +624,36 @@ async def process_question(message: Message, *, text_override: str | None = None
                     update_interval=1.5,
                     buffer_size=120,
                 )
-                await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")  # начальное сообщение
+                await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")
                 callback = StreamingCallback(stream_manager)
 
                 try:
-                    # Стриминговый вызов
+                    # 1) Стриминговый запрос
                     result = await openai_service.ask_legal_stream(
                         selected_prompt, question_text, callback=callback
                     )
                     had_stream_content = bool((stream_manager.pending_text or "").strip())
 
-                    # Считаем удачей, если либо API вернул ok, либо мы реально что-то уже показали
+                    # 2) Успех, если API вернул ok ИЛИ уже показывали текст пользователю
                     ok_flag = bool(isinstance(result, dict) and result.get("ok")) or had_stream_content
 
+                    # 3) Фолбэк — если стрим не дал результата и текста нет
                     if not ok_flag:
-                        # Фолбэк на обычный запрос
                         result = await openai_service.ask_legal(selected_prompt, question_text)
                         ok_flag = bool(result.get("ok"))
 
                 except Exception as e:
-                    # Если уже есть накопленный контент — НЕ падаем, используем его
+                    # Если что-то упало, но буфер уже есть — считаем успехом и завершаем стрим
                     had_stream_content = bool((stream_manager.pending_text or "").strip())
                     if had_stream_content:
-                        logger.warning("Streaming failed, but content exists — using stream buffer: %s", e)
-                        result = {"ok": True, "text": stream_manager.pending_text}
-                        ok_flag = True
-                        # Попробуем красиво закончить стрим (не критично, если не выйдет)
+                        logger.warning("Streaming failed, but content exists — using buffered text: %s", e)
                         with suppress(Exception):
                             await stream_manager.finalize(stream_manager.pending_text)
+                        result = {"ok": True, "text": stream_manager.pending_text}
+                        ok_flag = True
                     else:
-                        # Контента нет — это действительно ошибка
                         with suppress(Exception):
                             await stream_manager.stop()
-                        # Классифицируем и пробрасываем, чтобы сработал общий обработчик
                         low = str(e).lower()
                         if "rate limit" in low or "quota" in low:
                             raise OpenAIException(str(e), error_context, is_quota_error=True)
@@ -717,9 +661,8 @@ async def process_question(message: Message, *, text_override: str | None = None
                             raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
                         else:
                             raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
-
             else:
-                # Нестриминговый вызов
+                # Нестриминговый путь
                 result = await openai_service.ask_legal(selected_prompt, question_text)
                 ok_flag = bool(result.get("ok"))
 
@@ -728,93 +671,80 @@ async def process_question(message: Message, *, text_override: str | None = None
             if stream_manager:
                 with suppress(Exception):
                     await stream_manager.stop()
-            # Классификация ошибок
-            low = str(e).lower()
-            if "rate limit" in low or "quota" in low:
-                raise OpenAIException(str(e), error_context, is_quota_error=True)
-            elif "timeout" in low or "network" in low:
-                raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
-            else:
-                raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
+            raise
         finally:
-            # гарантированно завершаем прогресс с учётом ok_flag
-            await _stop_status_indicator(status, ok=ok_flag)
+            # Всегда закрываем прогресс-бар
+            with suppress(Exception):
+                await _stop_status_indicator(status, ok=ok_flag)
 
+        # ----- Постобработка результата -----
         timer.stop()
 
-        # --- Итоговая обработка результата (стрим / фоллбэк) ---
-        # 1) Собираем текст ответа: если стрим уже что-то отдал — не дублируем;
-        #    если нет, берем текст из нестримового результата (фоллбэк).
-        result_text = ""
-        if USE_STREAMING and stream_manager:
-            # had_stream_content установлен выше при стриме
-            if not had_stream_content and isinstance(result, dict):
-                result_text = (result.get("text") or "").strip()
-        else:
-            if isinstance(result, dict):
-                result_text = (result.get("text") or "").strip()
-
-        # 2) Если совсем нет ни ок-флага, ни текста — считаем это ошибкой и показываем понятное сообщение
-        if not ok_flag and not result_text:
-            error_text = ""
-            if isinstance(result, dict):
-                error_text = (result.get("error") or "").strip()
-
-            logger.error("OpenAI error or empty stream for user %s: %s", user_id, error_text)
+        if not ok_flag:
+            error_text = (isinstance(result, dict) and (result.get("error") or "")) or ""
+            logger.error("OpenAI error or empty result for user %s: %s", user_id, error_text)
             await message.answer(
                 (
-                        f"{Emoji.ERROR} <b>Произошла ошибка</b><br><br>"
-                        f"Не удалось получить ответ. Попробуйте ещё раз чуть позже.<br><br>"
-                        f"{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса"
-                        + (f"<br><br><code>{html_escape(error_text[:300])}</code>" if error_text else "")
+                    f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n"
+                    f"Не удалось получить ответ. Попробуйте ещё раз чуть позже.\n\n"
+                    f"{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса"
+                    + (f"<br><br><code>{html_escape(error_text[:300])}</code>" if error_text else "")
                 ),
                 parse_mode=ParseMode.HTML,
             )
             return
 
-        # 3) Если текст есть и мы НЕ стримили (или стрим был пустой) — отправляем красиво оформленные абзацы
-        if result_text:
-            response_html = render_legal_html(result_text)
-            await _send_html_chunks(message, response_html)
+        # Если контент уже пришёл стримом — не дублируем
+        # Если контент уже пришёл стримом — не дублируем
+        if not (USE_STREAMING and had_stream_content):
+            text_to_send = (isinstance(result, dict) and (result.get("text") or "")) or ""
+            if text_to_send:
+                # единый безопасный путь: форматирование → санация → разбиение → отправка
+                await send_html_text(
+                    bot=message.bot,
+                    chat_id=message.chat.id,
+                    raw_text=text_to_send,
+                    reply_to_message_id=message.message_id,
+                )
 
-        # Время ответа отдельным сообщением
+        # Время ответа
         time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
         with suppress(Exception):
             await message.answer(time_info, parse_mode=ParseMode.HTML)
 
-        # Квота/подписка
-        if "quota_text" in locals() and quota_text and not quota_is_trial:
+        # Сообщения про квоту/подписку
+        if quota_text and not quota_is_trial:
             with suppress(Exception):
                 await message.answer(quota_text, parse_mode=ParseMode.HTML)
         if quota_msg_to_send:
             with suppress(Exception):
                 await message.answer(quota_msg_to_send, parse_mode=ParseMode.HTML)
 
-        # Статистика в сессии
+        # Статистика в сессии/БД
         user_session.add_question_stats(timer.duration)
-
-        # Статистика в БД (если доступна)
         if db is not None and hasattr(db, "record_request"):
             with suppress(Exception):
                 request_time_ms = int((time.time() - request_start_time) * 1000)
                 await db.record_request(
                     user_id=user_id,
                     request_type="legal_question",
-                    tokens_used=0,  # нет подсчёта
+                    tokens_used=0,
                     response_time_ms=request_time_ms,
                     success=True,
                     error_type=None,
                 )
 
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
-        return result.get("text", "")
+        return (isinstance(result, dict) and (result.get("text") or "")) or ""
 
     except Exception as e:
         # Централизованная обработка
         if error_handler is not None:
             try:
                 custom_exc = await error_handler.handle_exception(e, error_context)
-                user_message = getattr(custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже.")
+                user_message = getattr(
+                    custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже."
+                )
             except Exception:
                 logger.exception("Error handler failed for user %s", user_id)
                 user_message = "Произошла системная ошибка. Попробуйте позже."
@@ -822,8 +752,8 @@ async def process_question(message: Message, *, text_override: str | None = None
             logger.exception("Error processing question for user %s (no error handler)", user_id)
             user_message = "Произошла ошибка. Попробуйте позже."
 
-        # Статистика о неудаче (если доступна)
-        if hasattr(db, "record_request"):
+        # Статистика о неудаче
+        if db is not None and hasattr(db, "record_request"):
             with suppress(Exception):
                 request_time_ms = (
                     int((time.time() - request_start_time) * 1000)
@@ -850,7 +780,6 @@ async def process_question(message: Message, *, text_override: str | None = None
                 "• Обратитесь в поддержку, если проблема повторяется",
                 parse_mode=ParseMode.HTML,
             )
-
 
 
 # ============ ПОДПИСКИ И ПЛАТЕЖИ ============
@@ -1263,35 +1192,42 @@ async def handle_feedback_callback(callback: CallbackQuery):
         return
 
     try:
-        parts = callback.data.split("_")
-        if len(parts) < 2:
+        data = callback.data
+
+        if data.startswith("feedback_"):
+            action = "feedback"
+            request_id = int(data.removeprefix("feedback_"))
+        elif data.startswith("skip_feedback_"):
+            action = "skip"
+            request_id = int(data.removeprefix("skip_feedback_"))
+        else:
             await callback.answer("❌ Неверный формат данных")
             return
-
-        action = parts[0]  # "feedback" или "skip"
-        request_id = int(parts[1])
 
         if action == "skip":
             await callback.message.edit_text(
                 "💬 <b>Спасибо за оценку!</b> 👎 Отмечено для улучшения", parse_mode=ParseMode.HTML
             )
             await callback.answer("✅ Спасибо за обратную связь!")
-        elif action == "feedback":
-            user_session = get_user_session(callback.from_user.id)
-            if not hasattr(user_session, "pending_feedback_request_id"):
-                user_session.pending_feedback_request_id = None
-            user_session.pending_feedback_request_id = request_id
+            return
 
-            await callback.message.edit_text(
-                "💬 <b>Напишите ваш комментарий:</b>\n\n"
-                "<i>Что можно улучшить в ответе? Отправьте текстовое сообщение.</i>",
-                parse_mode=ParseMode.HTML,
-            )
-            await callback.answer("✏️ Напишите комментарий следующим сообщением")
+        # action == "feedback"
+        user_session = get_user_session(callback.from_user.id)
+        if not hasattr(user_session, "pending_feedback_request_id"):
+            user_session.pending_feedback_request_id = None
+        user_session.pending_feedback_request_id = request_id
+
+        await callback.message.edit_text(
+            "💬 <b>Напишите ваш комментарий:</b>\n\n"
+            "<i>Что можно улучшить в ответе? Отправьте текстовое сообщение.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer("✏️ Напишите комментарий следующим сообщением")
 
     except Exception as e:
         logger.error(f"Error in handle_feedback_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
+
 
 
 async def handle_search_practice_callback(callback: CallbackQuery):
