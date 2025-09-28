@@ -72,6 +72,7 @@ class Config:
     voice_stt_model: str
     voice_tts_model: str
     voice_tts_voice: str
+    voice_tts_voice_male: str
     voice_tts_format: str
     voice_max_duration_seconds: int
 
@@ -117,6 +118,7 @@ def load_config() -> Config:
         voice_stt_model=os.getenv("VOICE_STT_MODEL", "gpt-4o-mini-transcribe"),
         voice_tts_model=os.getenv("VOICE_TTS_MODEL", "gpt-4o-mini-tts"),
         voice_tts_voice=os.getenv("VOICE_TTS_VOICE", "alloy"),
+        voice_tts_voice_male=os.getenv("VOICE_TTS_VOICE_MALE") or os.getenv("VOICE_TTS_VOICE", "alloy"),
         voice_tts_format=os.getenv("VOICE_TTS_FORMAT", "ogg"),
         voice_max_duration_seconds=_parse_int(os.getenv("VOICE_MAX_DURATION_SECONDS", "120"), 120),
     )
