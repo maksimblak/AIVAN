@@ -456,16 +456,29 @@ class DatabaseAdvanced:
             now = int(time.time())
 
             try:
-                await conn.execute(
-                    """
-                    INSERT OR IGNORE INTO users
-                    (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                     total_requests, successful_requests, failed_requests, last_request_at,
-                     referred_by, referral_code, referrals_count, referral_bonus_days)
-                    VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0)
-                    """,
-                    (user_id, 1 if is_admin else 0, default_trial, now, now),
-                )
+                # Пробуем с новыми полями реферальной системы
+                try:
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO users
+                        (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                         total_requests, successful_requests, failed_requests, last_request_at,
+                         referred_by, referral_code, referrals_count, referral_bonus_days)
+                        VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0)
+                        """,
+                        (user_id, 1 if is_admin else 0, default_trial, now, now),
+                    )
+                except Exception:
+                    # Fallback для старой схемы без реферальных полей
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO users
+                        (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                         total_requests, successful_requests, failed_requests, last_request_at)
+                        VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0)
+                        """,
+                        (user_id, 1 if is_admin else 0, default_trial, now, now),
+                    )
 
                 # Обновляем админа если нужно
                 if is_admin:
@@ -475,15 +488,30 @@ class DatabaseAdvanced:
                     )
 
                 # Получаем итоговую запись
-                cursor = await conn.execute(
-                    """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                       total_requests, successful_requests, failed_requests, last_request_at,
-                       referred_by, referral_code, referrals_count, referral_bonus_days 
-                       FROM users WHERE user_id = ?""",
-                    (user_id,),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
+                try:
+                    # Пробуем с новыми полями
+                    cursor = await conn.execute(
+                        """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                           total_requests, successful_requests, failed_requests, last_request_at,
+                           referred_by, referral_code, referrals_count, referral_bonus_days
+                           FROM users WHERE user_id = ?""",
+                        (user_id,),
+                    )
+                    row = await cursor.fetchone()
+                    await cursor.close()
+                except Exception:
+                    # Fallback для старой схемы
+                    cursor = await conn.execute(
+                        """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                           total_requests, successful_requests, failed_requests, last_request_at
+                           FROM users WHERE user_id = ?""",
+                        (user_id,),
+                    )
+                    row = await cursor.fetchone()
+                    await cursor.close()
+                    if row:
+                        # Дополняем данные значениями по умолчанию для новых полей
+                        row = row + (None, None, 0, 0)
 
                 if row:
                     self.query_count += 1 if self.enable_metrics else 0
@@ -499,15 +527,30 @@ class DatabaseAdvanced:
         """Получение пользователя"""
         async with self.pool.acquire() as conn:
             try:
-                cursor = await conn.execute(
-                    """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                       total_requests, successful_requests, failed_requests, last_request_at,
-                       referred_by, referral_code, referrals_count, referral_bonus_days
-                       FROM users WHERE user_id = ?""",
-                    (user_id,),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
+                # Пробуем с новыми полями
+                try:
+                    cursor = await conn.execute(
+                        """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                           total_requests, successful_requests, failed_requests, last_request_at,
+                           referred_by, referral_code, referrals_count, referral_bonus_days
+                           FROM users WHERE user_id = ?""",
+                        (user_id,),
+                    )
+                    row = await cursor.fetchone()
+                    await cursor.close()
+                except Exception:
+                    # Fallback для старой схемы
+                    cursor = await conn.execute(
+                        """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                           total_requests, successful_requests, failed_requests, last_request_at
+                           FROM users WHERE user_id = ?""",
+                        (user_id,),
+                    )
+                    row = await cursor.fetchone()
+                    await cursor.close()
+                    if row:
+                        # Дополняем данные значениями по умолчанию для новых полей
+                        row = row + (None, None, 0, 0)
 
                 self.query_count += 1 if self.enable_metrics else 0
                 return UserRecord(*row) if row else None

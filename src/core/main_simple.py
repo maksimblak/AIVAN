@@ -1314,6 +1314,10 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                     InlineKeyboardButton(text="💎 Статус подписки", callback_data="subscription_status"),
                 ],
                 [
+                    InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
+                    InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
+                ],
+                [
                     InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main"),
                 ],
             ]
@@ -1543,6 +1547,219 @@ async def handle_get_subscription_callback(callback: CallbackQuery):
 
     except Exception as e:
         logger.error(f"Error in handle_get_subscription_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_payment_history_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'История платежей'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        if db is None:
+            await callback.message.answer("Сервис временно недоступен")
+            return
+
+        user_id = callback.from_user.id
+
+        # Получаем историю транзакций
+        transactions = await db.get_user_transactions(user_id, limit=15)
+        transaction_stats = await db.get_transaction_stats(user_id)
+
+        if not transactions:
+            history_text = """💳 <b>История платежей</b>
+
+📊 <b>Статистика</b>
+• Всего транзакций: 0
+• Потрачено: 0 ₽
+
+❌ <b>История пуста</b>
+У вас пока нет платежей."""
+        else:
+            def format_transaction_date(timestamp):
+                if timestamp:
+                    return datetime.fromtimestamp(timestamp).strftime("%d.%m.%Y %H:%M")
+                return "Неизвестно"
+
+            def format_transaction_status(status):
+                status_map = {
+                    "completed": "✅ Завершен",
+                    "pending": "⏳ В обработке",
+                    "failed": "❌ Отклонен",
+                    "cancelled": "🚫 Отменен"
+                }
+                return status_map.get(status, f"❓ {status}")
+
+            def format_amount(amount, currency):
+                if currency == "RUB":
+                    return f"{amount} ₽"
+                elif currency == "XTR":
+                    return f"{amount} ⭐"
+                else:
+                    return f"{amount} {currency}"
+
+            history_text = f"""💳 <b>История платежей</b>
+
+📊 <b>Статистика</b>
+• Всего транзакций: {transaction_stats.get('total_transactions', 0)}
+• Потрачено: {transaction_stats.get('total_spent', 0)} ₽
+
+📝 <b>Последние операции</b>"""
+
+            for transaction in transactions:
+                history_text += f"""
+
+💰 {format_amount(transaction.amount, transaction.currency)}
+├ {format_transaction_status(transaction.status)}
+├ {transaction.provider}
+└ {format_transaction_date(transaction.created_at)}"""
+
+        # Кнопка назад к профилю
+        back_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")],
+            ]
+        )
+
+        await callback.message.answer(
+            history_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard
+        )
+
+    except Exception as e:
+        logger.error(f"Error in handle_payment_history_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_referral_program_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Реферальная программа'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        if db is None:
+            await callback.message.answer("Сервис временно недоступен")
+            return
+
+        user_id = callback.from_user.id
+        user = await db.get_user(user_id)
+
+        if not user:
+            await callback.message.answer("Ошибка получения данных пользователя")
+            return
+
+        # Генерируем реферальный код если его нет
+        try:
+            if not user.referral_code:
+                referral_code = await db.generate_referral_code(user_id)
+            else:
+                referral_code = user.referral_code
+        except Exception as e:
+            logger.error(f"Error with referral code: {e}")
+            referral_code = "SYSTEM_ERROR"
+
+        # Получаем список рефералов
+        try:
+            referrals = await db.get_user_referrals(user_id)
+        except Exception as e:
+            logger.error(f"Error getting referrals: {e}")
+            referrals = []
+
+        # Подсчитываем статистику
+        total_referrals = len(referrals)
+        active_referrals = sum(1 for ref in referrals if ref.get('has_active_subscription', False))
+
+        # Безопасные значения для старых пользователей
+        referral_bonus_days = getattr(user, 'referral_bonus_days', 0)
+        referrals_count = getattr(user, 'referrals_count', 0)
+
+        referral_text = f"""👥 <b>Реферальная программа</b>
+
+🎁 <b>Ваши бонусы</b>
+• Бонусных дней: {referral_bonus_days}
+• Приглашено друзей: {referrals_count}
+• С активной подпиской: {active_referrals}
+
+🔗 <b>Ваша реферальная ссылка</b>
+<code>https://t.me/your_bot?start=ref_{referral_code}</code>
+
+💡 <b>Как это работает</b>
+• Поделитесь ссылкой с друзьями
+• За каждого друга получите 3 дня подписки
+• Друг получит скидку 20% на первую покупку
+
+📈 <b>Ваши рефералы</b>"""
+
+        if referrals:
+            referral_text += f"\n• Всего: {total_referrals}"
+            referral_text += f"\n• С подпиской: {active_referrals}"
+
+            # Показываем последних рефералов
+            recent_referrals = referrals[:5]
+            for ref in recent_referrals:
+                join_date = datetime.fromtimestamp(ref['joined_at']).strftime('%d.%m.%Y')
+                status = "💎" if ref['has_active_subscription'] else "👤"
+                referral_text += f"\n{status} Пользователь #{ref['user_id']} - {join_date}"
+        else:
+            referral_text += "\n• Пока никого нет"
+
+        # Создаем клавиатуру
+        keyboard_buttons = []
+
+        # Кнопка копирования ссылки
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text="📋 Скопировать ссылку",
+                callback_data=f"copy_referral_{referral_code}"
+            )
+        ])
+
+        # Кнопка назад к профилю
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")
+        ])
+
+        referral_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+        await callback.message.answer(
+            referral_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=referral_keyboard
+        )
+
+    except Exception as e:
+        logger.error(f"Error in handle_referral_program_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_copy_referral_callback(callback: CallbackQuery):
+    """Обработчик кнопки копирования реферальной ссылки"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        # Получаем код из callback_data
+        callback_data = callback.data
+        if callback_data and callback_data.startswith("copy_referral_"):
+            referral_code = callback_data.replace("copy_referral_", "")
+
+            await callback.answer(
+                f"📋 Ссылка скопирована!\nhttps://t.me/your_bot?start=ref_{referral_code}",
+                show_alert=True
+            )
+        else:
+            await callback.answer("❌ Ошибка получения кода")
+
+    except Exception as e:
+        logger.error(f"Error in handle_copy_referral_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -2483,6 +2700,9 @@ async def main():
     dp.callback_query.register(handle_my_stats_callback, F.data == "my_stats")
     dp.callback_query.register(handle_subscription_status_callback, F.data == "subscription_status")
     dp.callback_query.register(handle_get_subscription_callback, F.data == "get_subscription")
+    dp.callback_query.register(handle_payment_history_callback, F.data == "payment_history")
+    dp.callback_query.register(handle_referral_program_callback, F.data == "referral_program")
+    dp.callback_query.register(handle_copy_referral_callback, F.data.startswith("copy_referral_"))
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
 
     # Обработчики системы документооборота
