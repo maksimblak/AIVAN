@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
-from src.bot.ui_components import md_links_to_anchors
 
 if TYPE_CHECKING:
     from src.core.db_advanced import DatabaseAdvanced
@@ -61,6 +60,9 @@ from src.core.exceptions import (
     NetworkException,
     OpenAIException,
     SystemException,
+    ValidationException,
+    handle_exceptions,
+    safe_execute,
 )
 from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
@@ -78,6 +80,23 @@ setup_logging()
 logger = logging.getLogger("ai-ivan.simple")
 
 config = load_config()
+
+_CONFIG_VALIDATION_RULES: dict[str, tuple[object, type]] = {
+    "trial_requests": (config.trial_requests, int),
+    "subscription_price_rub": (config.subscription_price_rub, int),
+    "subscription_price_xtr": (config.subscription_price_xtr, int),
+    "rate_limit_requests": (config.rate_limit_requests, int),
+    "rate_limit_window_seconds": (config.rate_limit_window_seconds, int),
+    "user_sessions_max": (config.user_sessions_max, int),
+    "user_session_ttl_seconds": (config.user_session_ttl_seconds, int),
+}
+
+for _cfg_key, (_cfg_value, _cfg_type) in _CONFIG_VALIDATION_RULES.items():
+    validation_result = InputValidator.validate_config_value(_cfg_key, _cfg_value, _cfg_type)
+    if not validation_result.is_valid:
+        joined_errors = '; '.join(validation_result.errors or []) or 'unknown'
+        logger.warning("Config validation issue for %s: %s", _cfg_key, joined_errors)
+
 
 @dataclass(frozen=True)
 class WelcomeMedia:
@@ -184,6 +203,37 @@ def get_user_session(user_id: int) -> UserSession:
     if session_store is None:
         raise RuntimeError("Session store not initialized")
     return session_store.get_or_create(user_id)
+
+
+def _ensure_valid_user_id(raw_user_id: int | None, *, context: str) -> int:
+    """Validate and normalise user id, raising ValidationException when invalid."""
+
+    result = InputValidator.validate_user_id(raw_user_id)
+    if result.is_valid and result.cleaned_data:
+        return int(result.cleaned_data)
+
+    errors = ', '.join(result.errors or ['Недопустимый идентификатор пользователя'])
+    try:
+        normalized_user_id = int(raw_user_id) if raw_user_id is not None else None
+    except (TypeError, ValueError):
+        normalized_user_id = None
+
+    raise ValidationException(
+        errors,
+        ErrorContext(user_id=normalized_user_id, function_name=context),
+    )
+
+
+def _get_safe_db_method(method_name: str, default_return=None):
+    """Return DB coroutine wrapped with safe_execute when possible."""
+
+    if db is None or not hasattr(db, method_name):
+        return None
+
+    method = getattr(db, method_name)
+    if error_handler:
+        return safe_execute(error_handler, default_return)(method)
+    return method
 
 
 
@@ -407,9 +457,24 @@ def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
 
 
 async def send_rating_request(message: Message, request_id: int):
-    """Отправляет сообщение с запросом на оценку ответа"""
+    """Отправляет сообщение с запросом на оценку ответа, если пользователь ещё не голосовал."""
+    if not message.from_user:
+        return
+
     try:
-        rating_keyboard = create_rating_keyboard(request_id)
+        user_id = _ensure_valid_user_id(message.from_user.id, context="send_rating_request")
+    except ValidationException as exc:
+        logger.debug("Skip rating request due to invalid user id: %s", exc)
+        return
+
+    get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
+    if get_rating_fn:
+        existing_rating = await get_rating_fn(request_id, user_id)
+        if existing_rating:
+            return
+
+    rating_keyboard = create_rating_keyboard(request_id)
+    try:
         await message.answer(
             f"{Emoji.STAR} <b>Оцените качество ответа</b>\n\n"
             "Ваша оценка поможет нам улучшить сервис!",
@@ -429,13 +494,27 @@ async def cmd_start(message: Message):
     if not message.from_user:
         return
 
-    user_session = get_user_session(message.from_user.id)  # noqa: F841 (инициализация)
+    try:
+        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_start")
+    except ValidationException as exc:
+        context = ErrorContext(function_name="cmd_start", chat_id=message.chat.id if message.chat else None)
+        if error_handler:
+            await error_handler.handle_exception(exc, context)
+        else:
+            logger.warning("Validation error in cmd_start: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} <b>Не удалось инициализировать сессию.</b>\nПопробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user_session = get_user_session(user_id)  # noqa: F841 (инициализация)
     # Обеспечим запись в БД
     if db is not None and hasattr(db, "ensure_user"):
         await db.ensure_user(
-            message.from_user.id,
+            user_id,
             default_trial=TRIAL_REQUESTS,
-            is_admin=message.from_user.id in ADMIN_IDS,
+            is_admin=user_id in ADMIN_IDS,
         )
     user_name = message.from_user.first_name or "Пользователь"
 
@@ -525,7 +604,23 @@ async def process_question(message: Message, *, text_override: str | None = None
     if not message.from_user:
         return
 
-    user_id = message.from_user.id
+    try:
+        user_id = _ensure_valid_user_id(message.from_user.id, context="process_question")
+    except ValidationException as exc:
+        context = ErrorContext(
+            chat_id=message.chat.id if message.chat else None,
+            function_name="process_question",
+        )
+        if error_handler is not None:
+            await error_handler.handle_exception(exc, context)
+        else:
+            logger.warning("Validation error in process_question: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} <b>Ошибка идентификатора пользователя</b>\n\nПопробуйте перезапустить диалог.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     chat_id = message.chat.id
     message_id = message.message_id
 
@@ -603,6 +698,7 @@ async def process_question(message: Message, *, text_override: str | None = None
         had_stream_content = False
         result: dict[str, Any] = {}
         request_start_time = time.time()
+        request_record_id: int | None = None
 
         try:
             # Имитация первых этапов (если анимация отключена)
@@ -704,18 +800,23 @@ async def process_question(message: Message, *, text_override: str | None = None
         if not (USE_STREAMING and had_stream_content):
             text_to_send = (isinstance(result, dict) and (result.get("text") or "")) or ""
             if text_to_send:
+                # Добавляем время ответа в конец основного сообщения
+                time_info = f"\n\n{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
+                text_to_send_with_time = text_to_send + time_info
+
                 # единый безопасный путь: форматирование → санация → разбиение → отправка
                 await send_html_text(
                     bot=message.bot,
                     chat_id=message.chat.id,
-                    raw_text=text_to_send,
+                    raw_text=text_to_send_with_time,
                     reply_to_message_id=message.message_id,
                 )
-
-        # Время ответа
-        time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
-        with suppress(Exception):
-            await message.answer(time_info, parse_mode=ParseMode.HTML)
+        else:
+            # Случай стриминга - время ответа отправляем отдельным сообщением если был контент
+            if USE_STREAMING and had_stream_content:
+                time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
+                with suppress(Exception):
+                    await message.answer(time_info, parse_mode=ParseMode.HTML)
 
         # Сообщения про квоту/подписку
         if quota_text and not quota_is_trial:
@@ -730,14 +831,19 @@ async def process_question(message: Message, *, text_override: str | None = None
         if db is not None and hasattr(db, "record_request"):
             with suppress(Exception):
                 request_time_ms = int((time.time() - request_start_time) * 1000)
-                await db.record_request(
-                    user_id=user_id,
-                    request_type="legal_question",
-                    tokens_used=0,
-                    response_time_ms=request_time_ms,
-                    success=True,
-                    error_type=None,
-                )
+                record_request_fn = _get_safe_db_method("record_request", default_return=None)
+                if record_request_fn:
+                    request_record_id = await record_request_fn(
+                        user_id=user_id,
+                        request_type="legal_question",
+                        tokens_used=0,
+                        response_time_ms=request_time_ms,
+                        success=True,
+                        error_type=None,
+                    )
+        if request_record_id:
+            with suppress(Exception):
+                await send_rating_request(message, request_record_id)
 
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         return (isinstance(result, dict) and (result.get("text") or "")) or ""
@@ -765,14 +871,16 @@ async def process_question(message: Message, *, text_override: str | None = None
                     if "request_start_time" in locals() else 0
                 )
                 err_type = request_error_type if "request_error_type" in locals() else type(e).__name__
-                await db.record_request(
-                    user_id=user_id,
-                    request_type="legal_question",
-                    tokens_used=0,
-                    response_time_ms=request_time_ms,
-                    success=False,
-                    error_type=str(err_type),
-                )
+                record_request_fn = _get_safe_db_method("record_request", default_return=None)
+                if record_request_fn:
+                    await record_request_fn(
+                        user_id=user_id,
+                        request_type="legal_question",
+                        tokens_used=0,
+                        response_time_ms=request_time_ms,
+                        success=False,
+                        error_type=str(err_type),
+                    )
 
         # Ответ пользователю
         with suppress(Exception):
@@ -909,10 +1017,28 @@ async def cmd_status(message: Message):
         await message.answer("Статус временно недоступен")
         return
 
+    if not message.from_user:
+        await message.answer("Статус доступен только для авторизованных пользователей")
+        return
+
+    try:
+        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_status")
+    except ValidationException as exc:
+        context = ErrorContext(function_name="cmd_status", chat_id=message.chat.id if message.chat else None)
+        if error_handler:
+            await error_handler.handle_exception(exc, context)
+        else:
+            logger.warning("Validation error in cmd_status: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} <b>Не удалось получить статус.</b>\nПопробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     user = await db.ensure_user(
-        message.from_user.id,
+        user_id,
         default_trial=TRIAL_REQUESTS,
-        is_admin=message.from_user.id in ADMIN_IDS,
+        is_admin=user_id in ADMIN_IDS,
     )
     until = getattr(user, "subscription_until", 0)
     if until and until > 0:
@@ -924,7 +1050,7 @@ async def cmd_status(message: Message):
 
     await message.answer(
         f"{Emoji.STATS} <b>Статус</b>\n\n"
-        f"ID: <code>{message.from_user.id}</code>\n"
+        f"ID: <code>{user_id}</code>\n"
         f"Роль: {'админ' if getattr(user, 'is_admin', False) else 'пользователь'}\n"
         f"Триал: {getattr(user, 'trial_remaining', 0)} запрос(ов)\n"
         f"Подписка: {sub_text}",
@@ -1127,35 +1253,41 @@ async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
 
 async def handle_pending_feedback(message: Message, user_session: UserSession, text_override: str | None = None):
     """Обработка текстового комментария для рейтинга"""
+    if not message.from_user:
+        return
+
     feedback_source = text_override if text_override is not None else (message.text or "")
     if not feedback_source or not user_session.pending_feedback_request_id:
         return
 
+    try:
+        user_id = _ensure_valid_user_id(message.from_user.id, context="handle_pending_feedback")
+    except ValidationException as exc:
+        logger.warning("Ignore feedback: invalid user id (%s)", exc)
+        user_session.pending_feedback_request_id = None
+        return
+
     request_id = user_session.pending_feedback_request_id
-    user_id = message.from_user.id
     feedback_text = feedback_source.strip()
 
     # Очищаем pending состояние
     user_session.pending_feedback_request_id = None
 
-    try:
-        if hasattr(db, "add_rating"):
-            success = await db.add_rating(request_id, user_id, -1, feedback_text)
-            if success:
-                await message.answer(
-                    "✅ <b>Спасибо за развернутый отзыв!</b>\n\n"
-                    "Ваш комментарий поможет нам улучшить качество ответов.",
-                    parse_mode=ParseMode.HTML,
-                )
-                logger.info(f"Received feedback for request {request_id} from user {user_id}")
-            else:
-                await message.answer("❌ Ошибка сохранения комментария")
-        else:
-            await message.answer("❌ Система обратной связи недоступна")
+    add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
+    if not add_rating_fn:
+        await message.answer("❌ Система обратной связи недоступна")
+        return
 
-    except Exception as e:
-        logger.error(f"Error in handle_pending_feedback: {e}")
-        await message.answer("❌ Произошла ошибка при сохранении комментария")
+    success = await add_rating_fn(request_id, user_id, -1, feedback_text)
+    if success:
+        await message.answer(
+            "✅ <b>Спасибо за развернутый отзыв!</b>\n\n"
+            "Ваш комментарий поможет нам улучшить качество ответов.",
+            parse_mode=ParseMode.HTML,
+        )
+        logger.info(f"Received feedback for request {request_id} from user {user_id}")
+    else:
+        await message.answer("❌ Ошибка сохранения комментария")
 
 
 async def handle_rating_callback(callback: CallbackQuery):
@@ -1164,67 +1296,89 @@ async def handle_rating_callback(callback: CallbackQuery):
         await callback.answer("❌ Ошибка данных")
         return
 
-    user_id = callback.from_user.id
+    try:
+        user_id = _ensure_valid_user_id(callback.from_user.id, context="handle_rating_callback")
+    except ValidationException as exc:
+        logger.warning("Invalid user id in rating callback: %s", exc)
+        await callback.answer("❌ Ошибка пользователя", show_alert=True)
+        return
 
     try:
-        # Парсим callback_data: "rate_like_123" или "rate_dislike_123"
         parts = callback.data.split("_")
         if len(parts) != 3:
             await callback.answer("❌ Неверный формат данных")
             return
-
-        action = parts[1]  # "like" или "dislike"
+        action = parts[1]
+        if action not in {"like", "dislike"}:
+            await callback.answer("❌ Неверная команда")
+            return
         request_id = int(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Неверный формат данных")
+        return
 
-        rating_value = 1 if action == "like" else -1
+    get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
+    if get_rating_fn:
+        existing_rating = await get_rating_fn(request_id, user_id)
+        if existing_rating:
+            await callback.answer("ℹ️ Вы уже оценивали этот ответ")
+            return
 
-        if hasattr(db, "add_rating"):
-            success = await db.add_rating(request_id, user_id, rating_value)
-            if success:
-                if action == "like":
-                    await callback.answer("✅ Спасибо за оценку! Рады, что ответ был полезен.")
-                    await callback.message.edit_text(
-                        "💬 <b>Спасибо за оценку!</b> ✅ Отмечено как полезное",
-                        parse_mode=ParseMode.HTML,
-                    )
-                else:
-                    await callback.answer("📝 Спасибо за обратную связь!")
-                    feedback_keyboard = InlineKeyboardMarkup(
-                        inline_keyboard=[
-                            [
-                                InlineKeyboardButton(
-                                    text="📝 Написать комментарий",
-                                    callback_data=f"feedback_{request_id}",
-                                )
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    text="❌ Пропустить",
-                                    callback_data=f"skip_feedback_{request_id}",
-                                )
-                            ],
-                        ]
-                    )
-                    await callback.message.edit_text(
-                        "💬 <b>Что можно улучшить?</b>\n\n"
-                        "Ваша обратная связь поможет нам стать лучше:",
-                        reply_markup=feedback_keyboard,
-                        parse_mode=ParseMode.HTML,
-                    )
-            else:
-                await callback.answer("❌ Ошибка сохранения оценки")
-        else:
-            await callback.answer("❌ Система рейтинга недоступна")
+    add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
+    if not add_rating_fn:
+        await callback.answer("❌ Система рейтинга недоступна")
+        return
 
-    except Exception as e:
-        logger.error(f"Error in handle_rating_callback: {e}")
-        await callback.answer("❌ Произошла ошибка")
+    rating_value = 1 if action == "like" else -1
+    success = await add_rating_fn(request_id, user_id, rating_value)
+    if not success:
+        await callback.answer("❌ Ошибка сохранения оценки")
+        return
+
+    if action == "like":
+        await callback.answer("✅ Спасибо за оценку! Рады, что ответ был полезен.")
+        await callback.message.edit_text(
+            "💬 <b>Спасибо за оценку!</b> ✅ Отмечено как полезное",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await callback.answer("📝 Спасибо за обратную связь!")
+    feedback_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📝 Написать комментарий",
+                    callback_data=f"feedback_{request_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Пропустить",
+                    callback_data=f"skip_feedback_{request_id}",
+                )
+            ],
+        ]
+    )
+    await callback.message.edit_text(
+        "💬 <b>Что можно улучшить?</b>\n\n"
+        "Ваша обратная связь поможет нам стать лучше:",
+        reply_markup=feedback_keyboard,
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_feedback_callback(callback: CallbackQuery):
     """Обработчик запроса обратной связи"""
     if not callback.data or not callback.from_user:
         await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        user_id = _ensure_valid_user_id(callback.from_user.id, context="handle_feedback_callback")
+    except ValidationException as exc:
+        logger.warning("Invalid user id in feedback callback: %s", exc)
+        await callback.answer("❌ Ошибка пользователя", show_alert=True)
         return
 
     try:
@@ -1248,7 +1402,7 @@ async def handle_feedback_callback(callback: CallbackQuery):
             return
 
         # action == "feedback"
-        user_session = get_user_session(callback.from_user.id)
+        user_session = get_user_session(user_id)
         if not hasattr(user_session, "pending_feedback_request_id"):
             user_session.pending_feedback_request_id = None
         user_session.pending_feedback_request_id = request_id
@@ -2302,18 +2456,31 @@ async def handle_photo_upload(message: Message, state: FSMContext):
 
 async def cmd_ratings_stats(message: Message):
     """Команда для просмотра статистики рейтингов (только для админов)"""
-    if message.from_user.id not in ADMIN_IDS:
+    if not message.from_user:
+        await message.answer("❌ Команда доступна только в диалоге с ботом")
+        return
+
+    try:
+        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_ratings_stats")
+    except ValidationException as exc:
+        logger.warning("Invalid user id in cmd_ratings_stats: %s", exc)
+        await message.answer("❌ Ошибка идентификатора пользователя")
+        return
+
+    if user_id not in ADMIN_IDS:
         await message.answer("❌ Команда доступна только администраторам")
         return
 
-    if not hasattr(db, "get_ratings_statistics"):
+    stats_fn = _get_safe_db_method("get_ratings_statistics", default_return={})
+    low_rated_fn = _get_safe_db_method("get_low_rated_requests", default_return=[])
+    if not stats_fn or not low_rated_fn:
         await message.answer("❌ Статистика рейтингов недоступна")
         return
 
     try:
-        stats_7d = await db.get_ratings_statistics(7)
-        stats_30d = await db.get_ratings_statistics(30)
-        low_rated = await db.get_low_rated_requests(5)
+        stats_7d = await stats_fn(7)
+        stats_30d = await stats_fn(30)
+        low_rated = await low_rated_fn(5)
 
         stats_text = f"""📊 <b>Статистика рейтингов</b>
 
@@ -2343,6 +2510,40 @@ async def cmd_ratings_stats(message: Message):
         await message.answer("❌ Ошибка получения статистики рейтингов")
 
 
+async def cmd_error_stats(message: Message):
+    """Краткая сводка ошибок из ErrorHandler (админы)."""
+    if not message.from_user:
+        await message.answer("❌ Команда доступна только в диалоге с ботом")
+        return
+
+    try:
+        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_error_stats")
+    except ValidationException as exc:
+        logger.warning("Invalid user id in cmd_error_stats: %s", exc)
+        await message.answer("❌ Ошибка идентификатора пользователя")
+        return
+
+    if user_id not in ADMIN_IDS:
+        await message.answer("❌ Команда доступна только администраторам")
+        return
+
+    if not error_handler:
+        await message.answer("❌ Система мониторинга ошибок не инициализирована")
+        return
+
+    stats = error_handler.get_error_stats()
+    if not stats:
+        await message.answer("✅ Критических ошибок не зафиксировано")
+        return
+
+    lines = ["🚨 <b>Статистика ошибок</b>"]
+    for error_type, count in sorted(stats.items(), key=lambda item: item[0]):
+        lines.append(f"• {error_type}: {count}")
+
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+
 async def pre_checkout(pre: PreCheckoutQuery):
     try:
         payload = pre.invoice_payload or ""
@@ -2366,6 +2567,12 @@ async def pre_checkout(pre: PreCheckoutQuery):
             expected_amount
         ):
             await pre.answer(ok=False, error_message="Некорректные параметры оплаты")
+            return
+
+        amount_major = pre.total_amount / 100 if expected_currency == "RUB" else pre.total_amount
+        amount_check = InputValidator.validate_payment_amount(amount_major, expected_currency)
+        if not amount_check.is_valid:
+            await pre.answer(ok=False, error_message="Сумма оплаты вне допустимого диапазона")
             return
 
         await pre.answer(ok=True)
@@ -2675,19 +2882,52 @@ async def main():
             BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
             BotCommand(command="mystats", description="📊 Моя статистика"),
             BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
+            BotCommand(command="errors", description="🚨 Статистика ошибок (админ)"),
         ]
     )
 
-    # Роутинг
-    dp.message.register(cmd_start, Command("start"))
-    dp.message.register(cmd_buy, Command("buy"))
-    dp.message.register(cmd_status, Command("status"))
-    dp.message.register(cmd_mystats, Command("mystats"))
-    dp.message.register(cmd_ratings_stats, Command("ratings"))
+    def _message_context(function_name: str):
+        def builder(message: Message, *args, **kwargs):
+            return ErrorContext(
+                user_id=message.from_user.id if getattr(message, "from_user", None) else None,
+                chat_id=message.chat.id if getattr(message, "chat", None) else None,
+                function_name=function_name,
+            )
+        return builder
 
-    dp.callback_query.register(handle_rating_callback, F.data.startswith("rate_"))
+    def _callback_context(function_name: str):
+        def builder(callback: CallbackQuery, *args, **kwargs):
+            from_user = getattr(callback, "from_user", None)
+            message_obj = getattr(callback, "message", None)
+            return ErrorContext(
+                user_id=from_user.id if from_user else None,
+                chat_id=message_obj.chat.id if message_obj else None,
+                function_name=function_name,
+            )
+        return builder
+
+    def _wrap_message_handler(handler, name: str):
+        if error_handler:
+            return handle_exceptions(error_handler, _message_context(name))(handler)
+        return handler
+
+    def _wrap_callback_handler(handler, name: str):
+        if error_handler:
+            return handle_exceptions(error_handler, _callback_context(name))(handler)
+        return handler
+
+
+    # Роутинг
+    dp.message.register(_wrap_message_handler(cmd_start, "cmd_start"), Command("start"))
+    dp.message.register(_wrap_message_handler(cmd_buy, "cmd_buy"), Command("buy"))
+    dp.message.register(_wrap_message_handler(cmd_status, "cmd_status"), Command("status"))
+    dp.message.register(_wrap_message_handler(cmd_mystats, "cmd_mystats"), Command("mystats"))
+    dp.message.register(_wrap_message_handler(cmd_ratings_stats, "cmd_ratings_stats"), Command("ratings"))
+    dp.message.register(_wrap_message_handler(cmd_error_stats, "cmd_error_stats"), Command("errors"))
+
+    dp.callback_query.register(_wrap_callback_handler(handle_rating_callback, "handle_rating_callback"), F.data.startswith("rate_"))
     dp.callback_query.register(
-        handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_"))
+        _wrap_callback_handler(handle_feedback_callback, "handle_feedback_callback"), F.data.startswith(("feedback_", "skip_feedback_"))
     )
 
     # Обработчики кнопок главного меню
