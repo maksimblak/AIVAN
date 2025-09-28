@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -18,450 +20,492 @@ from .utils import FileFormatHandler, TextProcessor
 logger = logging.getLogger(__name__)
 
 
-class RiskLevel(Enum):
-    """Уровни критичности рисков"""
+# ------------------------------ Модель данных ------------------------------
 
+class RiskLevel(Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
 
+@dataclass
+class RiskItem:
+    id: str
+    risk_level: str
+    description: str
+    clause_text: str
+    start: int
+    end: int
+    law_refs: List[str]
+    source: str  # "patterns" | "ai_analysis" | "compliance"
+
+
+# ------------------------------ Промпты ИИ ------------------------------
+
 RISK_ANALYSIS_PROMPT = """
-Ты — эксперт по анализу рисков в юридических документах и договорах.
+Ты — эксперт по анализу рисков в юридических документах РФ. Проведи проверку документа
+и верни ТОЛЬКО JSON по схеме:
 
-Твоя задача — провести комплексную проверку документа и выявить все потенциальные риски.
+{
+  "summary": "краткий обзор",
+  "overall_level": "low|medium|high|critical",
+  "risks": [
+    {
+      "id": "string",
+      "level": "low|medium|high|critical",
+      "description": "чётко сформулированный риск",
+      "clause_text": "дословная проблемная формулировка из документа",
+      "span": {"start": 123, "end": 150},   // символы в исходном тексте
+      "law_refs": ["ст. 432 ГК РФ", "ЗоЗПП ..."]
+    }
+  ],
+  "recommendations": ["...", "..."]
+}
 
-ОБЛАСТИ АНАЛИЗА:
-
-1. **Соответствие законодательству РФ**
-   - Проверка на соответствие ГК РФ
-   - Соответствие отраслевому законодательству
-   - Актуальность правовых норм
-
-2. **Анализ условий договора**
-   - Баланс прав и обязанностей сторон
-   - Корректность расчета неустойки
-   - Условия расторжения договора
-   - Автоматическое продление
-
-3. **Финансовые риски**
-   - Скрытые платежи и комиссии
-   - Некорректные расчеты
-   - Валютные риски
-   - Индексация цен
-
-4. **Процедурные риски**
-   - Неточные сроки
-   - Некорректные процедуры уведомления
-   - Спорные формулировки
-   - Отсутствие важных пунктов
-
-СТРУКТУРА ОТВЕТА:
-
-**Критичные риски (ВЫСОКИЙ/КРИТИЧЕСКИЙ уровень):**
-- [Описание риска]
-- Потенциальные последствия: [последствия]
-- Рекомендация: [как устранить]
-- Ссылка на закон: [если применимо]
-
-**Средние риски:**
-- [аналогично]
-
-**Низкие риски:**
-- [аналогично]
-
-**Рекомендуемые корректировки:**
-1. [Конкретная рекомендация с исправленной формулировкой]
-2. [Следующая рекомендация]
-
-**Общая оценка документа:**
-- Уровень риска: [НИЗКИЙ/СРЕДНИЙ/ВЫСОКИЙ/КРИТИЧЕСКИЙ]
-- Рекомендация к подписанию: [ДА/НЕТ/С ДОРАБОТКАМИ]
-
-ВАЖНО:
-- Используй только информацию из документа
-- Указывай конкретные пункты с проблемами
-- Предлагай конкретные исправления
-- Ссылайся на релевантные статьи ГК РФ
+ТРЕБОВАНИЯ:
+- Используй только содержание документа.
+- Обязательно указывай span.start/span.end (индексы символов в переданном тексте).
+- В law_refs указывай только то, на что реально опираешься.
+- Никаких пояснений вне JSON.
 """
 
+COMPLIANCE_PROMPT = """
+Проверь фрагмент документа на соответствие законодательству РФ и верни ТОЛЬКО JSON:
+
+{
+  "violations": [
+    {
+      "id": "string",
+      "text": "формулировка, содержащая нарушение (цитата)",
+      "span": {"start": 100, "end": 150},
+      "law_refs": ["ст. ... ГК РФ", "ЗоЗПП ..."],
+      "note": "почему это нарушение"
+    }
+  ]
+}
+
+Требования: используй только текст фрагмента; укажи корректные индексы span.
+"""
+
+
+# ------------------------- Основной класс-анализатор -------------------------
 
 class RiskAnalyzer(DocumentProcessor):
     """Класс для анализа рисков в договорах и документах"""
 
     def __init__(self, openai_service=None):
-        super().__init__(name="RiskAnalyzer", max_file_size=50 * 1024 * 1024)  # 50MB
+        super().__init__(name="RiskAnalyzer", max_file_size=50 * 1024 * 1024)
         self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
         self.openai_service = openai_service
-
-        # Предопределенные паттерны рисков
         self.risk_patterns = self._initialize_risk_patterns()
 
+    # ---------- Паттерны: расширенный набор ----------
     def _initialize_risk_patterns(self) -> dict[str, list[dict[str, Any]]]:
-        """Инициализация паттернов рисков"""
         return {
             "automatic_renewal": [
                 {
                     "pattern": r"автоматическ(?:и|ое)\s+(?:продлен|возобновлен)",
                     "risk_level": RiskLevel.HIGH,
-                    "description": "Автоматическое продление договора без уведомления",
-                    "recommendation": "Добавить четкий механизм уведомления о продлении",
+                    "description": "Автопродление без явного согласия/уведомления",
+                    "recommendation": "Установить порядок уведомления и срок отказа от продления",
                 }
             ],
             "hidden_fees": [
                 {
                     "pattern": r"дополнительн(?:ые|ая)\s+(?:плат|комис|сбор)",
                     "risk_level": RiskLevel.MEDIUM,
-                    "description": "Возможные скрытые платежи или комиссии",
-                    "recommendation": "Точно определить все возможные доплаты",
+                    "description": "Скрытые платежи/комиссии",
+                    "recommendation": "Прописать закрытый перечень платежей и порядок их расчёта",
                 }
             ],
             "penalty_issues": [
                 {
-                    "pattern": r"неустойка.*?(?:\d+\s*%|\d+\s*руб)",
+                    "pattern": r"неустойка.*?(?:\d+\s*%|\d+\s*(?:руб|₽))",
                     "risk_level": RiskLevel.MEDIUM,
-                    "description": "Условия неустойки требуют проверки",
-                    "recommendation": "Проверить соответствие размера неустойки законодательству",
+                    "description": "Размер/порядок неустойки требует проверки",
+                    "recommendation": "Сверить с разумностью и ст. 333 ГК РФ, описать порядок расчёта",
                 }
             ],
             "unclear_terms": [
                 {
-                    "pattern": r"в\s+разумн(?:ые|ый)\s+срок|в\s+кратчайш(?:ие|ий)\s+срок",
+                    "pattern": r"\bв\s+разумн(?:ые|ый)\s+срок\b|\bв\s+кратчайш(?:ие|ий)\s+срок\b",
                     "risk_level": RiskLevel.MEDIUM,
-                    "description": "Неопределенные временные рамки",
-                    "recommendation": "Установить конкретные сроки исполнения",
+                    "description": "Нечёткие временные рамки",
+                    "recommendation": "Установить конкретные календарные сроки/события",
                 }
             ],
-            "unbalanced_rights": [
+            "unilateral_change": [
                 {
-                    "pattern": r"(?:заказчик|клиент|покупатель).*?(?:не\s+несет\s+ответственност|освобождается)",
+                    "pattern": r"односторонн(?:ий|его)\s+поряд(?:ок|ке)\s+измен",
                     "risk_level": RiskLevel.HIGH,
-                    "description": "Дисбаланс прав и обязанностей сторон",
-                    "recommendation": "Пересмотреть распределение ответственности",
+                    "description": "Право одностороннего изменения условий",
+                    "recommendation": "Исключить/ограничить односторонние изменения либо предусмотреть согласование",
+                }
+            ],
+            "termination": [
+                {
+                    "pattern": r"расторжен.*?(?:в\s*одностороннем\s*порядке|без\s*уведомления)",
+                    "risk_level": RiskLevel.HIGH,
+                    "description": "Одностороннее расторжение без понятного порядка/срока уведомления",
+                    "recommendation": "Определить сроки и порядок уведомления, основания расторжения",
+                }
+            ],
+            "jurisdiction": [
+                {
+                    "pattern": r"(?:подсудн|юрисдикц).*?(?:по\s*месту\s*(?:исполнения|нахождения)|определяется\s*исполнителем)",
+                    "risk_level": RiskLevel.MEDIUM,
+                    "description": "Неудобная подсудность, навязанная одной стороной",
+                    "recommendation": "Согласовать нейтральную подсудность либо арбитражную оговорку",
+                }
+            ],
+            "limitation_of_liability": [
+                {
+                    "pattern": r"(?:(?:ограничива|исключа)ет\s+ответственность|не\s+нес[её]т\s+ответственности)",
+                    "risk_level": RiskLevel.HIGH,
+                    "description": "Чрезмерное ограничение/исключение ответственности",
+                    "recommendation": "Сбалансировать ответственность с учётом ст. 401 ГК РФ",
                 }
             ],
         }
 
+    # --------------------------------- API ---------------------------------
+
     async def process(
         self, file_path: str | Path, custom_criteria: list[str] | None = None, **kwargs
     ) -> DocumentResult:
-        """
-        Основной метод анализа рисков
-
-        Args:
-            file_path: путь к файлу
-            custom_criteria: пользовательские критерии недопустимых рисков
-            **kwargs: дополнительные параметры
-        """
-
         if not self.openai_service:
             raise ProcessingError("OpenAI сервис не инициализирован", "SERVICE_ERROR")
 
-        # Извлекаем текст из файла
         success, text = await FileFormatHandler.extract_text_from_file(file_path)
         if not success:
             raise ProcessingError(f"Не удалось извлечь текст: {text}", "EXTRACTION_ERROR")
 
-        # Очищаем и обрабатываем текст
         cleaned_text = TextProcessor.clean_text(text)
         if not cleaned_text.strip():
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
-        # Проводим автоматическую проверку по паттернам
+        # 1) Паттерны (быстро и детерминированно)
         pattern_risks = self._analyze_by_patterns(cleaned_text)
 
-        # Проводим AI-анализ
-        ai_analysis = await self._ai_risk_analysis(cleaned_text, custom_criteria)
+        # 2) ИИ-анализ (JSON с индексами)
+        ai_payload = await self._ai_risk_analysis(cleaned_text, custom_criteria)
 
-        # Проверяем соответствие законодательству
-        legal_compliance = await self._check_legal_compliance(cleaned_text)
+        ai_risks = ai_payload.get("risks", [])
+        ai_summary = ai_payload.get("summary", "")
+        ai_overall = ai_payload.get("overall_level", "medium")
+        ai_recs = ai_payload.get("recommendations", [])
 
-        # Объединяем результаты
-        ai_risks = ai_analysis.get("risks", [])
-        combined_risks = pattern_risks + ai_risks
-        highlighted_text = self.highlight_problematic_clauses(cleaned_text, combined_risks)
+        # 3) Комплаенс/нарушения
+        compliance = await self._check_legal_compliance(cleaned_text)
+
+        # 4) Сведение, дедупликация, агрегация
+        combined = self._merge_and_deduplicate(
+            pattern_risks,
+            ai_risks,
+            self._violations_to_risks(compliance.get("violations", [])),
+        )
+        overall = self._calculate_overall_risk_weighted(combined, ai_overall)
+
+        # 5) Подсветка по спанам
+        highlighted_text = self._highlight_with_spans(cleaned_text, combined)
 
         result_data = {
-            "overall_risk_level": self._calculate_overall_risk(combined_risks),
-            "pattern_risks": pattern_risks,
-            "ai_analysis": ai_analysis,
-            "legal_compliance": legal_compliance,
-            "recommendations": self._generate_recommendations(pattern_risks, ai_analysis),
+            "overall_risk_level": overall,
+            "pattern_risks": [r.__dict__ for r in pattern_risks],
+            "ai_analysis": {
+                "summary": ai_summary,
+                "overall_level": ai_overall,
+                "risks": [r.__dict__ for r in ai_risks],
+                "recommendations": ai_recs,
+                "method": ai_payload.get("method", "single"),
+                "chunks_analyzed": ai_payload.get("chunks_analyzed", 1),
+            },
+            "legal_compliance": {
+                "status": compliance.get("status"),
+                "analysis": compliance.get("analysis"),
+                "violations": compliance.get("violations", []),
+            },
+            "recommendations": self._generate_recommendations(combined, ai_recs),
             "highlighted_text": highlighted_text,
             "original_file": str(file_path),
             "analysis_timestamp": datetime.now().isoformat(),
         }
 
         return DocumentResult.success_result(
-            data=result_data, message="Анализ рисков успешно завершен"
+            data=result_data, message="Анализ рисков успешно завершён"
         )
 
-    def _analyze_by_patterns(self, text: str) -> list[dict[str, Any]]:
-        """Анализ документа по предопределенным паттернам рисков"""
-        found_risks = []
+    # ------------------------------ Паттерны ------------------------------
 
-        for risk_category, patterns in self.risk_patterns.items():
-            for pattern_info in patterns:
-                matches = re.finditer(pattern_info["pattern"], text, re.IGNORECASE | re.DOTALL)
+    def _analyze_by_patterns(self, text: str) -> List[RiskItem]:
+        out: List[RiskItem] = []
+        for category, patterns in self.risk_patterns.items():
+            for p in patterns:
+                for m in re.finditer(p["pattern"], text, re.IGNORECASE | re.DOTALL):
+                    start, end = m.start(), m.end()
+                    ctx_start = max(0, start - 100)
+                    ctx_end = min(len(text), end + 100)
+                    ctx = text[ctx_start:ctx_end]
+                    out.append(
+                        RiskItem(
+                            id=f"pat:{category}:{start}",
+                            risk_level=p["risk_level"].value,
+                            description=p["description"],
+                            clause_text=ctx.strip(),
+                            start=start,
+                            end=end,
+                            law_refs=[],
+                            source="patterns",
+                        )
+                    )
+        return out
 
-                for match in matches:
-                    context_start = max(0, match.start() - 100)
-                    context_end = min(len(text), match.end() + 100)
-                    context = text[context_start:context_end].strip()
-
-                    risk = {
-                        "category": risk_category,
-                        "risk_level": pattern_info["risk_level"].value,
-                        "description": pattern_info["description"],
-                        "recommendation": pattern_info["recommendation"],
-                        "context": context,
-                        "position": match.start(),
-                        "matched_text": match.group(),
-                    }
-
-                    found_risks.append(risk)
-
-        return found_risks
+    # ----------------------------- ИИ-анализ -----------------------------
 
     async def _ai_risk_analysis(
         self, text: str, custom_criteria: list[str] | None = None
-    ) -> dict[str, Any]:
-        """AI-анализ рисков с помощью OpenAI"""
-
+    ) -> Dict[str, Any]:
         try:
-            # Добавляем пользовательские критерии в промпт
             prompt = RISK_ANALYSIS_PROMPT
             if custom_criteria:
-                criteria_text = "\n".join(f"- {criterion}" for criterion in custom_criteria)
-                prompt += f"\n\nДОПОЛНИТЕЛЬНЫЕ КРИТЕРИИ ПРОВЕРКИ:\n{criteria_text}"
+                criteria_text = "\n".join(f"- {c}" for c in custom_criteria)
+                prompt += f"\n\nУчитывай также пользовательские критерии:\n{criteria_text}\n"
 
-            # Если документ слишком длинный, обрабатываем частями
-            if len(text) > 8000:
-                chunks = TextProcessor.split_into_chunks(text, max_chunk_size=6000)
-                chunk_analyses = []
-
-                for i, chunk in enumerate(chunks):
-                    logger.info(f"Анализирую часть {i+1}/{len(chunks)}")
-
-                    result = await self.openai_service.ask_legal(
-                        system_prompt=prompt,
-                        user_text=f"Часть {i+1} из {len(chunks)} документа:\n\n{chunk}",
-                    )
-
-                    if result.get("ok"):
-                        chunk_analyses.append(
-                            {
-                                "chunk_number": i + 1,
-                                "analysis": result.get("text", ""),
-                                "chunk_text": chunk[:200] + "..." if len(chunk) > 200 else chunk,
-                            }
-                        )
-
-                if chunk_analyses:
-                    # Объединяем анализы частей
-                    combined_analysis = "\n\n".join([ca["analysis"] for ca in chunk_analyses])
-
-                    # Создаем итоговый анализ
-                    final_prompt = (
-                        """
-                    Объедини следующие анализы рисков частей документа в единый структурированный отчет:
-
-                    """
-                        + combined_analysis
-                    )
-
-                    final_result = await self.openai_service.ask_legal(
-                        system_prompt=RISK_ANALYSIS_PROMPT, user_text=final_prompt
-                    )
-
-                    if final_result.get("ok"):
-                        return {
-                            "analysis": final_result.get("text", ""),
-                            "method": "chunked_analysis",
-                            "chunks_analyzed": len(chunks),
-                            "chunk_details": chunk_analyses,
-                            "risks": self._parse_risks_from_ai_text(final_result.get("text", "")),
-                        }
+            if len(text) <= 12000:
+                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text)
+                return self._parse_ai_json_payload(resp, method="single", chunks=1)
             else:
-                # Анализируем документ целиком
-                result = await self.openai_service.ask_legal(
-                    system_prompt=prompt, user_text=text
-                )
-
-                if result.get("ok"):
-                    analysis_text = result.get("text", "")
-                    return {
-                        "analysis": analysis_text,
-                        "method": "single_analysis",
-                        "chunks_analyzed": 1,
-                        "risks": self._parse_risks_from_ai_text(analysis_text),
-                    }
-
-            raise ProcessingError("Не удалось провести AI-анализ", "AI_ANALYSIS_ERROR")
-
+                chunks = TextProcessor.split_into_chunks(text, max_chunk_size=8000, overlap=400)
+                risks_all: List[RiskItem] = []
+                recs_all: List[str] = []
+                summaries: List[str] = []
+                for i, chunk in enumerate(chunks, 1):
+                    part = f"(Часть {i}/{len(chunks)}; смещение {text.find(chunk)})\n\n{chunk}"
+                    resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=part)
+                    payload = self._parse_ai_json_payload(resp, method="chunk", chunks=len(chunks))
+                    risks_all.extend(payload.get("risks", []))
+                    recs_all.extend(payload.get("recommendations", []))
+                    if payload.get("summary"):
+                        summaries.append(payload["summary"])
+                return {
+                    "summary": " ".join(summaries)[:1000],
+                    "overall_level": self._dominant_level([r.risk_level for r in risks_all]) or "medium",
+                    "risks": risks_all,
+                    "recommendations": list(dict.fromkeys(recs_all))[:20],
+                    "method": "chunked",
+                    "chunks_analyzed": len(chunks),
+                }
         except Exception as e:
-            logger.error(f"Ошибка AI-анализа: {e}")
-            return {
-                "analysis": f"Ошибка анализа: {str(e)}",
-                "method": "error",
-                "chunks_analyzed": 0,
-                "risks": [],
-            }
+            logger.error("Ошибка AI-анализа: %s", e)
+            return {"summary": f"Ошибка анализа: {e}", "overall_level": "medium", "risks": [], "recommendations": [], "method": "error", "chunks_analyzed": 0}
 
-    def _parse_risks_from_ai_text(self, analysis_text: str) -> list[dict[str, Any]]:
-        """Парсинг рисков из текста AI-анализа"""
-        risks = []
+    def _parse_ai_json_payload(self, resp: Dict[str, Any], method: str, chunks: int) -> Dict[str, Any]:
+        """Извлекаем строгий JSON из ответа модели; фолбэк — пустые риски."""
+        if not resp or not resp.get("ok"):
+            return {"summary": "", "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
+        raw = resp.get("text", "") or ""
+        data = self._safe_json_loads(raw)
+        if not isinstance(data, dict):
+            return {"summary": raw[:500], "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
 
-        # Простой парсинг - можно улучшить регулярными выражениями
-        sections = ["критичные риски", "средние риски", "низкие риски"]
-
-        for section in sections:
-            section_pattern = rf"{section}.*?(?=(?:{'|'.join(sections)}|рекомендуемые корректировки|общая оценка|$))"
-            section_match = re.search(section_pattern, analysis_text, re.IGNORECASE | re.DOTALL)
-
-            if section_match:
-                section_text = section_match.group()
-                # Извлекаем отдельные риски из секции
-                risk_items = re.findall(r"-\s*([^-\n]+(?:\n(?!\s*-)[^\n]*)*)", section_text)
-
-                risk_level = RiskLevel.MEDIUM  # по умолчанию
-                if "критичные" in section:
-                    risk_level = RiskLevel.CRITICAL
-                elif "низкие" in section:
-                    risk_level = RiskLevel.LOW
-
-                for risk_text in risk_items:
-                    if risk_text.strip():
-                        risks.append(
-                            {
-                                "risk_level": risk_level.value,
-                                "description": risk_text.strip(),
-                                "source": "ai_analysis",
-                            }
-                        )
-
-        return risks
-
-    def _extract_legal_violations(self, analysis_text: str) -> list[dict[str, Any]]:
-        """Простое извлечение нарушений из текста анализа AI."""
-        if not analysis_text:
-            return []
-
-        violations: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw_line in analysis_text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if re.match(r"^(?:[-•*—]|\d+[.)])\s*", line):
-                normalized = re.sub(r"^(?:[-•*—]|\d+[.)])\s*", "", line).strip()
-                norm_key = normalized.lower()
-                if not normalized or norm_key in seen:
+        # нормализуем риски
+        risks: List[RiskItem] = []
+        for r in data.get("risks", []) or []:
+            try:
+                span = r.get("span") or {}
+                s, e = int(span.get("start", -1)), int(span.get("end", -1))
+                if s < 0 or e <= s:
                     continue
-                seen.add(norm_key)
-                ref_match = re.search(
-                    r"(ст\.?\s*\d+[\w\-]*|article\s*\d+)", normalized, re.IGNORECASE
+                risks.append(
+                    RiskItem(
+                        id=str(r.get("id") or f"ai:{s}"),
+                        risk_level=str(r.get("level") or "medium").lower(),
+                        description=str(r.get("description") or "").strip(),
+                        clause_text=str(r.get("clause_text") or "").strip(),
+                        start=s,
+                        end=e,
+                        law_refs=[str(x) for x in (r.get("law_refs") or [])],
+                        source="ai_analysis",
+                    )
                 )
-                violations.append(
-                    {"text": normalized, "reference": ref_match.group(1) if ref_match else None}
-                )
-        return violations
+            except Exception:
+                continue
 
-    async def _check_legal_compliance(self, text: str) -> dict[str, Any]:
-        """Проверка соответствия законодательству"""
-
-        compliance_prompt = """
-        Проверь документ на соответствие основным требованиям российского законодательства:
-
-        1. Гражданский кодекс РФ (общие положения о договорах)
-        2. Специальные требования для данного типа договора
-        3. Защита прав потребителей (если применимо)
-        4. Антимонопольное законодательство
-        5. Налоговое законодательство
-
-        Укажи конкретные нарушения со ссылками на статьи законов.
-        """
-
-        try:
-            result = await self.openai_service.ask_legal(
-                system_prompt=compliance_prompt,
-                user_text=text[:8000],  # Ограничиваем длину для проверки соответствия
-            )
-
-            if result.get("ok"):
-                analysis_text = result.get("text", "")
-                return {
-                    "status": "completed",
-                    "analysis": analysis_text,
-                    "violations": self._extract_legal_violations(analysis_text),
-                }
-            else:
-                return {
-                    "status": "failed",
-                    "analysis": "Не удалось провести проверку соответствия законодательству",
-                    "violations": [],
-                }
-
-        except Exception as e:
-            logger.error(f"Ошибка проверки законодательства: {e}")
-            return {"status": "error", "analysis": f"Ошибка: {str(e)}", "violations": []}
-
-    def _calculate_overall_risk(self, risks: list[dict[str, Any]]) -> str:
-        """Рассчитать общий уровень риска"""
-        if not risks:
-            return RiskLevel.LOW.value
-
-        risk_scores = {
-            RiskLevel.LOW.value: 1,
-            RiskLevel.MEDIUM.value: 2,
-            RiskLevel.HIGH.value: 3,
-            RiskLevel.CRITICAL.value: 4,
+        return {
+            "summary": str(data.get("summary") or "")[:1000],
+            "overall_level": str(data.get("overall_level") or "medium").lower(),
+            "risks": risks,
+            "recommendations": [str(x) for x in (data.get("recommendations") or [])][:20],
+            "method": method,
+            "chunks_analyzed": chunks,
         }
 
-        max_risk_score = max(risk_scores.get(risk.get("risk_level", "low"), 1) for risk in risks)
+    @staticmethod
+    def _safe_json_loads(raw: str) -> Any:
+        """Достаём JSON из «болтливого» текста: ищем первый '{' и парсим до последней '}'."""
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        try:
+            i = raw.find("{")
+            j = raw.rfind("}")
+            if i != -1 and j != -1 and j > i:
+                return json.loads(raw[i : j + 1])
+        except Exception:
+            return {}
+        return {}
 
-        if max_risk_score >= 4:
-            return RiskLevel.CRITICAL.value
-        elif max_risk_score >= 3:
-            return RiskLevel.HIGH.value
-        elif max_risk_score >= 2:
-            return RiskLevel.MEDIUM.value
-        else:
-            return RiskLevel.LOW.value
+    # --------------------------- Комплаенс/нарушения ---------------------------
 
-    def _generate_recommendations(
-        self, pattern_risks: list[dict[str, Any]], ai_analysis: dict[str, Any]
-    ) -> list[str]:
-        """Генерация рекомендаций по устранению рисков"""
-        recommendations = []
+    async def _check_legal_compliance(self, text: str) -> Dict[str, Any]:
+        try:
+            frag = text[:8000]
+            resp = await self.openai_service.ask_legal(system_prompt=COMPLIANCE_PROMPT, user_text=frag)
+            if not resp or not resp.get("ok"):
+                return {"status": "failed", "analysis": "Не удалось провести проверку", "violations": []}
+            data = self._safe_json_loads(resp.get("text", "") or "")
+            violations = []
+            for v in (data.get("violations") or []):
+                span = v.get("span") or {}
+                s, e = int(span.get("start", -1)), int(span.get("end", -1))
+                if s >= 0 and e > s:
+                    violations.append(
+                        {
+                            "id": str(v.get("id") or f"law:{s}"),
+                            "text": str(v.get("text") or ""),
+                            "span": {"start": s, "end": e},
+                            "law_refs": [str(x) for x in (v.get("law_refs") or [])],
+                            "note": str(v.get("note") or ""),
+                        }
+                    )
+            return {"status": "completed", "analysis": resp.get("text", ""), "violations": violations}
+        except Exception as e:
+            logger.error("Ошибка проверки законодательства: %s", e)
+            return {"status": "error", "analysis": f"Ошибка: {e}", "violations": []}
 
-        # Рекомендации на основе найденных паттернов
-        for risk in pattern_risks:
-            if risk.get("recommendation"):
-                recommendations.append(risk["recommendation"])
-
-        # Базовые рекомендации
-        recommendations.extend(
-            [
-                "Обязательно проконсультироваться с юристом перед подписанием",
-                "Проверить все реквизиты и полномочия контрагента",
-                "Убедиться в актуальности всех ссылок на законодательство",
-            ]
-        )
-
-        return list(set(recommendations))  # Убираем дубликаты
-
-    def highlight_problematic_clauses(self, text: str, risks: list[dict[str, Any]]) -> str:
-        """Подсветка проблемных пунктов в тексте"""
-        highlighted_text = text
-
-        for risk in risks:
-            if "position" in risk and "matched_text" in risk:
-                matched_text = risk["matched_text"]
-                highlighted_text = highlighted_text.replace(
-                    matched_text,
-                    f"**[РИСК: {risk['risk_level'].upper()}]** {matched_text} **[/{risk['risk_level'].upper()}]**",
+    def _violations_to_risks(self, violations: List[Dict[str, Any]]) -> List[RiskItem]:
+        out: List[RiskItem] = []
+        for v in violations:
+            span = v.get("span") or {}
+            s, e = int(span.get("start", -1)), int(span.get("end", -1))
+            if s >= 0 and e > s:
+                out.append(
+                    RiskItem(
+                        id=str(v.get("id") or f"law:{s}"),
+                        risk_level=RiskLevel.MEDIUM.value,
+                        description=(v.get("note") or "Потенциальное нарушение").strip(),
+                        clause_text=str(v.get("text") or ""),
+                        start=s,
+                        end=e,
+                        law_refs=[str(x) for x in (v.get("law_refs") or [])],
+                        source="compliance",
+                    )
                 )
+        return out
 
-        return highlighted_text
+    # ------------------------- Сведение/агрегация -------------------------
+
+    def _merge_and_deduplicate(self, *risk_groups: List[RiskItem]) -> List[RiskItem]:
+        """Объединяем риски, убирая дубликаты по перекрытию спанов и схожести описаний."""
+        all_risks: List[RiskItem] = [r for group in risk_groups for r in group]
+        if not all_risks:
+            return []
+
+        def overlap(a: RiskItem, b: RiskItem) -> float:
+            inter = max(0, min(a.end, b.end) - max(a.start, b.start))
+            union = max(a.end, b.end) - min(a.start, b.start)
+            return inter / union if union > 0 else 0.0
+
+        def similar_desc(a: str, b: str) -> bool:
+            a1 = re.sub(r"\W+", " ", a.lower()).strip()
+            b1 = re.sub(r"\W+", " ", b.lower()).strip()
+            return a1 == b1 or (a1 in b1 and len(a1) > 15) or (b1 in a1 and len(b1) > 15)
+
+        merged: List[RiskItem] = []
+        for r in sorted(all_risks, key=lambda x: (x.start, -x.end)):
+            dup = False
+            for m in merged:
+                if overlap(r, m) > 0.5 or similar_desc(r.description, m.description):
+                    # усиливаем уровень, объединяем ссылки
+                    m.risk_level = self._max_level(m.risk_level, r.risk_level)
+                    m.law_refs = list(dict.fromkeys((m.law_refs or []) + (r.law_refs or [])))
+                    dup = True
+                    break
+            if not dup:
+                merged.append(r)
+        return merged
+
+    @staticmethod
+    def _max_level(a: str, b: str) -> str:
+        order = {RiskLevel.LOW.value: 1, RiskLevel.MEDIUM.value: 2, RiskLevel.HIGH.value: 3, RiskLevel.CRITICAL.value: 4}
+        return a if order.get(a, 1) >= order.get(b, 1) else b
+
+    def _dominant_level(self, levels: List[str]) -> Optional[str]:
+        if not levels:
+            return None
+        order = [RiskLevel.CRITICAL.value, RiskLevel.HIGH.value, RiskLevel.MEDIUM.value, RiskLevel.LOW.value]
+        for lvl in order:
+            if lvl in levels:
+                return lvl
+        return None
+
+    def _calculate_overall_risk_weighted(self, risks: List[RiskItem], ai_overall: str) -> str:
+        """Взвешенная оценка: частота и критичность (а не просто максимум)."""
+        if not risks:
+            return RiskLevel.LOW.value
+        weights = {RiskLevel.LOW.value: 1, RiskLevel.MEDIUM.value: 2, RiskLevel.HIGH.value: 4, RiskLevel.CRITICAL.value: 7}
+        score = sum(weights.get(r.risk_level, 1) for r in risks)
+        # Нормализация по количеству рисков
+        avg = score / max(1, len(risks))
+        # Усиливаем, если ИИ сказал high/critical
+        if ai_overall in (RiskLevel.CRITICAL.value, RiskLevel.HIGH.value):
+            avg += 0.5
+        if avg >= 5.5:
+            return RiskLevel.CRITICAL.value
+        if avg >= 3.5:
+            return RiskLevel.HIGH.value
+        if avg >= 2.0:
+            return RiskLevel.MEDIUM.value
+        return RiskLevel.LOW.value
+
+    # ------------------------------ Рекомендации ------------------------------
+
+    def _generate_recommendations(self, risks: List[RiskItem], ai_recs: List[str]) -> List[str]:
+        base: List[str] = []
+        for r in risks:
+            if r.source == "patterns":
+                # мини-советы по категориям
+                base.append("Уточнить порядок уведомления/согласования изменений")
+                base.append("Сбалансировать ответственность сторон и неустойку")
+        base.extend(ai_recs or [])
+        # уникализация с сохранением порядка
+        uniq = list(dict.fromkeys([s.strip() for s in base if s.strip()]))
+        return uniq[:20]
+
+    # ------------------------------ Подсветка ------------------------------
+
+    def _highlight_with_spans(self, text: str, risks: List[RiskItem]) -> str:
+        """Безопасная подсветка по индексам (не через replace)."""
+        if not risks:
+            return text
+        # не допускаем выхода за границы
+        spans: List[Tuple[int, int, str]] = []
+        for r in risks:
+            s, e = max(0, int(r.start)), min(len(text), int(r.end))
+            if e > s:
+                label = f"[РИСК: {r.risk_level.upper()}]"
+                spans.append((s, e, label))
+        spans.sort(key=lambda x: x[0])
+
+        out: List[str] = []
+        cur = 0
+        for s, e, lab in spans:
+            if s < cur:
+                continue
+            out.append(text[cur:s])
+            out.append(f"{lab} {text[s:e]} [/]")
+            cur = e
+        out.append(text[cur:])
+        return "".join(out)
