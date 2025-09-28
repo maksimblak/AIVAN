@@ -35,6 +35,10 @@ class UserRecord:
     successful_requests: int = 0
     failed_requests: int = 0
     last_request_at: int = 0
+    referred_by: int | None = None
+    referral_code: str | None = None
+    referrals_count: int = 0
+    referral_bonus_days: int = 0
 
 
 @dataclass
@@ -379,6 +383,10 @@ class DatabaseAdvanced:
                     "ALTER TABLE users ADD COLUMN successful_requests INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN failed_requests INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN last_request_at INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN referred_by INTEGER;",
+                    "ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;",
+                    "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
                 ]
 
                 for migration in migrations:
@@ -450,10 +458,11 @@ class DatabaseAdvanced:
             try:
                 await conn.execute(
                     """
-                    INSERT OR IGNORE INTO users 
+                    INSERT OR IGNORE INTO users
                     (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                     total_requests, successful_requests, failed_requests, last_request_at)
-                    VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0)
+                     total_requests, successful_requests, failed_requests, last_request_at,
+                     referred_by, referral_code, referrals_count, referral_bonus_days)
+                    VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0)
                     """,
                     (user_id, 1 if is_admin else 0, default_trial, now, now),
                 )
@@ -468,7 +477,8 @@ class DatabaseAdvanced:
                 # Получаем итоговую запись
                 cursor = await conn.execute(
                     """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                       total_requests, successful_requests, failed_requests, last_request_at 
+                       total_requests, successful_requests, failed_requests, last_request_at,
+                       referred_by, referral_code, referrals_count, referral_bonus_days 
                        FROM users WHERE user_id = ?""",
                     (user_id,),
                 )
@@ -491,7 +501,8 @@ class DatabaseAdvanced:
             try:
                 cursor = await conn.execute(
                     """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                       total_requests, successful_requests, failed_requests, last_request_at 
+                       total_requests, successful_requests, failed_requests, last_request_at,
+                       referred_by, referral_code, referrals_count, referral_bonus_days
                        FROM users WHERE user_id = ?""",
                     (user_id,),
                 )
@@ -1007,6 +1018,163 @@ class DatabaseAdvanced:
             "cleanup_task_running": self._cleanup_task is not None
             and not self._cleanup_task.done(),
         }
+
+    # Методы для реферальной системы
+    async def generate_referral_code(self, user_id: int) -> str:
+        """Генерация реферального кода для пользователя"""
+        import string
+        import random
+
+        # Генерируем уникальный код
+        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    "UPDATE users SET referral_code = ?, updated_at = ? WHERE user_id = ?",
+                    (code, int(time.time()), user_id),
+                )
+                await conn.commit()
+                return code
+            except Exception as e:
+                logger.error(f"Database error in generate_referral_code: {e}")
+                raise DatabaseException(f"Error generating referral code: {e}")
+
+    async def get_user_by_referral_code(self, referral_code: str) -> UserRecord | None:
+        """Получение пользователя по реферальному коду"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
+                       total_requests, successful_requests, failed_requests, last_request_at,
+                       referred_by, referral_code, referrals_count, referral_bonus_days
+                       FROM users WHERE referral_code = ?""",
+                    (referral_code,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+
+                return UserRecord(*row) if row else None
+            except Exception as e:
+                logger.error(f"Database error in get_user_by_referral_code: {e}")
+                return None
+
+    async def set_user_referrer(self, user_id: int, referrer_id: int) -> bool:
+        """Установка реферера для пользователя"""
+        async with self.pool.acquire() as conn:
+            try:
+                # Проверяем, что пользователь не ссылается сам на себя
+                if user_id == referrer_id:
+                    return False
+
+                await conn.execute(
+                    "UPDATE users SET referred_by = ?, updated_at = ? WHERE user_id = ? AND referred_by IS NULL",
+                    (referrer_id, int(time.time()), user_id),
+                )
+
+                # Увеличиваем счетчик рефералов у реферера
+                await conn.execute(
+                    "UPDATE users SET referrals_count = referrals_count + 1, updated_at = ? WHERE user_id = ?",
+                    (int(time.time()), referrer_id),
+                )
+
+                await conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Database error in set_user_referrer: {e}")
+                return False
+
+    async def get_user_referrals(self, user_id: int) -> list[dict[str, Any]]:
+        """Получение списка рефералов пользователя"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT user_id, created_at, subscription_until > ? as has_active_subscription
+                       FROM users WHERE referred_by = ? ORDER BY created_at DESC""",
+                    (int(time.time()), user_id),
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+
+                return [
+                    {
+                        "user_id": row[0],
+                        "joined_at": row[1],
+                        "has_active_subscription": bool(row[2])
+                    }
+                    for row in rows
+                ]
+            except Exception as e:
+                logger.error(f"Database error in get_user_referrals: {e}")
+                return []
+
+    async def add_referral_bonus(self, user_id: int, bonus_days: int) -> bool:
+        """Добавление бонусных дней пользователю"""
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    "UPDATE users SET referral_bonus_days = referral_bonus_days + ?, updated_at = ? WHERE user_id = ?",
+                    (bonus_days, int(time.time()), user_id),
+                )
+                await conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Database error in add_referral_bonus: {e}")
+                return False
+
+    # Методы для истории платежей
+    async def get_user_transactions(self, user_id: int, limit: int = 20) -> list[TransactionRecord]:
+        """Получение истории транзакций пользователя"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT id, user_id, provider, currency, amount, amount_minor_units,
+                       payload, status, telegram_payment_charge_id, provider_payment_charge_id,
+                       created_at, updated_at
+                       FROM transactions WHERE user_id = ?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (user_id, limit),
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+
+                return [TransactionRecord(*row) for row in rows]
+            except Exception as e:
+                logger.error(f"Database error in get_user_transactions: {e}")
+                return []
+
+    async def get_transaction_stats(self, user_id: int) -> dict[str, Any]:
+        """Получение статистики платежей пользователя"""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """SELECT
+                       COUNT(*) as total_transactions,
+                       SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END) as total_spent,
+                       MIN(created_at) as first_payment,
+                       MAX(created_at) as last_payment
+                       FROM transactions WHERE user_id = ?""",
+                    (user_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+
+                if row:
+                    return {
+                        "total_transactions": row[0] or 0,
+                        "total_spent": row[1] or 0,
+                        "first_payment": row[2],
+                        "last_payment": row[3],
+                    }
+                return {
+                    "total_transactions": 0,
+                    "total_spent": 0,
+                    "first_payment": None,
+                    "last_payment": None,
+                }
+            except Exception as e:
+                logger.error(f"Database error in get_transaction_stats: {e}")
+                return {}
 
     async def close(self) -> None:
         """Закрытие базы данных"""
