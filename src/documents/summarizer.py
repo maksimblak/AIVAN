@@ -7,16 +7,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------- Конфиг ----------------------------------
 
 LANGUAGE_CONFIG: dict[str, dict[str, str]] = {
     "ru": {"prompt": "русский", "display": "Русский"},
@@ -28,47 +32,69 @@ DETAIL_LEVELS: dict[str, dict[str, str]] = {
     "brief": {"label": "brief", "ru": "Краткая", "en": "Brief"},
 }
 
+DATE_PATTERNS: tuple[str, ...] = (
+    r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b",
+    r"\b\d{4}-\d{2}-\d{2}\b",
+    r"\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\b",
+    r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\b",
+)
+
+PENALTY_KEYWORDS: tuple[str, ...] = (
+    "штраф",
+    "неустой",
+    "пени",
+    "санкц",
+    "penalty",
+    "fine",
+    "liquidated damages",
+)
+
+# LLM промпты
 CHUNK_PROMPT = """
 Ты — юридический аналитик. К тебе поступила часть договора или иного юридического документа.
-Твоя задача — подготовить структурированное саммари этой части.
+Подготовь структурированное саммари ЭТОЙ ЧАСТИ.
 
-СТРОГО ВЕРНИ JSON без дополнительных комментариев.
+СТРОГО ВЕРНИ ТОЛЬКО JSON без любых комментариев.
 Структура:
 {
   "summary": "связный текст 3-5 предложений",
-  "key_points": ["ключевые положения"],
-  "deadlines": ["сроки и дедлайны"],
-  "penalties": ["штрафы, неустойки, санкции"],
+  "key_points": ["ключевые положения (без дублирования)"],
+  "deadlines": ["сроки и дедлайны (если есть)"],
+  "penalties": ["штрафы/неустойки/санкции (если есть)"],
   "actions": ["рекомендуемые шаги/проверки"],
   "language": "ru|en"
 }
 
 Параметры:
 - Уровень детализации: {detail_label}
-- Желаемый язык ответа: {language_name} язык
+- Язык ответа: {language_name}
 - Номер части: {chunk_number} из {total_chunks}
 
-Вот текст части (сохраняй фактические формулировки):
+Текст части (используй фактические формулировки и цитаты где уместно):
 """
 
 AGGREGATION_PROMPT = """
-Ты — помощник юриста. Ниже набор саммари частей документа в формате JSON.
-Объедини их и верни итог в виде JSON той же структуры, но без дублирующихся пунктов.
-Используй {language_name} язык. Уровень детализации: {detail_label}.
+Ты — помощник юриста. Ниже — список JSON-саммари частей документа.
+Объедини их в единый итог, УДАЛИ ДУБЛИКАТЫ и СВЕДИ СХОЖИЕ ПУНКТЫ. Верни только JSON.
 
-Сырые данные:
-{chunk_payload}
-
-СТРОГО ВЕРНИ JSON со следующими ключами:
+Требуемая структура:
 {
-  "summary": "целостный обзор",
-  "key_points": ["ключевые пункты документа"],
-  "deadlines": ["обязательные сроки"],
+  "summary": "целостный обзор на 4-6 предложений",
+  "key_points": ["ключевые положения без повторов"],
+  "deadlines": ["ключевые сроки"],
   "penalties": ["штрафы/санкции"],
-  "actions": ["контрольный список"],
+  "actions": ["контрольный чек-лист"],
   "language": "ru|en"
 }
+
+Язык: {language_name}
+Детализация: {detail_label}
+
+Данные для объединения (JSON-список):
+{chunk_payload}
 """
+
+# ---------------------------------- UI-тексты ----------------------------------
 
 LANG_SECTIONS: dict[str, dict[str, str]] = {
     "ru": {
@@ -89,22 +115,20 @@ LANG_SECTIONS: dict[str, dict[str, str]] = {
     },
 }
 
-DATE_PATTERNS: tuple[str, ...] = (
-    r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b",
-    r"\b\d{4}-\d{2}-\d{2}\b",
-    r"\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\b",
-    r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\b",
-)
+# --------------------------------- Датаклассы ---------------------------------
 
-PENALTY_KEYWORDS: tuple[str, ...] = (
-    "штраф",
-    "неустой",
-    "пени",
-    "penalty",
-    "fine",
-    "liquidated damages",
-    "санкц",
-)
+
+@dataclass
+class SummaryStruct:
+    summary: str
+    key_points: List[str]
+    deadlines: List[str]
+    penalties: List[str]
+    actions: List[str]
+    language: str
+
+
+# --------------------------------- Саммаризатор ---------------------------------
 
 
 class DocumentSummarizer(DocumentProcessor):
@@ -115,6 +139,14 @@ class DocumentSummarizer(DocumentProcessor):
         self.openai_service = openai_service
         self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
 
+        # env-флаги/настройки
+        self.allow_ai = (os.getenv("SUMMARY_ALLOW_AI", "true").lower() in {"1", "true", "yes", "on"})
+        self.max_key_items = int(os.getenv("SUMMARY_MAX_ITEMS", "12"))
+        self.chunk_size = int(os.getenv("SUMMARY_CHUNK_SIZE", "4000"))
+        self.chunk_overlap = int(os.getenv("SUMMARY_CHUNK_OVERLAP", "400"))
+
+    # ------------------------------- Публичный API -------------------------------
+
     async def process(
         self,
         file_path: str | Path,
@@ -123,9 +155,10 @@ class DocumentSummarizer(DocumentProcessor):
         output_formats: list[str] | None = None,
         **_: Any,
     ) -> DocumentResult:
-        if not self.openai_service:
-            raise ProcessingError("OpenAI сервис не инициализирован", "SERVICE_ERROR")
-
+        if not self.allow_ai or not self.openai_service:
+            # оффлайн режим недопустим? — деградируем gracefully
+            if not self.openai_service:
+                logger.warning("OpenAI service is not initialized; using local summary heuristics")
         normalized_detail = self._normalize_detail_level(detail_level)
 
         success, extracted = await FileFormatHandler.extract_text_from_file(file_path)
@@ -137,34 +170,46 @@ class DocumentSummarizer(DocumentProcessor):
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
         normalized_lang = self._normalize_language(language, cleaned_text)
-
         metadata = self._collect_metadata(cleaned_text, file_path, normalized_lang)
+
+        # эвристики
         deadlines_heuristic = self._extract_deadlines(cleaned_text)
         penalties_heuristic = self._extract_penalties(cleaned_text)
 
+        # основное саммари
         try:
-            summary_payload = await self._create_summary(
-                cleaned_text,
-                detail_level=normalized_detail,
-                language=normalized_lang,
-            )
+            if self.allow_ai and self.openai_service:
+                summary_payload = await self._create_summary_llm(
+                    cleaned_text,
+                    detail_level=normalized_detail,
+                    language=normalized_lang,
+                )
+            else:
+                summary_payload = await self._create_summary_local(
+                    cleaned_text,
+                    detail_level=normalized_detail,
+                    language=normalized_lang,
+                )
         except ProcessingError:
             raise
         except Exception as exc:
             logger.exception("Не удалось подготовить саммари: %s", exc)
             raise ProcessingError(f"Ошибка саммари: {exc}", "SUMMARY_ERROR")
 
-        summary_data = summary_payload["summary"]
+        summary_data: Dict[str, Any] = summary_payload["summary"]
+
+        # подмешиваем эвристику, если модель не дала
         if not summary_data.get("deadlines") and deadlines_heuristic:
             summary_data["deadlines"] = deadlines_heuristic
         if not summary_data.get("penalties") and penalties_heuristic:
             summary_data["penalties"] = penalties_heuristic
         if not summary_data.get("actions"):
             summary_data["actions"] = self._build_checklist_from_metadata(
-                deadlines_heuristic,
-                penalties_heuristic,
+                summary_data.get("deadlines", []),
+                summary_data.get("penalties", []),
             )
 
+        # финальный вид для вывода
         summary_text = self._format_summary_text(summary_data, normalized_lang)
 
         result_payload = {
@@ -177,18 +222,19 @@ class DocumentSummarizer(DocumentProcessor):
             "checklist": summary_data.get("actions", []),
             "processing_info": summary_payload.get("processing_info", {}),
         }
-
         if output_formats:
             result_payload["requested_formats"] = list(dict.fromkeys(output_formats))
 
         return DocumentResult.success_result(data=result_payload, message="Саммари подготовлено")
 
-    async def _create_summary(self, text: str, detail_level: str, language: str) -> dict[str, Any]:
-        chunks = TextProcessor.split_into_chunks(text, max_chunk_size=4000, overlap=400)
+    # ------------------------ LLM / локальная агрегация ------------------------
+
+    async def _create_summary_llm(self, text: str, detail_level: str, language: str) -> dict[str, Any]:
+        chunks = TextProcessor.split_into_chunks(text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap)
         chunk_results: list[dict[str, Any]] = []
 
         for idx, chunk in enumerate(chunks, start=1):
-            chunk_result = await self._summarize_chunk(
+            chunk_result = await self._summarize_chunk_llm(
                 chunk,
                 chunk_number=idx,
                 total_chunks=len(chunks),
@@ -199,24 +245,17 @@ class DocumentSummarizer(DocumentProcessor):
 
         if len(chunk_results) == 1:
             structured = chunk_results[0]["summary"]
-            return {
-                "summary": structured,
-                "processing_info": {
-                    "chunks_processed": 1,
-                    "strategy": "single",
-                },
-            }
+            return {"summary": structured, "processing_info": {"chunks_processed": 1, "strategy": "single"}}
 
-        aggregated = await self._aggregate_chunks(chunk_results, detail_level, language)
-        return {
-            "summary": aggregated,
-            "processing_info": {
-                "chunks_processed": len(chunk_results),
-                "strategy": "aggregate",
-            },
-        }
+        aggregated = await self._aggregate_chunks_llm(chunk_results, detail_level, language)
+        return {"summary": aggregated, "processing_info": {"chunks_processed": len(chunk_results), "strategy": "aggregate"}}
 
-    async def _summarize_chunk(
+    async def _create_summary_local(self, text: str, detail_level: str, language: str) -> dict[str, Any]:
+        """Полностью локальная, безопасная версия саммари (без обращения к API)."""
+        struct = self._local_summarize(text, detail_level=detail_level, language=language)
+        return {"summary": struct.__dict__, "processing_info": {"chunks_processed": 1, "strategy": "local"}}
+
+    async def _summarize_chunk_llm(
         self,
         chunk_text: str,
         chunk_number: int,
@@ -238,21 +277,13 @@ class DocumentSummarizer(DocumentProcessor):
             + chunk_text
         )
 
-        response = await self.openai_service.ask_legal(
-            system_prompt="Ты структурируешь юридические тексты.",
-            user_text=user_message,
-        )
-        if not response.get("ok"):
-            raise ProcessingError(
-                f"Модель не смогла обработать часть {chunk_number}",
-                "SUMMARY_MODEL_ERROR",
-            )
+        response = await self._ask_llm(system="Ты структурируешь юридические тексты.", user=user_message)
+        parsed = self._parse_summary_response(response, language)
+        parsed["language"] = parsed.get("language") or language
+        parsed = self._trim_struct(parsed)
+        return {"summary": parsed, "raw_response": response}
 
-        parsed = self._parse_summary_response(response.get("text", ""), language)
-        parsed.setdefault("language", language)
-        return {"summary": parsed, "raw_response": response.get("text", "")}
-
-    async def _aggregate_chunks(
+    async def _aggregate_chunks_llm(
         self,
         chunk_results: list[dict[str, Any]],
         detail_level: str,
@@ -262,52 +293,52 @@ class DocumentSummarizer(DocumentProcessor):
         detail_label = DETAIL_LEVELS[detail_level]["ru" if language == "ru" else "en"]
         payload = json.dumps([item["summary"] for item in chunk_results], ensure_ascii=False)
 
-        response = await self.openai_service.ask_legal(
-            system_prompt="Ты объединяешь юридические саммари в единый отчет.",
-            user_text=AGGREGATION_PROMPT.format(
+        response = await self._ask_llm(
+            system="Ты объединяешь юридические саммари в единый отчёт.",
+            user=AGGREGATION_PROMPT.format(
                 language_name=language_name,
                 detail_label=detail_label,
                 chunk_payload=payload,
             ),
         )
-        if response.get("ok"):
-            aggregated = self._parse_summary_response(response.get("text", ""), language)
-        else:
-            logger.warning("Агрегация через модель не удалась, объединяем эвристикой")
-            aggregated = self._merge_chunks_locally([item["summary"] for item in chunk_results])
+        parsed = self._parse_summary_response(response, language)
+        if not parsed.get("summary"):
+            logger.warning("Агрегация через модель не удалась, объединяем локально")
+            parsed = self._merge_chunks_locally([item["summary"] for item in chunk_results])
+        parsed["language"] = parsed.get("language") or language
+        parsed = self._trim_struct(parsed)
+        return parsed
 
-        aggregated.setdefault("language", language)
-        return aggregated
+    async def _ask_llm(self, *, system: str, user: str) -> str:
+        """Тонкая обёртка над openai_service.ask_legal с единым поведением."""
+        if not self.openai_service:
+            raise ProcessingError("OpenAI сервис не инициализирован", "SERVICE_ERROR")
+        resp = await self.openai_service.ask_legal(system_prompt=system, user_text=user)
+        if not resp or not resp.get("ok"):
+            raise ProcessingError("Модель не вернула результат", "SUMMARY_MODEL_ERROR")
+        return resp.get("text", "") or ""
+
+    # ----------------------------- Парсинг ответа -----------------------------
 
     def _parse_summary_response(self, raw_text: str, language: str) -> dict[str, Any]:
         text = (raw_text or "").strip()
         if not text:
+            return self._empty_struct(language)
+
+        data = self._safe_json_loads(text)
+        if isinstance(data, dict) and data:
             return {
-                "summary": "",
-                "key_points": [],
-                "deadlines": [],
-                "penalties": [],
-                "actions": [],
-                "language": language,
+                "summary": str(data.get("summary", "")).strip(),
+                "key_points": self._ensure_list_of_strings(data.get("key_points")),
+                "deadlines": self._ensure_list_of_strings(data.get("deadlines")),
+                "penalties": self._ensure_list_of_strings(data.get("penalties")),
+                "actions": self._ensure_list_of_strings(data.get("actions")),
+                "language": data.get("language", language),
             }
 
-        json_payload = self._extract_json(text)
-        if json_payload:
-            try:
-                data = json.loads(json_payload)
-                return {
-                    "summary": str(data.get("summary", "")).strip(),
-                    "key_points": self._ensure_list_of_strings(data.get("key_points")),
-                    "deadlines": self._ensure_list_of_strings(data.get("deadlines")),
-                    "penalties": self._ensure_list_of_strings(data.get("penalties")),
-                    "actions": self._ensure_list_of_strings(data.get("actions")),
-                    "language": data.get("language", language),
-                }
-            except json.JSONDecodeError:
-                logger.debug("Не удалось распарсить JSON саммари: %s", text)
-
+        # если JSON не получился — кладём сырой текст в summary
         return {
-            "summary": text,
+            "summary": text[:2000],
             "key_points": [],
             "deadlines": [],
             "penalties": [],
@@ -315,26 +346,65 @@ class DocumentSummarizer(DocumentProcessor):
             "language": language,
         }
 
-    def _extract_json(self, text: str) -> str | None:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return match.group(0)
-        return None
+    @staticmethod
+    def _safe_json_loads(raw: str) -> Any:
+        """Извлекаем JSON из «болтливого» текста: сначала прямой loads, затем по скобкам."""
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        try:
+            # вырежем код-блоки ```
+            raw2 = re.sub(r"^```.*?```$", "", raw, flags=re.DOTALL | re.MULTILINE)
+            i = raw2.find("{")
+            j = raw2.rfind("}")
+            if i != -1 and j != -1 and j > i:
+                return json.loads(raw2[i : j + 1])
+        except Exception:
+            return {}
+        return {}
 
-    def _ensure_list_of_strings(self, value: Any) -> list[str]:
-        if not value:
-            return []
-        if isinstance(value, str):
-            return [value.strip()] if value.strip() else []
-        if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
-            result: list[str] = []
-            for item in value:
-                if isinstance(item, str):
-                    stripped = item.strip()
-                    if stripped:
-                        result.append(stripped)
-            return result
-        return []
+    # -------------------------- Локальное саммари (оффлайн) --------------------------
+
+    def _local_summarize(self, text: str, *, detail_level: str, language: str) -> SummaryStruct:
+        # 1) резюме — первые 3–6 предложений, длинные и информативные
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        pick = 6 if detail_level == "detailed" else 3
+        summary = " ".join(s.strip() for s in sentences[:pick] if s.strip())[:1500]
+
+        # 2) ключевые положения — заголовки/пункты/строки с двоеточиями или маркерами
+        bullets = []
+        for line in text.splitlines():
+            l = line.strip()
+            if not l:
+                continue
+            if re.match(r"^(\d+[.)]|[-–—*•])\s+", l) or (":" in l and len(l) < 200):
+                bullets.append(l)
+            if len(bullets) >= self.max_key_items:
+                break
+
+        # 3) дедлайны/штрафы
+        deadlines = self._extract_deadlines(text, limit=8 if detail_level == "detailed" else 5)
+        penalties = self._extract_penalties(text, limit=8 if detail_level == "detailed" else 5)
+
+        # 4) действия
+        actions = []
+        if deadlines:
+            actions.append("Проверить соблюдение всех указанных сроков")
+        if penalties:
+            actions.append("Проверить корректность расчёта штрафов/неустоек")
+        actions.append("Согласовать итоговое саммари с ответственным юристом")
+
+        return SummaryStruct(
+            summary=summary,
+            key_points=self._dedup_list(bullets)[: self.max_key_items],
+            deadlines=self._dedup_list(deadlines)[: self.max_key_items],
+            penalties=self._dedup_list(penalties)[: self.max_key_items],
+            actions=self._dedup_list(actions)[: self.max_key_items],
+            language=language,
+        )
+
+    # ------------------------------ Аггрегация локально ------------------------------
 
     def _merge_chunks_locally(self, summaries: list[dict[str, Any]]) -> dict[str, Any]:
         summary_parts: list[str] = []
@@ -352,21 +422,15 @@ class DocumentSummarizer(DocumentProcessor):
             penalties.extend(item.get("penalties", []))
             actions.extend(item.get("actions", []))
 
-        def _dedup(items: list[str]) -> list[str]:
-            seen: dict[str, None] = {}
-            for entry in items:
-                normalized = entry.strip()
-                if normalized and normalized not in seen:
-                    seen[normalized] = None
-            return list(seen.keys())
-
         return {
-            "summary": "\n\n".join(summary_parts),
-            "key_points": _dedup(key_points),
-            "deadlines": _dedup(deadlines),
-            "penalties": _dedup(penalties),
-            "actions": _dedup(actions),
+            "summary": "\n\n".join(self._dedup_list(summary_parts))[:2000],
+            "key_points": self._dedup_list(key_points)[: self.max_key_items],
+            "deadlines": self._dedup_list(deadlines)[: self.max_key_items],
+            "penalties": self._dedup_list(penalties)[: self.max_key_items],
+            "actions": self._dedup_list(actions)[: self.max_key_items],
         }
+
+    # ------------------------------ Форматирование ------------------------------
 
     def _format_summary_text(self, data: dict[str, Any], language: str) -> str:
         sections = LANG_SECTIONS.get(language, LANG_SECTIONS["ru"])
@@ -387,6 +451,68 @@ class DocumentSummarizer(DocumentProcessor):
         append_block("checklist", data.get("actions", []))
 
         return "\n".join(lines).strip()
+
+    # ------------------------------- Хелперы -------------------------------
+
+    def _trim_struct(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Обрезаем списки до лимита и чистим пустяки."""
+        def _clean_list(values: list[str]) -> list[str]:
+            return [v.strip() for v in values if isinstance(v, str) and v.strip()]
+
+        data["key_points"] = _clean_list(data.get("key_points", []))[: self.max_key_items]
+        data["deadlines"] = _clean_list(data.get("deadlines", []))[: self.max_key_items]
+        data["penalties"] = _clean_list(data.get("penalties", []))[: self.max_key_items]
+        data["actions"] = _clean_list(data.get("actions", []))[: self.max_key_items]
+        data["summary"] = (data.get("summary") or "").strip()[:2000]
+        return data
+
+    @staticmethod
+    def _dedup_list(items: list[str]) -> list[str]:
+        seen: dict[str, None] = {}
+        for entry in items:
+            norm = entry.strip()
+            if norm and norm not in seen:
+                seen[norm] = None
+        return list(seen.keys())
+
+    def _extract_deadlines(self, text: str, limit: int = 5) -> list[str]:
+        results: list[str] = []
+        for pattern in DATE_PATTERNS:
+            for match in re.findall(pattern, text, flags=re.IGNORECASE):
+                cleaned = match.strip()
+                if cleaned not in results:
+                    results.append(cleaned)
+                if len(results) >= limit:
+                    return results
+        return results
+
+    def _extract_penalties(self, text: str, limit: int = 5) -> list[str]:
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        found: list[str] = []
+        for sentence in sentences:
+            lower = sentence.lower()
+            if any(keyword in lower for keyword in PENALTY_KEYWORDS):
+                cleaned = sentence.strip()
+                if cleaned and cleaned not in found:
+                    found.append(cleaned)
+                if len(found) >= limit:
+                    break
+        return found
+
+    def _ensure_list_of_strings(self, value: Any) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+            result: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    stripped = item.strip()
+                    if stripped:
+                        result.append(stripped)
+            return result
+        return []
 
     def _normalize_detail_level(self, raw_level: str) -> str:
         normalized = (raw_level or "").strip().lower()
@@ -431,42 +557,8 @@ class DocumentSummarizer(DocumentProcessor):
         )
         return meta
 
-    def _extract_deadlines(self, text: str, limit: int = 5) -> list[str]:
-        results: list[str] = []
-        for pattern in DATE_PATTERNS:
-            for match in re.findall(pattern, text, flags=re.IGNORECASE):
-                cleaned = match.strip()
-                if cleaned not in results:
-                    results.append(cleaned)
-                if len(results) >= limit:
-                    return results
-        return results
-
-    def _extract_penalties(self, text: str, limit: int = 5) -> list[str]:
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        found: list[str] = []
-        for sentence in sentences:
-            lower = sentence.lower()
-            if any(keyword in lower for keyword in PENALTY_KEYWORDS):
-                cleaned = sentence.strip()
-                if cleaned and cleaned not in found:
-                    found.append(cleaned)
-                if len(found) >= limit:
-                    break
-        return found
-
-    def _build_checklist_from_metadata(
-        self,
-        deadlines: list[str],
-        penalties: list[str],
-    ) -> list[str]:
-        checklist: list[str] = []
-        if deadlines:
-            checklist.append("Проверить соблюдение всех указанных сроков")
-        if penalties:
-            checklist.append("Убедиться в корректности расчета неустоек и штрафов")
-        checklist.append("Согласовать итоговое саммари с ответственным юристом")
-        return checklist
+    def _empty_struct(self, language: str) -> dict[str, Any]:
+        return {"summary": "", "key_points": [], "deadlines": [], "penalties": [], "actions": [], "language": language}
 
 
 __all__ = ["DocumentSummarizer"]
