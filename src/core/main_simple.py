@@ -696,6 +696,7 @@ async def process_question(message: Message, *, text_override: str | None = None
         request_error_type = None
         stream_manager: StreamManager | None = None
         had_stream_content = False
+        stream_final_text: str | None = None
         result: dict[str, Any] = {}
         request_start_time = time.time()
         request_record_id: int | None = None
@@ -734,12 +735,18 @@ async def process_question(message: Message, *, text_override: str | None = None
                         selected_prompt, question_text, callback=callback
                     )
                     had_stream_content = bool((stream_manager.pending_text or "").strip())
+                    if had_stream_content:
+                        stream_final_text = stream_manager.pending_text or ""
 
                     # 2) Успех, если API вернул ok ИЛИ уже показывали текст пользователю
                     ok_flag = bool(isinstance(result, dict) and result.get("ok")) or had_stream_content
 
                     # 3) Фолбэк — если стрим не дал результата и текста нет
                     if not ok_flag:
+                        with suppress(Exception):
+                            await stream_manager.stop()
+                            if stream_manager.message and message.bot:
+                                await message.bot.delete_message(message.chat.id, stream_manager.message.message_id)
                         result = await openai_service.ask_legal(selected_prompt, question_text)
                         ok_flag = bool(result.get("ok"))
 
@@ -748,9 +755,8 @@ async def process_question(message: Message, *, text_override: str | None = None
                     had_stream_content = bool((stream_manager.pending_text or "").strip())
                     if had_stream_content:
                         logger.warning("Streaming failed, but content exists — using buffered text: %s", e)
-                        with suppress(Exception):
-                            await stream_manager.finalize(stream_manager.pending_text)
-                        result = {"ok": True, "text": stream_manager.pending_text}
+                        stream_final_text = stream_manager.pending_text or ""
+                        result = {"ok": True, "text": stream_final_text}
                         ok_flag = True
                     else:
                         with suppress(Exception):
@@ -795,28 +801,22 @@ async def process_question(message: Message, *, text_override: str | None = None
             )
             return
 
-        # Если контент уже пришёл стримом — не дублируем
-        # Если контент уже пришёл стримом — не дублируем
-        if not (USE_STREAMING and had_stream_content):
+        # Добавляем время ответа к финальному сообщению
+        time_footer_raw = f"{Emoji.CLOCK} Время ответа: {timer.get_duration_text()}"
+        if USE_STREAMING and had_stream_content and stream_manager is not None:
+            final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
+            combined_stream_text = (final_stream_text.rstrip() + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
+            await stream_manager.finalize(combined_stream_text)
+        else:
             text_to_send = (isinstance(result, dict) and (result.get("text") or "")) or ""
             if text_to_send:
-                # Добавляем время ответа в конец основного сообщения
-                time_info = f"\n\n{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
-                text_to_send_with_time = text_to_send + time_info
-
-                # единый безопасный путь: форматирование → санация → разбиение → отправка
+                combined_text = f"{text_to_send.rstrip()}\n\n{time_footer_raw}"
                 await send_html_text(
                     bot=message.bot,
                     chat_id=message.chat.id,
-                    raw_text=text_to_send_with_time,
+                    raw_text=combined_text,
                     reply_to_message_id=message.message_id,
                 )
-        else:
-            # Случай стриминга - время ответа отправляем отдельным сообщением если был контент
-            if USE_STREAMING and had_stream_content:
-                time_info = f"{Emoji.CLOCK} <i>Время ответа: {timer.get_duration_text()}</i>"
-                with suppress(Exception):
-                    await message.answer(time_info, parse_mode=ParseMode.HTML)
 
         # Сообщения про квоту/подписку
         if quota_text and not quota_is_trial:

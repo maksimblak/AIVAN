@@ -214,10 +214,7 @@ class StreamingCallback:
     async def __call__(self, partial_text: str, is_final: bool):
         self.total_calls += 1
         try:
-            if is_final:
-                await self.stream_manager.finalize(partial_text)
-            else:
-                await self.stream_manager.update_text(partial_text, is_final=False)
+            await self.stream_manager.update_text(partial_text, is_final=is_final)
         except Exception as e:
             logger.error("Error in streaming callback: %s", e)
             if is_final:

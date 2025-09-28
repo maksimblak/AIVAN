@@ -98,8 +98,13 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
 
 
 def _plain(text: str) -> str:
-    """Убираем любые теги — plain-версия."""
-    return re.sub(r"<[^>]+>", "", text) or " "
+    """Убираем HTML, сохраняя переносы."""
+    if not text:
+        return " "
+    normalized = re.sub(r"<br\s*/?>", "\n", text)
+    plain = re.sub(r"<[^>]+>", "", normalized)
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    return plain or " "
 
 
 async def tg_edit_html(
