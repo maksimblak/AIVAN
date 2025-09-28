@@ -111,7 +111,7 @@ class OCRConverter(DocumentProcessor):
             from paddleocr import PaddleOCR
 
             # Инициализируем PaddleOCR для русского и английского языков
-            ocr = PaddleOCR(use_angle_cls=True, lang='ch')  # ch поддерживает больше языков
+            ocr = PaddleOCR(use_angle_cls=True, lang='ru')  # ru для русского языка
 
             # Выполняем OCR
             result = ocr.ocr(str(image_path), cls=True)
@@ -403,21 +403,70 @@ class OCRConverter(DocumentProcessor):
         # Убираем лишние пробелы и переносы
         cleaned = " ".join(text.split())
 
-        # Исправляем частые ошибки OCR
-        corrections = {
-            "О": "0",  # где это уместно
-            "З": "3",  # где это уместно
-            "6": "б",  # где это уместно
-            "rод": "год",
-            "нaлог": "налог",
-        }
-
-        # Применяем корректировки осторожно
-        for wrong, correct in corrections.items():
-            # Простая замена - можно улучшить
-            pass
+        # Применяем корректировки осторожно с проверкой контекста
+        cleaned = self._apply_ocr_corrections(cleaned)
 
         return cleaned
+
+    def _apply_ocr_corrections(self, text: str) -> str:
+        """Применяет умные исправления частых ошибок OCR с учетом контекста"""
+        import re
+
+        # Словарь исправлений с паттернами контекста
+        corrections = [
+            # Цифры vs буквы в числовых контекстах
+            (r'\b(\d+)О(\d+)\b', r'\10\2'),  # 2О23 -> 2023
+            (r'\bЗ(\d+)\b', r'3\1'),        # З0 -> 30
+            (r'\b(\d+)З\b', r'\13'),        # 20З -> 203
+
+            # Русские буквы в английских словах
+            (r'\bрrо\b', 'pro'),
+            (r'\bсоm\b', 'com'),
+            (r'\bоrg\b', 'org'),
+
+            # Английские буквы в русских словах
+            (r'\bгоd\b', 'год'),
+            (r'\bнaлог\b', 'налог'),
+            (r'\bрублеи\b', 'рублей'),
+            (r'\bзaкон\b', 'закон'),
+            (r'\bпрaво\b', 'право'),
+
+            # Частые OCR ошибки в юридических текстах
+            (r'\bстaтья\b', 'статья'),
+            (r'\bдoговор\b', 'договор'),
+            (r'\bуслoвие\b', 'условие'),
+            (r'\bтребoвание\b', 'требование'),
+            (r'\bзaявление\b', 'заявление'),
+            (r'\bрeшение\b', 'решение'),
+
+            # Исправление неправильных кавычек и символов
+            (r'«([^»]*)»', r'"\1"'),         # « » -> " "
+            (r'„([^"]*)"', r'"\1"'),         # „ " -> " "
+            (r'([0-9])О([0-9])', r'\g<1>0\g<2>'),  # цифра О цифра -> цифра 0 цифра
+
+            # Исправление точек в числах
+            (r'(\d+)\.(\d{3})\b(?!\d)', r'\1\2'),  # 1.000 -> 1000 (если не десятичная дробь)
+
+            # Исправление дефисов и тире
+            (r'(\w)\s*-\s*(\w)', r'\1-\2'),  # убираем пробелы вокруг дефисов в словах
+        ]
+
+        corrected = text
+
+        # Применяем исправления по порядку
+        for pattern, replacement in corrections:
+            corrected = re.sub(pattern, replacement, corrected, flags=re.IGNORECASE)
+
+        # Исправляем множественные пробелы
+        corrected = re.sub(r'\s+', ' ', corrected)
+
+        # Исправляем пробелы перед знаками препинания
+        corrected = re.sub(r'\s+([,.!?;:])', r'\1', corrected)
+
+        # Исправляем отсутствие пробелов после знаков препинания
+        corrected = re.sub(r'([,.!?;:])([А-Яа-яA-Za-z])', r'\1 \2', corrected)
+
+        return corrected.strip()
 
     def _analyze_ocr_quality(self, text: str, confidence: float) -> dict[str, Any]:
         """Анализ качества OCR распознавания"""

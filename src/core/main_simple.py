@@ -2126,14 +2126,13 @@ async def main():
 
     # Фоновые задачи
     task_manager = BackgroundTaskManager(error_handler)
-    if use_advanced_db:
-        task_manager.register_task(
-            DatabaseCleanupTask(
-                db,
-                interval_seconds=float(os.getenv("DB_CLEANUP_INTERVAL", "3600")),
-                max_old_transactions_days=int(os.getenv("DB_CLEANUP_DAYS", "90")),
-            )
+    task_manager.register_task(
+        DatabaseCleanupTask(
+            db,
+            interval_seconds=float(os.getenv("DB_CLEANUP_INTERVAL", "3600")),
+            max_old_transactions_days=int(os.getenv("DB_CLEANUP_DAYS", "90")),
         )
+    )
     task_manager.register_task(
         CacheCleanupTask(
             [openai_service], interval_seconds=float(os.getenv("CACHE_CLEANUP_INTERVAL", "300"))
@@ -2243,7 +2242,7 @@ async def main():
     startup_info = [
         "🤖 AI-Ivan (simple) successfully started!",
         f"🎞 Animation: {'enabled' if USE_ANIMATION else 'disabled'}",
-        f"🗄️ Database: {'advanced' if use_advanced_db else 'legacy'}",
+        f"🗄️ Database: advanced",
         f"🔄 Cache: {cache_backend.__class__.__name__}",
         f"📈 Metrics: {'enabled' if getattr(metrics_collector, 'enable_prometheus', False) else 'disabled'}",
         f"🏥 Health checks: {len(health_checker.checks)} registered",

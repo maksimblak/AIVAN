@@ -381,7 +381,7 @@ class DocumentManager:
 
     def format_result_for_telegram(self, result: DocumentResult, operation: str) -> str:
         if not result.success:
-            return f"✖ **Ошибка обработки**\n\n{result.message}"
+            return f"✖ <b>Ошибка обработки</b>\n\n{html_escape(str(result.message))}"
 
         operation_info = self.get_operation_info(operation) or {}
         emoji = operation_info.get("emoji", "📄")
@@ -413,60 +413,56 @@ class DocumentManager:
         detail_text = {"detailed": "Подробная", "brief": "Краткая"}.get(detail_level, detail_level)
         language_text = {"ru": "Русский", "en": "Английский"}.get(language, language)
 
-        result = f"{header}**📝 Саммаризация:**\n"
-        result += f"Уровень детализации: {detail_text}\n"
-        result += f"Язык: {language_text}\n\n{content}"
+        result = f"{header}<b>📝 Саммаризация:</b>\n"
+        result += f"Уровень детализации: {html_escape(detail_text)}\n"
+        result += f"Язык: {html_escape(language_text)}\n\n{html_escape(content)}"
 
         if metadata:
-            result += "\n\n**📊 Метаданные:**\n"
+            result += "\n\n<b>📊 Метаданные:</b>\n"
             for key, value in metadata.items():
-                result += f"• {key}: {value}\n"
+                result += f"• {html_escape(str(key))}: {html_escape(str(value))}\n"
 
         return self._append_export_note(result, data)
 
     def _format_risk_analysis_result(self, header: str, data: dict[str, Any]) -> str:
         overall_risk = data.get("overall_risk_level", "неизвестен")
-        risk_emojis = {
-            "low": "🟢",
-            "medium": "🟡",
-            "high": "🟠",
-            "critical": "🔴",
-        }
+        risk_emojis = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}
         emoji = risk_emojis.get(str(overall_risk).lower(), "✅")
 
-        result = f"{header}**{emoji} Общий уровень риска: {overall_risk.upper()}**\n\n"
+        result = f"{header}<b>{emoji} Общий уровень риска: {html_escape(str(overall_risk).upper())}</b>\n\n"
 
         pattern_risks = data.get("pattern_risks", [])
         if pattern_risks:
-            result += f"**⚠️ Обнаруженные риски: {len(pattern_risks)}**\n\n"
+            result += f"<b>⚠️ Обнаруженные риски: {len(pattern_risks)}</b>\n\n"
             for risk in pattern_risks[:3]:
-                level_emoji = risk_emojis.get(str(risk.get("risk_level", "medium")).lower(), "🟡")
-                result += f"{level_emoji} {risk.get('description', 'Неописанный риск')}\n"
+                level_emoji = risk_emojis.get(str(risk.get('risk_level', 'medium')).lower(), '🟡')
+                desc = html_escape(risk.get('description', 'Неописанный риск'))
+                result += f"{level_emoji} {desc}\n"
             if len(pattern_risks) > 3:
-                result += f"\n*...и ещё {len(pattern_risks) - 3} рисков*\n"
+                result += f"\n<i>...и ещё {len(pattern_risks) - 3} рисков</i>\n"
 
         ai_analysis = data.get("ai_analysis", {})
         if ai_analysis.get("analysis"):
             analysis_text = ai_analysis["analysis"]
             if len(analysis_text) > 1500:
-                analysis_text = analysis_text[:1500] + "...\n\n*(Полный анализ доступен в файле)*"
-            result += f"\n**🤖 AI-анализ:**\n{analysis_text}\n"
+                analysis_text = analysis_text[:1500] + "...\n\n(Полный анализ доступен в файле)"
+            result += f"\n<b>🤖 AI-анализ:</b>\n{html_escape(analysis_text)}\n"
 
         legal_compliance = data.get("legal_compliance", {})
         violations = legal_compliance.get("violations") or []
         if violations:
-            result += "\n**⚖️ Возможные нарушения:**\n"
+            result += "\n<b>⚖️ Возможные нарушения:</b>\n"
             for violation in violations[:3]:
                 reference = violation.get("reference")
-                text = violation.get("text", "")
+                text = html_escape(violation.get("text", ""))
                 if reference:
-                    result += f"- {text} ({reference})\n"
+                    result += f"- {text} ({html_escape(reference)})\n"
                 else:
                     result += f"- {text}\n"
             if len(violations) > 3:
-                result += f"*...и ещё {len(violations) - 3} пунктов*\n"
+                result += f"<i>...и ещё {len(violations) - 3} пунктов</i>\n"
         elif legal_compliance.get("status") == "completed":
-            result += "\n**⚖️ Возможные нарушения:** не выявлены.\n"
+            result += "\n<b>⚖️ Возможные нарушения:</b> не выявлены.\n"
 
         return self._append_export_note(result, data)
 
@@ -474,41 +470,40 @@ class DocumentManager:
         question = data.get("question", "")
         answer = data.get("answer", "Ответ недоступен")
 
-        result = f"{header}**✔ Вопрос:** {question}\n\n"
-        result += f"**💡 Ответ:**\n{answer}\n\n"
+        result = f"{header}<b>✔ Вопрос:</b> {html_escape(question)}\n\n"
+        result += f"<b>💡 Ответ:</b>\n{html_escape(answer)}\n\n"
 
         context_chunks = data.get("context_chunks", [])
         if context_chunks:
-            result += "**🔍 Использованные фрагменты:**\n"
+            result += "<b>🔍 Использованные фрагменты:</b>\n"
             for item in context_chunks:
                 preview = item.get("excerpt", "")
                 if len(preview) > 160:
                     preview = preview[:160] + "..."
                 score = item.get("score")
-                score_text = (
-                    f" (релевантность {score:.2f})" if isinstance(score, (int, float)) else ""
-                )
-                result += f"• Фрагмент {item.get('index', 0) + 1}{score_text}: *{preview}*\n"
+                score_text = f" (релевантность {score:.2f})" if isinstance(score, (int, float)) else ""
+                result += f"• Фрагмент {int(item.get('index', 0)) + 1}{score_text}: <i>{html_escape(preview)}</i>\n"
             result += "\n"
 
         fragments = data.get("relevant_fragments", [])
         if fragments:
-            result += "**📓 Релевантные предложения:**\n"
+            result += "<b>📓 Релевантные предложения:</b>\n"
             for i, fragment in enumerate(fragments[:2], 1):
-                result += f"{i}. *{fragment.get('text', '')[:200]}...*\n"
+                text = html_escape(fragment.get('text', '')[:200])
+                result += f"{i}. <i>{text}...</i>\n"
 
         return self._append_export_note(result, data)
 
     def _format_anonymize_result(self, header: str, data: dict[str, Any]) -> str:
         report = data.get("anonymization_report", {})
         stats = report.get("statistics", {})
-        result = f"{header}**🔒 Результаты обезличивания:**\n\n"
+        result = f"{header}<b>🔒 Результаты обезличивания:</b>\n\n"
 
-        total_items = sum(stats.values())
-        result += f"Всего обработано элементов: **{total_items}**\n\n"
+        total_items = sum(int(v) for v in stats.values()) if stats else 0
+        result += f"Всего обработано элементов: <b>{total_items}</b>\n\n"
 
         if stats:
-            result += "**По типам данных:**\n"
+            result += "<b>По типам данных:</b>\n"
             type_names = {
                 "names": "👤 ФИО",
                 "phones": "📞 Телефоны",
@@ -518,9 +513,9 @@ class DocumentManager:
                 "bank_details": "🏦 Банковские реквизиты",
             }
             for data_type, count in stats.items():
-                if count > 0:
+                if int(count) > 0:
                     name = type_names.get(data_type, data_type)
-                    result += f"• {name}: {count}\n"
+                    result += f"• {html_escape(str(name))}: {int(count)}\n"
 
         result += "\n✅ Документ готов к безопасной передаче"
         return self._append_export_note(result, data)
@@ -539,23 +534,23 @@ class DocumentManager:
 
         metadata = data.get("translation_metadata", {})
 
-        result = f"{header}**🌍 Перевод завершен**\n"
-        result += f"{source_name} → {target_name}\n\n"
+        result = f"{header}<b>🌍 Перевод завершен</b>\n"
+        result += f"{html_escape(source_name)} → {html_escape(target_name)}\n\n"
 
         if metadata:
-            result += "**📊 Статистика:**\n"
-            result += f"• Исходный текст: {metadata.get('original_length', 0)} символов\n"
-            result += f"• Переведенный текст: {metadata.get('translated_length', 0)} символов\n"
-            if metadata.get("chunks_processed"):
-                result += f"• Частей обработано: {metadata['chunks_processed']}\n"
+            result += "<b>📊 Статистика:</b>\n"
+            result += f"• Исходный текст: {int(metadata.get('original_length', 0))} символов\n"
+            result += f"• Переведенный текст: {int(metadata.get('translated_length', 0))} символов\n"
+            if metadata.get('chunks_processed'):
+                result += f"• Частей обработано: {int(metadata['chunks_processed'])}\n"
             result += "\n"
 
-        translated_text = data.get("translated_text", "")
+        translated_text = data.get("translated_text", "") or ""
         if len(translated_text) > 2000:
             preview = translated_text[:2000] + "..."
-            result += f"**📄 Предварительный просмотр:**\n{preview}\n\n*(Полный перевод доступен в файле)*"
+            result += f"<b>📄 Предварительный просмотр:</b>\n{html_escape(preview)}\n\n(Полный перевод доступен в файле)"
         else:
-            result += f"**📄 Переведенный текст:**\n{translated_text}"
+            result += f"<b>📄 Переведенный текст:</b>\n{html_escape(translated_text)}"
 
         return self._append_export_note(result, data)
 

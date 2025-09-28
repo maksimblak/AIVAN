@@ -240,7 +240,7 @@ class DocumentSummarizer(DocumentProcessor):
 
         response = await self.openai_service.ask_legal(
             system_prompt="Ты структурируешь юридические тексты.",
-            user_message=user_message,
+            user_text=user_message,
         )
         if not response.get("ok"):
             raise ProcessingError(
@@ -264,7 +264,7 @@ class DocumentSummarizer(DocumentProcessor):
 
         response = await self.openai_service.ask_legal(
             system_prompt="Ты объединяешь юридические саммари в единый отчет.",
-            user_message=AGGREGATION_PROMPT.format(
+            user_text=AGGREGATION_PROMPT.format(
                 language_name=language_name,
                 detail_label=detail_label,
                 chunk_payload=payload,

@@ -145,7 +145,7 @@ class DocumentChat(DocumentProcessor):
             prompt = DOCUMENT_CHAT_PROMPT.format(document_text=context_text)
 
             result = await self.openai_service.ask_legal(
-                system_prompt=prompt, user_message=question
+                system_prompt=prompt, user_text=question
             )
 
             if not result.get("ok"):
@@ -206,10 +206,92 @@ class DocumentChat(DocumentProcessor):
     def _select_relevant_chunks(
         self, chunks: list[str], question: str, max_chunks: int = 3
     ) -> list[dict[str, Any]]:
-        """Определяет наиболее релевантные фрагменты документа для заданного вопроса."""
+        """Использует TF-IDF для поиска релевантных фрагментов документа."""
         if not chunks:
             return []
 
+        try:
+            return self._tfidf_search(chunks, question, max_chunks)
+        except Exception as e:
+            logger.warning(f"TF-IDF поиск не удался, используем fallback: {e}")
+            return self._fallback_search(chunks, question, max_chunks)
+
+    def _tfidf_search(self, chunks: list[str], question: str, max_chunks: int) -> list[dict[str, Any]]:
+        """Реализация TF-IDF поиска для релевантных чанков"""
+        import math
+        from collections import Counter
+
+        # Препроцессинг: токенизация и удаление стоп-слов
+        def preprocess_text(text: str) -> list[str]:
+            tokens = re.findall(r"[\w-]+", text.lower())
+            return [token for token in tokens if len(token) > 2 and token not in QUESTION_STOPWORDS]
+
+        # Подготавливаем корпус документов
+        processed_chunks = [preprocess_text(chunk) for chunk in chunks]
+        processed_question = preprocess_text(question)
+
+        if not processed_question:
+            return self._fallback_search(chunks, question, max_chunks)
+
+        # Построение словаря терминов
+        all_terms = set()
+        for tokens in processed_chunks + [processed_question]:
+            all_terms.update(tokens)
+
+        # Вычисление IDF (Inverse Document Frequency)
+        num_docs = len(processed_chunks)
+        idf = {}
+        for term in all_terms:
+            doc_freq = sum(1 for tokens in processed_chunks if term in tokens)
+            idf[term] = math.log(num_docs / (doc_freq + 1))  # +1 для избежания деления на ноль
+
+        # Вычисление TF-IDF векторов для каждого чанка
+        def compute_tfidf_vector(tokens: list[str]) -> dict[str, float]:
+            tf = Counter(tokens)
+            total_tokens = len(tokens)
+            tfidf_vector = {}
+            for term in all_terms:
+                tf_score = tf.get(term, 0) / total_tokens if total_tokens > 0 else 0
+                tfidf_vector[term] = tf_score * idf[term]
+            return tfidf_vector
+
+        # Векторы документов и запроса
+        chunk_vectors = [compute_tfidf_vector(tokens) for tokens in processed_chunks]
+        question_vector = compute_tfidf_vector(processed_question)
+
+        # Вычисление cosine similarity
+        def cosine_similarity(vec1: dict[str, float], vec2: dict[str, float]) -> float:
+            # Произведение векторов
+            dot_product = sum(vec1.get(term, 0) * vec2.get(term, 0) for term in all_terms)
+
+            # Нормы векторов
+            norm1 = math.sqrt(sum(val ** 2 for val in vec1.values()))
+            norm2 = math.sqrt(sum(val ** 2 for val in vec2.values()))
+
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+
+            return dot_product / (norm1 * norm2)
+
+        # Рассчитываем similarity scores
+        scored_chunks = []
+        for idx, chunk_vector in enumerate(chunk_vectors):
+            similarity = cosine_similarity(chunk_vector, question_vector)
+            if similarity > 0:
+                scored_chunks.append({
+                    "index": idx,
+                    "score": float(similarity),
+                    "text": chunks[idx]
+                })
+
+        # Сортируем по убыванию релевантности
+        scored_chunks.sort(key=lambda x: x["score"], reverse=True)
+
+        # Возвращаем топ результатов
+        return scored_chunks[:max_chunks] if scored_chunks else self._fallback_search(chunks, question, max_chunks)
+
+    def _fallback_search(self, chunks: list[str], question: str, max_chunks: int) -> list[dict[str, Any]]:
+        """Fallback поиск на основе простого подсчета совпадений токенов"""
         tokens = [
             token
             for token in re.findall(r"[\w-]+", question.lower())
@@ -236,7 +318,7 @@ class DocumentChat(DocumentProcessor):
             else:
                 score = float(direct_matches)
             if score > 0:
-                scored_chunks.append((score, index, chunk))
+                scored_chunks.append({"index": index, "score": score, "text": chunk})
 
         if not scored_chunks:
             fallback = []
@@ -244,11 +326,8 @@ class DocumentChat(DocumentProcessor):
                 fallback.append({"index": idx, "score": 0.0, "text": chunk})
             return fallback
 
-        scored_chunks.sort(key=lambda item: item[0], reverse=True)
-        selected = []
-        for score, index, chunk in scored_chunks[:max_chunks]:
-            selected.append({"index": index, "score": float(score), "text": chunk})
-        return selected
+        scored_chunks.sort(key=lambda x: x["score"], reverse=True)
+        return scored_chunks[:max_chunks]
 
     def _find_relevant_fragments(
         self, document_text: str, question: str, answer: str

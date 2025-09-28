@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,32 @@ class DocumentStorage:
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self._write_lock = asyncio.Lock()
 
+    def _sanitize_filename(self, filename: str) -> str:
+        """Безопасная санитизация имени файла"""
+        # Убираем путь, оставляем только имя файла
+        filename = Path(filename).name
+
+        # Ограничиваем длину до 100 символов
+        if len(filename) > 100:
+            name_part = filename[:95]
+            ext_part = Path(filename).suffix
+            filename = name_part + ext_part
+
+        # Оставляем только безопасные символы: буквы, цифры, точка, дефис, подчеркивание
+        safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+
+        # Убираем множественные подчеркивания
+        safe_filename = re.sub(r'_+', '_', safe_filename)
+
+        # Убираем начальные и конечные подчеркивания/точки
+        safe_filename = safe_filename.strip('._')
+
+        # Если имя стало пустым, даем дефолтное
+        if not safe_filename:
+            safe_filename = "document"
+
+        return safe_filename
+
     def get_user_storage_path(self, user_id: int) -> Path:
         """Получить путь к папке пользователя"""
         user_path = self.storage_path / str(user_id)
@@ -179,10 +206,10 @@ class DocumentStorage:
         """Сохранить документ пользователя"""
         user_path = self.get_user_storage_path(user_id)
 
-        # Генерируем уникальное имя файла
+        # Генерируем безопасное имя файла
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         file_extension = Path(original_name).suffix
-        safe_name = f"{timestamp}_{original_name.replace(' ', '_')}"
+        safe_name = f"{timestamp}_{self._sanitize_filename(original_name)}"
         file_path = user_path / safe_name
 
         # Сохраняем файл

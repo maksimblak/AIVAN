@@ -246,7 +246,7 @@ class RiskAnalyzer(DocumentProcessor):
 
                     result = await self.openai_service.ask_legal(
                         system_prompt=prompt,
-                        user_message=f"Часть {i+1} из {len(chunks)} документа:\n\n{chunk}",
+                        user_text=f"Часть {i+1} из {len(chunks)} документа:\n\n{chunk}",
                     )
 
                     if result.get("ok"):
@@ -272,7 +272,7 @@ class RiskAnalyzer(DocumentProcessor):
                     )
 
                     final_result = await self.openai_service.ask_legal(
-                        system_prompt=RISK_ANALYSIS_PROMPT, user_message=final_prompt
+                        system_prompt=RISK_ANALYSIS_PROMPT, user_text=final_prompt
                     )
 
                     if final_result.get("ok"):
@@ -286,7 +286,7 @@ class RiskAnalyzer(DocumentProcessor):
             else:
                 # Анализируем документ целиком
                 result = await self.openai_service.ask_legal(
-                    system_prompt=prompt, user_message=text
+                    system_prompt=prompt, user_text=text
                 )
 
                 if result.get("ok"):
@@ -386,7 +386,7 @@ class RiskAnalyzer(DocumentProcessor):
         try:
             result = await self.openai_service.ask_legal(
                 system_prompt=compliance_prompt,
-                user_message=text[:8000],  # Ограничиваем длину для проверки соответствия
+                user_text=text[:8000],  # Ограничиваем длину для проверки соответствия
             )
 
             if result.get("ok"):

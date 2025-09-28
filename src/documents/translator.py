@@ -144,7 +144,7 @@ class DocumentTranslator(DocumentProcessor):
                     )
 
                     result = await self.openai_service.ask_legal(
-                        system_prompt=prompt, user_message=chunk_prompt
+                        system_prompt=prompt, user_text=chunk_prompt
                     )
 
                     if result.get("ok"):
@@ -164,7 +164,7 @@ class DocumentTranslator(DocumentProcessor):
 
                 return "\n\n".join(translated_chunks), chunk_details
 
-            result = await self.openai_service.ask_legal(system_prompt=prompt, user_message=text)
+            result = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text)
 
             if result.get("ok"):
                 translated_text = result.get("text", "")
