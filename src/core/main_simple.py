@@ -52,7 +52,7 @@ from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, sanitize_telegram_html, render_legal_html
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
-from src.core.db import Database
+from src.core.db_advanced import DatabaseAdvanced
 from src.core.exceptions import (
     ErrorContext,
     ErrorHandler,
@@ -2007,22 +2007,14 @@ async def main():
     # Инициализация глобальных переменных
     global db, openai_service, audio_service, rate_limiter, access_service, session_store, crypto_provider, error_handler, document_manager
 
-    # Выбираем тип базы данных
-    use_advanced_db = os.getenv("USE_ADVANCED_DB", "1") == "1"
-    if use_advanced_db:
-        from src.core.db_advanced import DatabaseAdvanced
+    # Используем продвинутую базу данных с connection pooling
+    logger.info("Using advanced database with connection pooling")
+    db = DatabaseAdvanced(
+        DB_PATH, max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "5")), enable_metrics=True
+    )
 
-        logger.info("Using advanced database with connection pooling")
-        db = DatabaseAdvanced(
-            DB_PATH, max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "5")), enable_metrics=True
-        )
-    else:
-        logger.info("Using legacy database")
-        db = Database(DB_PATH)
-
-    # Инициализация БД (поддержка sync/async init)
-    if hasattr(db, "init"):
-        await _maybe_call(db.init)
+    # Инициализация БД
+    await db.init()
 
     # Инициализация кеша
     cache_backend = await create_cache_backend(

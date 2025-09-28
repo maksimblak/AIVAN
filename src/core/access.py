@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .db import Database
+from .db_advanced import DatabaseAdvanced
 
 
 @dataclass
@@ -18,7 +18,7 @@ class AccessDecision:
 class AccessService:
     """Encapsulates access control: admin, subscription, and trial consumption."""
 
-    def __init__(self, *, db: Database, trial_limit: int, admin_ids: set[int]):
+    def __init__(self, *, db: DatabaseAdvanced, trial_limit: int, admin_ids: set[int]):
         self._db = db
         self._trial_limit = trial_limit
         self._admin_ids = set(admin_ids)
