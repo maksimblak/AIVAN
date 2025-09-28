@@ -77,8 +77,11 @@ class OCRConverter(DocumentProcessor):
         self.max_pdf_concurrency: int = max(1, _env_int("OCR_MAX_CONCURRENCY", 3))
         self.preprocess_max_side: int = max(512, _env_int("OCR_MAX_SIDE", 2600))
 
-        # Простенький in-memory кэш результатов (на время жизни процесса)
-        # ключ: (sha256 файла, "paddle"|"openai") -> (text, confidence)
+        # Пороги второго прохода
+        self.second_pass_conf: float = _env_float("OCR_SECOND_PASS_CONF", 90.0)
+        self.second_pass_qlt: float = _env_float("OCR_SECOND_PASS_QLT", 0.65)
+
+        # In-memory кэш: (sha256, engine) -> (text, conf)
         self._cache: Dict[Tuple[str, str], Tuple[str, float]] = {}
 
     # ——————————————————————————————————————
@@ -101,11 +104,11 @@ class OCRConverter(DocumentProcessor):
                 file_type = "pdf"
             else:
                 raise ProcessingError(
-                    f"Неподдерживаемый формат для OCR: {file_extension}", code="FORMAT_ERROR"
+                    f"Неподдерживаемый формат для OCR: {file_extension}", "FORMAT_ERROR"
                 )
 
             if not text or not text.strip():
-                raise ProcessingError("Не удалось распознать текст в документе", code="OCR_NO_TEXT")
+                raise ProcessingError("Не удалось распознать текст в документе", "OCR_NO_TEXT")
 
             cleaned_text = self._clean_ocr_text(text)
             quality_analysis = self._analyze_ocr_quality(cleaned_text, confidence)
@@ -135,7 +138,7 @@ class OCRConverter(DocumentProcessor):
             raise
         except Exception as e:
             logger.exception("Ошибка OCR")
-            raise ProcessingError(f"Ошибка OCR: {e}", code="OCR_ERROR") from e
+            raise ProcessingError(f"Ошибка OCR: {e}", "OCR_ERROR") from e
 
     # ——————————————————————————————————————
     # Изображения
@@ -144,40 +147,47 @@ class OCRConverter(DocumentProcessor):
     async def _ocr_image(self, image_path: Path) -> Tuple[str, float]:
         """
         OCR изображения: предобработка → PaddleOCR → (опционально) OpenAI Vision → mock.
-        Используется кэш по контент-хэшу.
+        Используется кэш по контент-хэшу и метрика читабельности.
         """
-        # Контент-хэш для кэширования
         sha = await asyncio.to_thread(lambda: hashlib.sha256(image_path.read_bytes()).hexdigest())
 
-        # 0) Предобработка (временный файл)
         preprocessed: Path | None = None
         try:
             preprocessed = await self._preprocess_image(image_path)
             img_for_ocr = preprocessed or image_path
 
-            # 1) PaddleOCR (кэш)
+            # Paddle (кэш)
             cached = self._cache.get((sha, "paddle"))
             if cached:
-                return cached
+                paddle_text, paddle_conf = cached
+            else:
+                paddle_text, paddle_conf = await self._paddleocr_image(img_for_ocr)
+                if paddle_text:
+                    self._cache[(sha, "paddle")] = (paddle_text, paddle_conf)
 
-            text, conf = await self._paddleocr_image(img_for_ocr)
-            if text:
-                self._cache[(sha, "paddle")] = (text, conf)
-                return text, conf
+            best_text, best_conf = paddle_text, paddle_conf
+            best_score = self._readability_score(paddle_text) if paddle_text else 0.0
 
-            # 2) OpenAI Vision (кэш)
+            # OpenAI — если пусто или «каша»
             api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-            if self.use_openai and api_key:
+            if self.use_openai and api_key and self._should_try_openai(paddle_text, paddle_conf):
                 cached = self._cache.get((sha, "openai"))
                 if cached:
-                    return cached
+                    oa_text, oa_conf = cached
+                else:
+                    oa_text, oa_conf = await self._openai_ocr_image(img_for_ocr, api_key=api_key)
+                    if oa_text:
+                        self._cache[(sha, "openai")] = (oa_text, oa_conf)
 
-                text, conf = await self._openai_ocr_image(img_for_ocr, api_key=api_key)
-                if text:
-                    self._cache[(sha, "openai")] = (text, conf)
-                    return text, conf
+                oa_score = self._readability_score(oa_text) if oa_text else 0.0
+                if oa_score > best_score or (oa_score == best_score and len(oa_text) > len(best_text)):
+                    best_text, best_conf, best_score = oa_text, oa_conf, oa_score
 
-            # 3) Заглушка
+            if best_text:
+                # Композитная уверенность: движок × читабельность
+                best_conf = self._refine_confidence(best_text, best_conf)
+                return best_text, best_conf
+
             return self._mock_ocr_result(image_path)
 
         finally:
@@ -189,29 +199,42 @@ class OCRConverter(DocumentProcessor):
 
     async def _preprocess_image(self, image_path: Path) -> Path | None:
         """
-        Лёгкая предобработка: EXIF-rotate, даунскейл, grayscale, автоконтраст, median filter.
-        Возвращает путь к временному PNG или None, если предобработка не нужна/не вышло.
+        Предобработка: EXIF-rotate, масштабирование, grayscale, контраст, шумоподавление,
+        лёгкая резкость, (опционально) CLAHE + deskew через OpenCV.
+        Возвращает путь к временному PNG или None.
         """
         try:
-            from PIL import Image, ImageOps, ImageFilter
+            from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 
             def _do() -> Path:
                 im = Image.open(image_path)
                 im = ImageOps.exif_transpose(im)
 
+                # мягкий апскейл, если фото маленькое
+                max_side = max(im.size)
+                target = max(1200, min(self.preprocess_max_side, 1600))
+                if max_side < target:
+                    scale = target / float(max_side)
+                    im = im.resize((int(im.width * scale), int(im.height * scale)), Image.LANCZOS)
+
+                # даунскейл, если очень большое
                 if max(im.size) > self.preprocess_max_side:
-                    im.thumbnail((self.preprocess_max_side, self.preprocess_max_side))
+                    im.thumbnail((self.preprocess_max_side, self.preprocess_max_side), Image.LANCZOS)
 
                 im = ImageOps.grayscale(im)
-                im = ImageOps.autocontrast(im)
-                im = im.filter(ImageFilter.MedianFilter(3))
+                im = ImageOps.autocontrast(im, cutoff=1)
+                im = ImageEnhance.Sharpness(im).enhance(1.3)
+                im = im.filter(ImageFilter.MedianFilter(size=3))
 
-                # необязательный deskew через OpenCV (если установлен)
+                # опционально: CLAHE + deskew
                 try:
                     import cv2  # type: ignore
                     import numpy as np  # type: ignore
 
                     arr = np.array(im)
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    arr = clahe.apply(arr)
+
                     th = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
                     coords = cv2.findNonZero(255 - th)
                     if coords is not None:
@@ -221,7 +244,8 @@ class OCRConverter(DocumentProcessor):
                         (h, w) = arr.shape[:2]
                         M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
                         arr = cv2.warpAffine(arr, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-                        im = Image.fromarray(arr)
+
+                    im = Image.fromarray(arr)
                 except Exception:
                     pass
 
@@ -238,54 +262,73 @@ class OCRConverter(DocumentProcessor):
             logger.debug("Предобработка изображения не выполнена: %s", e)
             return None
 
-    async def _paddleocr_image(self, image_path: Path) -> Tuple[str, float]:
+    async def _paddleocr_image(self, image_path: Path) -> tuple[str, float]:
         """
-        OCR через PaddleOCR с адаптивным языком: пробуем базовый язык и EN, берём лучший результат.
+        PaddleOCR с адаптивным языком: пробуем базовый и EN, берём лучший.
+        Если PaddleOCR недоступен — возвращаем ("", 0.0), чтобы сработал fallback.
         """
         try:
             from paddleocr import PaddleOCR  # импорт внутри
         except Exception as e:
-            raise RuntimeError("PaddleOCR не установлен") from e
+            logger.warning("PaddleOCR import failed: %s", e)
+            return "", 0.0
 
-        langs_try: List[str] = [self.paddle_lang_base]
+        try:
+            det_limit = int(os.getenv("OCR_DET_LIMIT", "1280"))
+        except Exception:
+            det_limit = 1280
+
+        langs_try: list[str] = [self.paddle_lang_base]
         if self.paddle_lang_base.lower() != "en":
             langs_try.append("en")
 
         best_text, best_conf = "", 0.0
-
         for lang in langs_try:
             try:
-                ocr = PaddleOCR(use_angle_cls=True, lang=lang)
+                ocr = PaddleOCR(use_angle_cls=True, lang=lang, det_limit_side_len=det_limit)
                 result = await asyncio.to_thread(ocr.ocr, str(image_path), True)
                 text, conf = self._collect_paddle_result(result)
                 logger.info("PaddleOCR lang=%s → conf=%.1f, len=%d", lang, conf, len(text))
                 if conf > best_conf:
                     best_text, best_conf = text, conf
-                if best_conf >= 85.0:  # достаточно хорошо
+                if best_conf >= 85.0:
                     break
             except Exception as e:
-                logger.warning("PaddleOCR (lang=%s) ошибка: %s", lang, e)
+                logger.warning("PaddleOCR (lang=%s) error: %s", lang, e)
 
         return best_text, best_conf
 
     @staticmethod
     def _collect_paddle_result(result: Any) -> Tuple[str, float]:
+        """
+        Собираем строки, отбрасываем шум (score<0.25),
+        длино-взвешенное среднее по confidence (в процентах).
+        """
         if not result or not result[0]:
             return "", 0.0
-        texts: List[str] = []
-        confs: List[float] = []
+
+        lines: List[Tuple[str, float]] = []
         for line in result[0]:
             if line and len(line) >= 2:
                 _, (text, score) = line[0], line[1]
-                if text and str(text).strip():
-                    texts.append(str(text).strip())
+                if text:
+                    s = str(text).strip()
                     try:
-                        confs.append(float(score) * 100.0)
+                        sc = float(score)
                     except Exception:
-                        pass
-        text = " ".join(texts).strip()
-        conf = (sum(confs) / len(confs)) if confs else 0.0
-        return text, conf
+                        sc = 0.0
+                    if s and sc >= 0.25:
+                        lines.append((s, sc))
+
+        if not lines:
+            return "", 0.0
+
+        text = "\n".join(s for s, _ in lines).strip()
+        weights = [max(1, len(s)) for s, _ in lines]
+        scores = [sc * 100.0 for _, sc in lines]
+        total_w = sum(weights)
+        conf = sum(w * sc for w, sc in zip(weights, scores)) / total_w if total_w else 0.0
+        return text, float(conf)
 
     async def _openai_ocr_image(self, image_path: Path, api_key: str) -> Tuple[str, float]:
         """
@@ -331,7 +374,7 @@ class OCRConverter(DocumentProcessor):
         backoff = 1.5
         last_err: Exception | None = None
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for attempt in range(1, max_retries + 1):
+            for _ in range(max_retries):
                 try:
                     r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json)
                     r.raise_for_status()
@@ -369,7 +412,8 @@ class OCRConverter(DocumentProcessor):
 
         if quality >= 0.7 and len(embedded_text.strip()) > 50:
             logger.info("Использован встроенный текст PDF")
-            return embedded_text, embedded_conf, []
+            final_emb_conf = self._refine_confidence(embedded_text, embedded_conf)
+            return embedded_text, float(final_emb_conf), []
 
         # 2) Рендер всех страниц → PNG
         page_images = await self._render_pdf_pages_to_images(pdf_path)
@@ -386,22 +430,24 @@ class OCRConverter(DocumentProcessor):
                 if embedded_text.strip():
                     if len(combined) > len(embedded_text) * 1.5:
                         logger.info("OCR дал существенно больше текста — берём OCR")
-                        return combined, float(avg_conf), [
+                        final_conf = self._refine_confidence(combined, avg_conf)
+                        return combined, float(final_conf), [
                             {"page": p.page, "text": p.text, "confidence": float(p.confidence)} for p in pages_sorted
                         ]
                     merged = f"{embedded_text}\n\n--- OCR ДОПОЛНЕНИЕ ---\n\n{combined}"
-                    return merged, float((embedded_conf + avg_conf) / 2.0), [
+                    final_merged_conf = self._refine_confidence(merged, (embedded_conf + avg_conf) / 2.0)
+                    return merged, float(final_merged_conf), [
                         {"page": p.page, "text": p.text, "confidence": float(p.confidence)} for p in pages_sorted
                     ]
 
-                return combined, float(avg_conf), [
+                final_conf = self._refine_confidence(combined, avg_conf)
+                return combined, float(final_conf), [
                     {"page": p.page, "text": p.text, "confidence": float(p.confidence)} for p in pages_sorted
                 ]
 
             return "", 0.0, []
 
         finally:
-            # Удаляем временные PNG
             for p in page_images:
                 try:
                     p.unlink(missing_ok=True)
@@ -506,7 +552,6 @@ class OCRConverter(DocumentProcessor):
             # 1) цифры/буквы в числовом окружении
             (r"(?<=\d)[ОO](?=\d)", "0"),
             (r"(?<=\d)З(?=\d)", "3"),
-
             # 2) частые рус/англ подмены
             (r"\bнaлог\b", "налог"),
             (r"\bзaкон\b", "закон"),
@@ -515,11 +560,9 @@ class OCRConverter(DocumentProcessor):
             (r"\bрro\b", "pro"),
             (r"\bсоm\b", "com"),
             (r"\bоrg\b", "org"),
-
             # 3) кавычки
             (r"«([^»]*)»", r'"\1"'),
             (r"„([^\"\n]*)\"", r'"\1"'),
-
             # 4) пробелы/дефисы/пунктуация
             (r"(\w)\s*-\s*(\w)", r"\1-\2"),
             (r"\s+([,.;:!?])", r"\1"),
@@ -586,6 +629,72 @@ class OCRConverter(DocumentProcessor):
         }
 
     # ——————————————————————————————————————
+    # Читабельность / композитная уверенность / 2-й проход
+    # ——————————————————————————————————————
+
+    def _readability_score(self, text: str) -> float:
+        """
+        Эвристика «насколько похоже на нормальный текст» (0..1).
+        Учитывает долю букв, долю кириллицы, среднюю длину слова и штраф за «смешанные» слова.
+        """
+        import re
+
+        t = (text or "").strip()
+        if not t:
+            return 0.0
+
+        total = len(t)
+        alpha = sum(1 for c in t if c.isalpha())
+        if total == 0:
+            return 0.0
+        alpha_ratio = alpha / total
+
+        words = re.findall(r"[A-Za-zА-Яа-яЁё]{2,}", t)
+        if not words:
+            return alpha_ratio * 0.3
+
+        cyr = sum(1 for w in words if re.fullmatch(r"[А-Яа-яЁё]{2,}", w))
+        lat = sum(1 for w in words if re.fullmatch(r"[A-Za-z]{2,}", w))
+        mixed = len(words) - cyr - lat
+
+        avg_len = sum(len(w) for w in words) / len(words)
+        cyr_ratio = cyr / len(words)
+        mixed_ratio = mixed / len(words)
+
+        score = (
+            0.35 * alpha_ratio
+            + 0.35 * cyr_ratio
+            + 0.20 * min(1.0, avg_len / 7.0)
+            - 0.20 * mixed_ratio
+        )
+        return max(0.0, min(1.0, score))
+
+    def _refine_confidence(self, text: str, engine_conf: float) -> float:
+        """
+        Композитная уверенность: смесь читабельности и уверенности движка.
+        final = 100 * (0.6 * readability + 0.4 * engine_conf/100), clamp[0..99.5].
+        Для очень хороших текстов слегка дотягиваем до 95+.
+        """
+        r = self._readability_score(text)  # 0..1
+        final = 100.0 * (0.6 * r + 0.4 * (engine_conf / 100.0))
+        if r >= 0.85 and engine_conf >= 88:
+            final = max(final, 95.0)
+        return float(min(99.5, max(0.0, final)))
+
+    def _should_try_openai(self, paddle_text: str, paddle_conf: float) -> bool:
+        """
+        Решаем, имеет ли смысл пробовать OpenAI, даже если Paddle что-то распознал.
+        """
+        score = self._readability_score(paddle_text)
+        if paddle_conf < self.second_pass_conf:
+            return True
+        if score < self.second_pass_qlt:
+            return True
+        if len(paddle_text) < 80 and score < 0.5:
+            return True
+        return False
+
+    # ——————————————————————————————————————
     # Зависимости
     # ——————————————————————————————————————
 
@@ -597,5 +706,6 @@ class OCRConverter(DocumentProcessor):
             "paddleocr>=2.8.0",      # PaddleOCR
             "pillow>=9.0.0",         # предобработка изображений
             "httpx>=0.24.0",         # OpenAI fallback
-            # "opencv-python-headless>=4.7.0", # (опционально) для deskew
+            # "opencv-python-headless>=4.7.0", # (опционально) для CLAHE+deskew
+            # "setuptools>=68",                # (желательно для paddle)
         ]

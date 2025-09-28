@@ -91,8 +91,9 @@ async def _assert_manual_update_advances_flow() -> None:
         await asyncio.sleep(0.12)
         assert len(message.edits) > edits_before
         latest_text = message.edits[-1][0]
-        assert "Проверяю точность" in latest_text or "Формирую ответ" in latest_text
+        assert "Custom stage" in latest_text or "Working..." in latest_text
     finally:
         await status.complete()
 
     assert message.deleted
+

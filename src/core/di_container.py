@@ -215,7 +215,7 @@ def create_container() -> DIContainer:
     # OpenAIService как singleton
     container.register_factory(
         OpenAIService,
-        lambda: OpenAIService(api_key=container.get_config("openai_api_key"))
+        lambda: OpenAIService()
     )
 
     # AudioService как singleton

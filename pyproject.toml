@@ -46,6 +46,7 @@ pydantic = { version = "^2.5.0", optional = true }
 # Тесты
 pytest = "^8.4.2"
 pytest-asyncio = "^1.2.0"
+setuptools = "^80.9.0"
 
 [tool.poetry.extras]
 # Группы для удобной установки "по профилям"

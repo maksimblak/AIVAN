@@ -18,6 +18,8 @@ from src.core.safe_telegram import (
     tg_send_html,
 )
 
+from src.bot.ui_components import Emoji
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,9 +48,11 @@ class StreamManager:
         self._stopped = False
         self.update_task: Optional[asyncio.Task] = None
 
-    async def start_streaming(self, initial_text: str = "🤔 Обдумываю ответ...") -> Message:
+    async def start_streaming(self, initial_text: str | None = None) -> Message:
         """Начинаем стрим: отправляем первое сообщение и запускаем фоновые апдейты."""
         # Первое сообщение — краткое, чтобы его можно было редактировать
+        if initial_text is None:
+            initial_text = f"{Emoji.ROBOT} 🤔 Обдумываю ответ..."
         self.message = await self.bot.send_message(
             chat_id=self.chat_id, text=initial_text, parse_mode=ParseMode.HTML
         )
