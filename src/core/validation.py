@@ -135,26 +135,22 @@ class InputValidator:
     @classmethod
     def validate_user_id(cls, user_id: Any) -> ValidationResult:
         """Валидация user_id"""
-        if not user_id:
+        if user_id in (None, ""):
             return ValidationResult(is_valid=False, errors=["User ID не может быть пустым"])
 
         try:
             uid = int(user_id)
-            if uid <= 0:
-                return ValidationResult(
-                    is_valid=False, errors=["User ID должен быть положительным числом"]
-                )
-
-            # Telegram user IDs are usually within this range
-            if uid > 2147483647:  # Max 32-bit signed int
-                return ValidationResult(
-                    is_valid=False, errors=["User ID превышает максимальное значение"]
-                )
-
-            return ValidationResult(is_valid=True, cleaned_data=str(uid))
-
         except (ValueError, TypeError):
             return ValidationResult(is_valid=False, errors=["User ID должен быть числом"])
+
+        if uid <= 0:
+            return ValidationResult(is_valid=False, errors=["User ID должен быть положительным числом"])
+
+        max_allowed = 9_223_372_036_854_775_807  # 2**63 - 1
+        if uid > max_allowed:
+            return ValidationResult(is_valid=False, errors=["User ID слишком велик"])
+
+        return ValidationResult(is_valid=True, cleaned_data=str(uid))
 
     @classmethod
     def validate_payment_amount(cls, amount: Any, currency: str = "RUB") -> ValidationResult:

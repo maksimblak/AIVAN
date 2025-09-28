@@ -8,6 +8,7 @@ import asyncio
 import logging
 import traceback
 from collections.abc import Callable
+from functools import wraps
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -359,6 +360,7 @@ def handle_exceptions(error_handler: ErrorHandler, context_func: Callable | None
     """Декоратор для автоматической обработки исключений"""
 
     def decorator(func):
+        @wraps(func)
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
@@ -382,6 +384,7 @@ def safe_execute(error_handler: ErrorHandler, default_return=None):
     """Декоратор для безопасного выполнения с возвратом значения по умолчанию"""
 
     def decorator(func):
+        @wraps(func)
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
