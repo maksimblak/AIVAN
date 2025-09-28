@@ -481,12 +481,14 @@ async def cmd_start(message: Message):
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
-                InlineKeyboardButton(text="📋 Консультация", callback_data="general_consultation"),
             ],
             [
                 InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
             ],
-            [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info")],
+            [
+                InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
+                InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info"),
+            ],
         ]
     )
 
@@ -1295,8 +1297,8 @@ async def handle_search_practice_callback(callback: CallbackQuery):
         await callback.answer("❌ Произошла ошибка")
 
 
-async def handle_general_consultation_callback(callback: CallbackQuery):
-    """Обработчик кнопки 'Общая юридическая консультация'"""
+async def handle_my_profile_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Мой профиль'"""
     if not callback.from_user:
         await callback.answer("❌ Ошибка данных")
         return
@@ -1304,24 +1306,243 @@ async def handle_general_consultation_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        await callback.message.answer(
-            "📋 <b>Общая юридическая консультация</b>\n\n"
-            "💬 Задайте любой юридический вопрос, и я помогу:\n\n"
-            "• Анализ правовой ситуации\n"
-            "• Поиск релевантных НПА\n"
-            "• Рекомендации по действиям\n"
-            "• Оценка перспектив дела\n\n"
-            "<i>Напишите ваш вопрос следующим сообщением...</i>",
-            parse_mode=ParseMode.HTML,
+        # Создаем клавиатуру с кнопками профиля
+        profile_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
+                    InlineKeyboardButton(text="💎 Статус подписки", callback_data="subscription_status"),
+                ],
+                [
+                    InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main"),
+                ],
+            ]
         )
 
-        # Обычный режим консультации (по умолчанию)
-        user_session = get_user_session(callback.from_user.id)
-        if hasattr(user_session, "practice_search_mode"):
-            user_session.practice_search_mode = False
+        await callback.message.answer(
+            "👤 <b>Мой профиль</b>\n\n"
+            "Выберите действие:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=profile_keyboard
+        )
 
     except Exception as e:
-        logger.error(f"Error in handle_general_consultation_callback: {e}")
+        logger.error(f"Error in handle_my_profile_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_my_stats_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Моя статистика'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        # Используем существующую логику из cmd_mystats
+        if db is None:
+            await callback.message.answer("Статистика временно недоступна")
+            return
+
+        user_id = callback.from_user.id
+        user = await db.ensure_user(
+            user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
+        )
+
+        # Получаем детальную статистику
+        stats = await db.get_user_statistics(user_id, days=30)
+
+        # Форматируем даты
+        def format_timestamp(ts):
+            if not ts or ts == 0:
+                return "Никогда"
+            return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+
+        def format_subscription_status(until_ts):
+            if not until_ts or until_ts == 0:
+                return "❌ Не активна"
+            now = int(time.time())
+            if until_ts > now:
+                dt = datetime.fromtimestamp(until_ts)
+                return f"✅ До {dt.strftime('%d.%m.%Y')}"
+            else:
+                return "⏰ Истекла"
+
+        status_text = f"""📊 <b>Моя статистика</b>
+
+👤 <b>Профиль</b>
+• ID: {user_id}
+• Триал: {stats.get('trial_remaining', 0)} запросов
+• Админ: {"✅" if stats.get('is_admin', False) else "❌"}
+• Создан: {format_timestamp(stats.get('created_at', 0))}
+• Обновлён: {format_timestamp(stats.get('updated_at', 0))}
+• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}
+
+📈 <b>Общая статистика</b>
+• Всего запросов: {stats.get('total_requests', 0)}
+• За 30 дней: {stats.get('recent_requests', 0)}
+• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}
+
+📋 <b>По типам запросов (30 дней)</b>"""
+
+        # Добавляем статистику по типам
+        type_stats = stats.get('request_types', {})
+        if type_stats:
+            for req_type, count in type_stats.items():
+                status_text += f"\n• {req_type}: {count}"
+        else:
+            status_text += "\n• Нет данных"
+
+        # Добавляем кнопку "Назад"
+        back_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")],
+            ]
+        )
+
+        await callback.message.answer(
+            status_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard
+        )
+
+    except Exception as e:
+        logger.error(f"Error in handle_my_stats_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_subscription_status_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Статус подписки'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        if db is None:
+            await callback.message.answer("Сервис временно недоступен")
+            return
+
+        user_id = callback.from_user.id
+        user = await db.ensure_user(
+            user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
+        )
+
+        # Проверяем статус подписки
+        has_subscription = await db.has_active_subscription(user_id)
+
+        if has_subscription and user.subscription_until:
+            until_dt = datetime.fromtimestamp(user.subscription_until)
+            status_text = f"""💎 <b>Статус подписки</b>
+
+✅ <b>Подписка активна</b>
+📅 Действует до: {until_dt.strftime('%d.%m.%Y %H:%M')}
+
+🎯 <b>Преимущества</b>
+• Безлимитные запросы
+• Приоритетная обработка
+• Расширенные возможности"""
+        else:
+            status_text = f"""💎 <b>Статус подписки</b>
+
+❌ <b>Подписка не активна</b>
+🔄 Триал: {user.trial_remaining} запросов
+
+💡 <b>Активируйте подписку для</b>
+• Безлимитных запросов
+• Приоритетной обработки
+• Расширенных возможностей
+
+💰 Стоимость: {SUB_PRICE_RUB} руб/месяц"""
+
+        # Создаем клавиатуру
+        keyboard_buttons = []
+
+        if not has_subscription:
+            keyboard_buttons.append([
+                InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")
+            ])
+
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")
+        ])
+
+        subscription_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+        await callback.message.answer(
+            status_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=subscription_keyboard
+        )
+
+    except Exception as e:
+        logger.error(f"Error in handle_subscription_status_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_back_to_main_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Назад' - возврат в главное меню"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        # Отправляем главное меню (как в команде /start)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
+                ],
+                [
+                    InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
+                ],
+                [
+                    InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
+                    InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help_info"),
+                ],
+            ]
+        )
+
+        await callback.message.answer(
+            "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+
+    except Exception as e:
+        logger.error(f"Error in handle_back_to_main_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_get_subscription_callback(callback: CallbackQuery):
+    """Обработчик кнопки 'Оформить подписку'"""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        # Создаем временное сообщение для функции cmd_buy
+        from aiogram.types import Message
+        temp_message = Message(
+            message_id=callback.message.message_id,
+            date=callback.message.date,
+            chat=callback.message.chat,
+            from_user=callback.from_user,
+            content_type='text',
+            options={}
+        )
+
+        # Вызываем существующую функцию покупки подписки
+        await cmd_buy(temp_message)
+
+    except Exception as e:
+        logger.error(f"Error in handle_get_subscription_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -2254,11 +2475,15 @@ async def main():
 
     # Обработчики кнопок главного меню
     dp.callback_query.register(handle_search_practice_callback, F.data == "search_practice")
-    dp.callback_query.register(
-        handle_general_consultation_callback, F.data == "general_consultation"
-    )
     dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
     dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
+    dp.callback_query.register(handle_my_profile_callback, F.data == "my_profile")
+
+    # Обработчики профиля
+    dp.callback_query.register(handle_my_stats_callback, F.data == "my_stats")
+    dp.callback_query.register(handle_subscription_status_callback, F.data == "subscription_status")
+    dp.callback_query.register(handle_get_subscription_callback, F.data == "get_subscription")
+    dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
 
     # Обработчики системы документооборота
     dp.callback_query.register(handle_document_processing, F.data == "document_processing")
