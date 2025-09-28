@@ -175,10 +175,13 @@ class StreamManager:
         # 1) правим первое сообщение
         try:
             await tg_edit_html(self.bot, self.chat_id, self.message.message_id, chunks[0])
+            base_message_id = self.message.message_id
             self.last_sent_text = chunks[0]
-        except Exception:
-            # если исходное сообщение исчезло — отправим новое
-            await tg_send_html(self.bot, self.chat_id, chunks[0])
+        except Exception as e:
+            logger.warning("edit_message_text failed on finalize, fallback to new message: %s", e)
+            # хвостовой фолбэк — отправляем новый блок с заголовком/контекстом
+            sent = await tg_send_html(self.bot, self.chat_id, chunks[0])
+            base_message_id = sent.message_id
 
         # 2) хвост — отдельными сообщениями
         for tail in chunks[1:]:

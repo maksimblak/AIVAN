@@ -12,6 +12,40 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Глобальный лок для синхронизации файловых операций
+_FILE_IO_LOCK = asyncio.Lock()
+
+
+# Утилиты для безопасного асинхронного файлового I/O
+async def read_text_async(path: str | Path, encoding: str = "utf-8", errors: str = "ignore") -> str:
+    """Асинхронно читает текстовый файл с общим локом"""
+    p = Path(path)
+    async with _FILE_IO_LOCK:
+        return await asyncio.to_thread(p.read_text, encoding=encoding, errors=errors)
+
+
+async def write_text_async(path: str | Path, data: str, encoding: str = "utf-8") -> None:
+    """Асинхронно записывает текстовый файл с общим локом"""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    async with _FILE_IO_LOCK:
+        await asyncio.to_thread(p.write_text, data, encoding=encoding)
+
+
+async def read_bytes_async(path: str | Path) -> bytes:
+    """Асинхронно читает бинарный файл с общим локом"""
+    p = Path(path)
+    async with _FILE_IO_LOCK:
+        return await asyncio.to_thread(p.read_bytes)
+
+
+async def write_bytes_async(path: str | Path, data: bytes) -> None:
+    """Асинхронно записывает бинарный файл с общим локом"""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    async with _FILE_IO_LOCK:
+        await asyncio.to_thread(p.write_bytes, data)
+
 
 class FileFormatHandler:
     """Базовый класс для обработки различных форматов файлов"""
@@ -58,11 +92,9 @@ class FileFormatHandler:
 
             for encoding in encodings:
                 try:
-                    async with asyncio.Lock():
-                        with open(file_path, encoding=encoding) as f:
-                            content = f.read()
+                    content = await read_text_async(file_path, encoding=encoding, errors="strict")
                     return True, content
-                except UnicodeDecodeError:
+                except (UnicodeDecodeError, UnicodeError):
                     continue
 
             return False, "Не удалось определить кодировку файла"
@@ -78,12 +110,15 @@ class FileFormatHandler:
             try:
                 import PyPDF2
 
-                async with asyncio.Lock():
+                def _extract_with_pypdf2():
                     with open(file_path, "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
                         text = ""
                         for page in pdf_reader.pages:
                             text += page.extract_text() + "\n"
+                    return text
+
+                text = await asyncio.to_thread(_extract_with_pypdf2)
 
                 if text.strip():
                     return True, text
@@ -95,13 +130,16 @@ class FileFormatHandler:
                 try:
                     import pdfplumber
 
-                    async with asyncio.Lock():
+                    def _extract_with_pdfplumber():
                         with pdfplumber.open(file_path) as pdf:
                             text = ""
                             for page in pdf.pages:
                                 page_text = page.extract_text()
                                 if page_text:
                                     text += page_text + "\n"
+                        return text
+
+                    text = await asyncio.to_thread(_extract_with_pdfplumber)
 
                     if text.strip():
                         return True, text

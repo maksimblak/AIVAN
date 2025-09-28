@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
+from src.bot.ui_components import md_links_to_anchors
 
 if TYPE_CHECKING:
     from src.core.db_advanced import DatabaseAdvanced
@@ -218,24 +219,7 @@ def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     return chunks
 
 
-def _md_links_to_anchors(line: str) -> str:
-    """Convert markdown links [text](url) into safe HTML anchors.
-
-    Both link text and URL are escaped; only http/https URLs are allowed.
-    """
-    pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
-    result_parts: list[str] = []
-    last = 0
-    for m in pattern.finditer(line):
-        # escape non-link part
-        result_parts.append(html_escape(line[last : m.start()]))
-        text = html_escape(m.group(1))
-        url = html_escape(m.group(2), quote=True)
-        result_parts.append(f'<a href="{url}">{text}</a>')
-        last = m.end()
-    # tail
-    result_parts.append(html_escape(line[last:]))
-    return "".join(result_parts)
+# Удалено: используется md_links_to_anchors из ui_components
 
 
 

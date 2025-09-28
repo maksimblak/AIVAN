@@ -17,6 +17,9 @@ from .risk_analyzer import RiskAnalyzer
 from .summarizer import DocumentSummarizer
 from .translator import DocumentTranslator
 
+# Импорт утилит для безопасной HTML сборки
+from src.core.safe_telegram import format_safe_html, split_html_for_telegram
+
 logger = logging.getLogger(__name__)
 
 
@@ -379,9 +382,16 @@ class DocumentManager:
     def get_operation_info(self, operation: str) -> dict[str, Any] | None:
         return self.get_supported_operations().get(operation)
 
+    def build_telegram_chunks(self, html: str, max_len: int = 3900) -> list[str]:
+        """Собирает безопасный HTML и режет на куски под лимиты Telegram."""
+        safe_html = format_safe_html(html)               # нормализуем/балансируем теги
+        chunks = split_html_for_telegram(safe_html, max_len=max_len)
+        return chunks
+
     def format_result_for_telegram(self, result: DocumentResult, operation: str) -> str:
         if not result.success:
-            return f"✖ <b>Ошибка обработки</b>\n\n{html_escape(str(result.message))}"
+            raw_html = f"✖ <b>Ошибка обработки</b>\n\n{html_escape(str(result.message))}"
+            return format_safe_html(raw_html)
 
         operation_info = self.get_operation_info(operation) or {}
         emoji = operation_info.get("emoji", "📄")
@@ -390,19 +400,24 @@ class DocumentManager:
         header = f"{emoji} <b>{html_escape(name)}</b>\n"
         header += f"⏱️ Время обработки: {result.processing_time:.1f}с\n\n"
 
+        # Получаем сырой HTML от соответствующего форматтера
         if operation == "summarize":
-            return self._format_summary_result(header, result.data)
-        if operation == "analyze_risks":
-            return self._format_risk_analysis_result(header, result.data)
-        if operation == "chat":
-            return self._format_chat_result(header, result.data)
-        if operation == "anonymize":
-            return self._format_anonymize_result(header, result.data)
-        if operation == "translate":
-            return self._format_translate_result(header, result.data)
-        if operation == "ocr":
-            return self._format_ocr_result(header, result.data)
-        return f"{header}✔ {result.message}"
+            raw_html = self._format_summary_result(header, result.data)
+        elif operation == "analyze_risks":
+            raw_html = self._format_risk_analysis_result(header, result.data)
+        elif operation == "chat":
+            raw_html = self._format_chat_result(header, result.data)
+        elif operation == "anonymize":
+            raw_html = self._format_anonymize_result(header, result.data)
+        elif operation == "translate":
+            raw_html = self._format_translate_result(header, result.data)
+        elif operation == "ocr":
+            raw_html = self._format_ocr_result(header, result.data)
+        else:
+            raw_html = f"{header}✔ {result.message}"
+
+        # Пропускаем через безопасную обработку HTML
+        return format_safe_html(raw_html)
 
     def _format_summary_result(self, header: str, data: dict[str, Any]) -> str:
         summary = data.get("summary", {})

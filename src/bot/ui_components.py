@@ -372,24 +372,7 @@ def sanitize_telegram_html(html: str) -> str:
     return tag_re.sub(_clean_tag, html)
 
 
-def _md_links_to_anchors(line: str) -> str:
-    """Convert markdown links [text](url) into safe HTML anchors.
-
-    Both link text and URL are escaped; only http/https URLs are allowed.
-    """
-    pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
-    result_parts: list[str] = []
-    last = 0
-    for m in pattern.finditer(line):
-        # escape non-link part
-        result_parts.append(html_escape(line[last : m.start()]))
-        text = html_escape(m.group(1))
-        url = html_escape(m.group(2), quote=True)
-        result_parts.append(f'<a href="{url}">{text}</a>')
-        last = m.end()
-    # tail
-    result_parts.append(html_escape(line[last:]))
-    return "".join(result_parts)
+# Удалено: заменено на md_links_to_anchors выше
 
 
 def _normalize(text: str) -> str:
@@ -493,6 +476,18 @@ def _auto_keywords(text: str, limit: int = 8) -> list[str]:
 
 def _linkify(text_escaped: str) -> str:
     return _URL_RE.sub(lambda m: f'<a href="{html_escape(m.group(1), quote=True)}">{html_escape(m.group(1))}</a>', text_escaped)
+
+
+# Единый конвертер markdown ссылок в HTML якоря для всего проекта
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+
+def md_links_to_anchors(text: str) -> str:
+    """Конвертирует Markdown-ссылки в безопасные <a href=...> для Telegram HTML."""
+    def _sub(m: re.Match) -> str:
+        label = html_escape(m.group(1))
+        href = html_escape(m.group(2), quote=True)
+        return f'<a href="{href}">{label}</a>'
+    return _MD_LINK_RE.sub(_sub, text)
 
 def render_legal_html(
     raw_text: str,
