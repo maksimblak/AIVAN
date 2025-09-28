@@ -19,6 +19,7 @@ from .translator import DocumentTranslator
 
 # Импорт утилит для безопасной HTML сборки
 from src.core.safe_telegram import format_safe_html, split_html_for_telegram
+from src.bot.ui_components import sanitize_telegram_html
 
 logger = logging.getLogger(__name__)
 
@@ -416,8 +417,10 @@ class DocumentManager:
         else:
             raw_html = f"{header}✔ {result.message}"
 
-        # Пропускаем через безопасную обработку HTML
-        return format_safe_html(raw_html)
+        # Конвертируем переводы строк и очищаем HTML перед отправкой
+        normalized = raw_html.replace("\r\n", "\n")
+        normalized = normalized.replace("\n\n", "<br><br>").replace("\n", "<br>")
+        return sanitize_telegram_html(normalized)
 
     def _format_summary_result(self, header: str, data: dict[str, Any]) -> str:
         summary = data.get("summary", {})
