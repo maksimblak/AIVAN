@@ -386,6 +386,26 @@ def create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
+    """Создаёт клавиатуру для возврата и повторной загрузки OCR."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text=f"{Emoji.BACK} Назад", callback_data="back_to_menu"),
+            InlineKeyboardButton(text=f"{Emoji.DOCUMENT} Загрузить ещё", callback_data=f"ocr_upload_more:{output_format}")
+        ]]
+    )
+
+    """Создает клавиатуру с кнопками рейтинга для оценки ответа"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍", callback_data=f"rate_like_{request_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"rate_dislike_{request_id}"),
+            ]
+        ]
+    )
+
+
 async def send_rating_request(message: Message, request_id: int):
     """Отправляет сообщение с запросом на оценку ответа"""
     try:
@@ -1072,6 +1092,37 @@ async def process_voice_message(message: Message):
 # ============ СИСТЕМА РЕЙТИНГА ============
 
 
+
+
+async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
+    """Prepare state for another OCR upload after a result message."""
+    output_format = "txt"
+    data = callback.data or ""
+    if ":" in data:
+        _, payload = data.split(":", 1)
+        if payload:
+            output_format = payload
+    try:
+        with suppress(Exception):
+            await callback.message.edit_reply_markup()
+
+        await state.clear()
+        await state.update_data(
+            document_operation="ocr",
+            operation_options={"output_format": output_format},
+        )
+        await state.set_state(DocumentProcessingStates.waiting_for_document)
+
+        await callback.message.answer(
+            f"{Emoji.DOCUMENT} Отправьте следующий файл или фото для OCR.",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer("Готов к загрузке нового документа")
+    except Exception as exc:
+        logger.error(f"Error in handle_ocr_upload_more: {exc}", exc_info=True)
+        await callback.answer("Не удалось подготовить повторную загрузку", show_alert=True)
+
+
 async def handle_pending_feedback(message: Message, user_session: UserSession, text_override: str | None = None):
     """Обработка текстового комментария для рейтинга"""
     feedback_source = text_override if text_override is not None else (message.text or "")
@@ -1544,6 +1595,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
         data = await state.get_data()
         operation = data.get("document_operation")
         options = dict(data.get("operation_options") or {})
+        output_format = str(options.get("output_format", "txt"))
+        output_format = str(options.get("output_format", "txt"))
 
         if not operation:
             await message.answer("❌ Операция не выбрана. Начните заново с /start")
@@ -1561,8 +1614,11 @@ async def handle_document_upload(message: Message, state: FSMContext):
         # Проверяем размер файла (максимум 50MB)
         max_size = 50 * 1024 * 1024
         if file_size > max_size:
+            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
             await message.answer(
-                f"❌ Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ"
+                f"{Emoji.ERROR} Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ",
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
             await state.clear()
             return
@@ -1609,7 +1665,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 formatted_result = document_manager.format_result_for_telegram(result, operation)
 
                 # Отправляем результат
-                await message.answer(formatted_result, parse_mode=ParseMode.HTML)
+                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
                 exports = result.data.get("exports") or []
                 for export in exports:
@@ -1631,9 +1688,11 @@ async def handle_document_upload(message: Message, state: FSMContext):
                     f"Successfully processed document {file_name} for user {message.from_user.id}"
                 )
             else:
+                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"❌ <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
+                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
                     parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
                 )
 
         except Exception as e:
@@ -1643,9 +1702,11 @@ async def handle_document_upload(message: Message, state: FSMContext):
             except:
                 pass
 
+            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
             await message.answer(
-                f"❌ <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
+                f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
             logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
@@ -1654,7 +1715,14 @@ async def handle_document_upload(message: Message, state: FSMContext):
             await state.clear()
 
     except Exception as e:
-        await message.answer(f"❌ Произошла ошибка: {str(e)}")
+        reply_markup = None
+        if 'operation' in locals() and operation == "ocr":
+            reply_markup = _build_ocr_reply_markup(locals().get('output_format', 'txt'))
+        await message.answer(
+            f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n{html_escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
         logger.error(f"Error in handle_document_upload: {e}", exc_info=True)
         await state.clear()
 
@@ -1670,6 +1738,8 @@ async def handle_photo_upload(message: Message, state: FSMContext):
         data = await state.get_data()
         operation = data.get("document_operation")
         options = dict(data.get("operation_options") or {})
+        output_format = str(options.get("output_format", "txt"))
+        output_format = str(options.get("output_format", "txt"))
 
         if not operation:
             await message.answer("❌ Операция не выбрана. Начните заново с /start")
@@ -1736,7 +1806,8 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                 formatted_result = document_manager.format_result_for_telegram(result, operation)
 
                 # Отправляем результат
-                await message.answer(formatted_result, parse_mode=ParseMode.HTML)
+                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
                 # Отправляем экспортированные файлы, если есть
                 exports = result.data.get("exports") or []
@@ -1759,9 +1830,11 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                     f"Successfully processed photo {file_name} for user {message.from_user.id}"
                 )
             else:
+                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"❌ <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
+                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
                     parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
                 )
 
         except Exception as e:
@@ -1771,9 +1844,11 @@ async def handle_photo_upload(message: Message, state: FSMContext):
             except:
                 pass
 
+            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
             await message.answer(
-                f"❌ <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
+                f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
             logger.error(f"Error processing photo {file_name}: {e}", exc_info=True)
 
@@ -2188,6 +2263,7 @@ async def main():
     # Обработчики системы документооборота
     dp.callback_query.register(handle_document_processing, F.data == "document_processing")
     dp.callback_query.register(handle_document_operation, F.data.startswith("doc_operation_"))
+    dp.callback_query.register(handle_ocr_upload_more, F.data.startswith("ocr_upload_more:"))
     dp.callback_query.register(handle_back_to_menu, F.data == "back_to_menu")
     dp.message.register(
         handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document

@@ -419,8 +419,9 @@ class DocumentManager:
 
         # Конвертируем переводы строк и очищаем HTML перед отправкой
         normalized = raw_html.replace("\r\n", "\n")
-        normalized = normalized.replace("\n\n", "<br><br>").replace("\n", "<br>")
-        return sanitize_telegram_html(normalized)
+        sanitized = sanitize_telegram_html(normalized)
+        sanitized = sanitized.replace("<br><br>", "\n\n").replace("<br>", "\n")
+        return sanitized
 
     def _format_summary_result(self, header: str, data: dict[str, Any]) -> str:
         summary = data.get("summary", {})
