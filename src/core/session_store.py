@@ -12,6 +12,7 @@ class UserSession:
     last_question_time: datetime | None = None
     created_at: datetime = field(default_factory=datetime.now)
     pending_feedback_request_id: int | None = None
+    voice_tts_enabled: bool = True
 
     def add_question_stats(self, response_time: float) -> None:
         self.questions_count += 1
