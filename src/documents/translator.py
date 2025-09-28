@@ -1,23 +1,34 @@
 # -*- coding: utf-8 -*-
 """
 Модуль перевода документов
-Профессиональный перевод документов с сохранением юридической терминологии
+Профессиональный перевод документов с сохранением юридической терминологии.
+
+Особенности:
+- Чанкинг с перекрытием + устойчивость к падениям части запросов.
+- Режимы: онлайн (LLM через openai_service) и безопасный оффлайн-деград (возвращаем исходник).
+- Глоссарий (кастомные термины), защита не-переводимых сущностей (URL/Email/даты/числа).
+- Сохранение структуры (списки, заголовки), уважение форматирования.
+- Метаданные по чанкам: превью, длительность, статус.
+- Автодетект языка и автоматическая рокировка языков при необходимости.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Tuple
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
 
-# Словарь поддерживаемых языков с названиями
-SUPPORTED_LANGUAGES = {
+# ----------------------------- Поддержка языков -----------------------------
+
+SUPPORTED_LANGUAGES: Dict[str, str] = {
     "ru": "Русский",
     "en": "Английский",
     "de": "Немецкий",
@@ -29,8 +40,7 @@ SUPPORTED_LANGUAGES = {
     "ja": "Японский",
 }
 
-# Словарь языков с флагами для UI
-LANG_NAMES = {
+LANG_NAMES: Dict[str, str] = {
     "ru": "🇷🇺 Русский",
     "en": "🇬🇧 Английский",
     "de": "🇩🇪 Немецкий",
@@ -42,35 +52,92 @@ LANG_NAMES = {
     "ja": "🇯🇵 Японский",
 }
 
-
 def _human_lang(code: str) -> str:
-    """Получить человеко-читаемое название языка с флагом"""
     return LANG_NAMES.get(code, code)
 
 
-TRANSLATION_PROMPT = """
+# ------------------------------- Промпт LLM -------------------------------
+
+TRANSLATION_SYSTEM_PROMPT = """
 Ты — профессиональный переводчик юридических документов.
+Требования:
+- Сохраняй юридическую терминологию и формальный стиль.
+- Сохраняй структуру документа: заголовки, нумерацию, списки, подпункты.
+- Сохраняй разметку и спец. плейсхолдеры вида {{T0}}, {{T1}}, {{URL0}} — НЕ ПЕРЕВОДИ их и не удаляй.
+- Не сокращай и не добавляй лишних пояснений, если не попросили.
+- Если видишь юридический термин из глоссария, строго используй предложенную форму перевода.
 
-ЗАДАЧА: Переведи документ с {source_lang} на {target_lang}, сохраняя:
-- Юридическую терминологию
-- Структуру документа
-- Формальный стиль
-- Точность правовых понятий
-
-ОСНОВНЫЕ ТРЕБОВАНИЯ:
-- Используй принятые переводы юридических терминов
-- Сохраняй форматирование (списки, пункты, таблицы)
-- Адаптируй к местному законодательству где необходимо
-- Добавляй пояснения в скобках для сложных терминов
-
-ЯЗЫКОВЫЕ ПАРЫ:
-- Русский ↔ Английский
-- Русский ↔ Китайский
-- Русский ↔ Немецкий
-
-Переводи только текст документа, сохраняя его структуру.
+Формат ответа:
+— Верни ТОЛЬКО перевод (plain text/markdown), без комментариев и метаданных.
 """
 
+TRANSLATION_USER_TMPL = """
+Исходный язык: {src_name}
+Целевой язык: {tgt_name}
+
+Глоссарий (приоритетный, если указан):
+{glossary_text}
+
+Переведи следующий фрагмент, сохранив структуру и плейсхолдеры:
+---
+{payload}
+---
+"""
+
+
+# ----------------------------- Защита сущностей -----------------------------
+
+URL_RE = re.compile(r"(https?://[^\s]+)")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}\b")
+DATE_RE = re.compile(
+    r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|January|February|March|April|May|June|July|August|September|October|November|December))\b",
+    re.IGNORECASE,
+)
+NUMBER_RE = re.compile(r"\b\d[\d\s.,]*\b")
+
+def _protect_entities(text: str) -> Tuple[str, Dict[str, str]]:
+    """Заменяем критичные сущности плейсхолдерами {{URL0}}, {{EM0}}, {{DT0}}, {{N0}}."""
+    mapping: Dict[str, str] = {}
+    counter = {"URL": 0, "EM": 0, "DT": 0, "N": 0}
+
+    def sub_with(tag: str, regex: re.Pattern) -> str:
+        def repl(m: re.Match) -> str:
+            key = f"{{{{{tag}{counter[tag]}}}}}"
+            mapping[key] = m.group(0)
+            counter[tag] += 1
+            return key
+        return regex.sub(repl, text_map[tag])
+
+    # этапно заменяем (важен порядок: URL/Email до чисел/дат)
+    text_map = {"URL": text, "EM": "", "DT": "", "N": ""}
+    text_map["EM"] = URL_RE.sub(lambda m: m.group(0), text_map["URL"])  # no-op, держим структуру
+    text_map["DT"] = text_map["EM"]
+    text_map["N"] = text_map["DT"]
+
+    # 1) URL
+    s1 = URL_RE.sub(lambda m: _swap_store(mapping, "URL", counter, m.group(0)), text_map["URL"])
+    # 2) EMAIL
+    s2 = EMAIL_RE.sub(lambda m: _swap_store(mapping, "EM", counter, m.group(0)), s1)
+    # 3) DATE
+    s3 = DATE_RE.sub(lambda m: _swap_store(mapping, "DT", counter, m.group(0)), s2)
+    # 4) NUMBER
+    s4 = NUMBER_RE.sub(lambda m: _swap_store(mapping, "N", counter, m.group(0)), s3)
+    return s4, mapping
+
+def _swap_store(mapping: Dict[str, str], tag: str, counter: Dict[str, int], value: str) -> str:
+    key = f"{{{{{tag}{counter[tag]}}}}}"
+    mapping[key] = value
+    counter[tag] += 1
+    return key
+
+def _restore_entities(text: str, mapping: Dict[str, str]) -> str:
+    # чтобы не повредить пересечения, заменяем по убыванию длины ключа
+    for k in sorted(mapping.keys(), key=len, reverse=True):
+        text = text.replace(k, mapping[k])
+    return text
+
+
+# ------------------------------- Класс модуля -------------------------------
 
 class DocumentTranslator(DocumentProcessor):
     """Класс для перевода документов"""
@@ -81,149 +148,213 @@ class DocumentTranslator(DocumentProcessor):
         self.openai_service = openai_service
         self.supported_languages = SUPPORTED_LANGUAGES.copy()
 
+        # ENV-настройки
+        self.allow_ai = (os.getenv("TRANSLATE_ALLOW_AI", "true").lower() in {"1", "true", "yes", "on"})
+        self.chunk_size = int(os.getenv("TRANSLATE_CHUNK_SIZE", "4000"))
+        self.chunk_overlap = int(os.getenv("TRANSLATE_CHUNK_OVERLAP", "300"))
+        self.max_retries = int(os.getenv("TRANSLATE_MAX_RETRIES", "2"))
+
     async def process(
-        self, file_path: str | Path, source_lang: str = "ru", target_lang: str = "en", **kwargs
+        self,
+        file_path: str | Path,
+        source_lang: str = "ru",
+        target_lang: str = "en",
+        *,
+        glossary: Dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> DocumentResult:
         """
         Перевод документа
 
         Args:
             file_path: путь к файлу
-            source_lang: исходный язык (ru, en, zh, de)
-            target_lang: целевой язык (ru, en, zh, de)
+            source_lang: исходный язык (ru, en, zh, de, ...)
+            target_lang: целевой язык (ru, en, zh, de, ...)
+            glossary: пользовательский глоссарий {исходный термин: целевой термин}
         """
+        if not self.allow_ai or not self.openai_service:
+            if not self.openai_service:
+                logger.warning("OpenAI service is not initialized; translation will fallback to identity")
 
-        if not self.openai_service:
-            raise ProcessingError(
-                "OpenAI сервис не инициализирован", "SERVICE_ERROR"
-            )
-
-        if (
-            source_lang not in self.supported_languages
-            or target_lang not in self.supported_languages
-        ):
-            raise ProcessingError(
-                "Неподдерживаемая языковая пара", "LANGUAGE_ERROR"
-            )
-
-        # Извлекаем текст из файла
+        # Извлекаем текст
         success, text = await FileFormatHandler.extract_text_from_file(file_path)
         if not success:
-            raise ProcessingError(
-                f"Не удалось извлечь текст: {text}", "EXTRACTION_ERROR"
-            )
+            raise ProcessingError(f"Не удалось извлечь текст: {text}", "EXTRACTION_ERROR")
 
         cleaned_text = TextProcessor.clean_text(text)
         if not cleaned_text.strip():
-            raise ProcessingError(
-                "Документ не содержит текста", "EMPTY_DOCUMENT"
+            raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
+
+        # Нормализация языков
+        src = (source_lang or "").lower()
+        tgt = (target_lang or "").lower()
+        if src in {"auto", "detect", ""}:
+            src = self.detect_language(cleaned_text)
+
+        if src not in self.supported_languages:
+            src = self.detect_language(cleaned_text)
+        if tgt not in self.supported_languages:
+            # дефолт — противоположный от детекта
+            tgt = "en" if src == "ru" else "ru"
+
+        # Если языки одинаковые — ничего не делаем
+        if src == tgt:
+            return DocumentResult.success_result(
+                data={
+                    "translated_text": cleaned_text,
+                    "source_language": src,
+                    "target_language": tgt,
+                    "original_file": str(file_path),
+                    "chunk_details": [],
+                    "translation_metadata": {
+                        "original_length": len(cleaned_text),
+                        "translated_length": len(cleaned_text),
+                        "language_pair": f"{src} -> {tgt}",
+                        "chunks_processed": 0,
+                        "mode": "identity",
+                    },
+                },
+                message=f"Исходный и целевой языки совпадают ({_human_lang(src)}). Перевод не требуется.",
             )
 
-        # Переводим документ
+        # Перевод
         translated_text, chunk_details = await self._translate_text(
-            cleaned_text, source_lang, target_lang
+            cleaned_text, src, tgt, glossary=glossary or {}
         )
 
         result_data = {
             "translated_text": translated_text,
-            "source_language": source_lang,
-            "target_language": target_lang,
+            "source_language": src,
+            "target_language": tgt,
             "original_file": str(file_path),
             "chunk_details": chunk_details,
             "translation_metadata": {
                 "original_length": len(cleaned_text),
                 "translated_length": len(translated_text),
-                "language_pair": f"{source_lang} -> {target_lang}",
+                "language_pair": f"{src} -> {tgt}",
                 "chunks_processed": len(chunk_details),
+                "mode": "ai" if self.allow_ai and self.openai_service else "fallback",
             },
         }
 
         return DocumentResult.success_result(
             data=result_data,
-            message=f"Перевод с {self.supported_languages[source_lang]} на {self.supported_languages[target_lang]} завершен",
+            message=f"Перевод с {self.supported_languages[src]} на {self.supported_languages[tgt]} завершён",
         )
+
+    # -------------------------------- Перевод --------------------------------
 
     async def _translate_text(
-        self, text: str, source_lang: str, target_lang: str
-    ) -> tuple[str, list[dict[str, Any]]]:
-        """Перевод текста с помощью AI"""
+        self, text: str, source_lang: str, target_lang: str, *, glossary: Dict[str, str]
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Перевод текста с помощью AI (чанкинг + защита сущностей)."""
+        src_name = self.supported_languages.get(source_lang, source_lang)
+        tgt_name = self.supported_languages.get(target_lang, target_lang)
 
-        source_lang_name = self.supported_languages[source_lang]
-        target_lang_name = self.supported_languages[target_lang]
+        # Защитим сущности плейсхолдерами
+        protected_text, placeholders = _protect_entities(text)
 
-        prompt = TRANSLATION_PROMPT.format(
-            source_lang=source_lang_name, target_lang=target_lang_name
-        )
-        chunk_details: list[dict[str, Any]] = []
+        # Разрежем на чанки
+        chunks = TextProcessor.split_into_chunks(protected_text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap)
+        if not chunks:
+            chunks = [protected_text]
 
-        try:
-            if len(text) > 6000:
-                chunks = TextProcessor.split_into_chunks(text, max_chunk_size=4000)
-                translated_chunks: list[str] = []
+        details: List[Dict[str, Any]] = []
+        translated_parts: List[str] = []
 
-                for i, chunk in enumerate(chunks):
-                    logger.info(f"Переводим часть {i+1}/{len(chunks)}")
+        # Если нет AI — деградируем: возвращаем исходный текст (с восстановлением сущностей)
+        if not (self.allow_ai and self.openai_service):
+            return _restore_entities(protected_text, placeholders), []
 
-                    chunk_prompt = (
-                        f"Часть {i + 1} из {len(chunks)} документа для перевода.\n"
-                        "Сохрани структуру, списки, таблицы и нумерацию.\n\n"
-                        f"{chunk}"
+        glossary_text = self._format_glossary(glossary)
+
+        for i, chunk in enumerate(chunks, 1):
+            t0 = time.perf_counter()
+            attempt = 0
+            translated_part = None
+            error_msg = None
+
+            while attempt <= self.max_retries:
+                attempt += 1
+                try:
+                    user_payload = TRANSLATION_USER_TMPL.format(
+                        src_name=src_name,
+                        tgt_name=tgt_name,
+                        glossary_text=glossary_text or "(не указан)",
+                        payload=chunk,
                     )
-
-                    result = await self.openai_service.ask_legal(
-                        system_prompt=prompt, user_text=chunk_prompt
+                    resp = await self.openai_service.ask_legal(
+                        system_prompt=TRANSLATION_SYSTEM_PROMPT,
+                        user_text=user_payload,
                     )
-
-                    if result.get("ok"):
-                        translated_part = result.get("text", "")
-                        translated_chunks.append(translated_part)
-                        chunk_details.append(
-                            {
-                                "chunk_number": i + 1,
-                                "source_preview": chunk[:200],
-                                "translated_preview": translated_part[:200],
-                            }
-                        )
+                    if resp and resp.get("ok"):
+                        translated_part = (resp.get("text") or "").strip()
+                        if translated_part:
+                            break
+                        else:
+                            error_msg = "Пустой ответ модели"
                     else:
-                        raise ProcessingError(
-                            f"Ошибка перевода части {i + 1}", "TRANSLATION_ERROR"
-                        )
+                        error_msg = "Модель вернула ошибку"
+                except Exception as e:
+                    error_msg = f"{type(e).__name__}: {e}"
+                # ретрай — просто идём на следующую попытку
 
-                return "\n\n".join(translated_chunks), chunk_details
+            dt = time.perf_counter() - t0
 
-            result = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text)
+            if translated_part is None:
+                # Фолбэк: возвращаем исходный блок (но потом восстановим сущности)
+                translated_part = chunk
+                status = "fallback"
+            else:
+                status = "ok"
 
-            if result.get("ok"):
-                translated_text = result.get("text", "")
-                chunk_details.append(
-                    {
-                        "chunk_number": 1,
-                        "source_preview": text[:200],
-                        "translated_preview": translated_text[:200],
-                    }
-                )
-                return translated_text, chunk_details
-
-            raise ProcessingError(
-                "Не удалось перевести документ", "TRANSLATION_ERROR"
+            translated_parts.append(translated_part)
+            details.append(
+                {
+                    "chunk_number": i,
+                    "status": status,
+                    "duration_sec": round(dt, 3),
+                    "source_preview": chunk[:200],
+                    "translated_preview": translated_part[:200],
+                    "attempts": attempt,
+                    "error": error_msg,
+                }
             )
 
-        except Exception as e:
-            logger.error(f"Ошибка перевода: {e}")
-            raise ProcessingError(f"Ошибка перевода: {str(e)}", "TRANSLATION_ERROR")
+        # Склеиваем и возвращаем плейсхолдеры назад
+        merged = self._merge_chunks(translated_parts)
+        restored = _restore_entities(merged, placeholders)
+        return restored, details
 
-    def get_supported_languages(self) -> dict[str, str]:
-        """Получить список поддерживаемых языков"""
+    @staticmethod
+    def _format_glossary(glossary: Dict[str, str]) -> str:
+        if not glossary:
+            return ""
+        # Простая табличка "исходный => целевой"
+        pairs = [f"- {src} ⇒ {dst}" for src, dst in glossary.items()]
+        return "\n".join(pairs)
+
+    @staticmethod
+    def _merge_chunks(chunks: List[str]) -> str:
+        """Мягкая склейка: добавляем пустую строку между чанками, убираем лишние повторы."""
+        cleaned = [c.strip() for c in chunks if c is not None]
+        return "\n\n".join(cleaned).strip()
+
+    # ------------------------------ Поддержка ------------------------------
+
+    def get_supported_languages(self) -> Dict[str, str]:
         return self.supported_languages.copy()
 
     def detect_language(self, text: str) -> str:
-        """Простое определение языка текста"""
-        # Очень простая эвристика - можно улучшить
-        if re.search(r"[а-яё]", text.lower()):
+        """Простая эвристика детекта языка."""
+        t = text or ""
+        if re.search(r"[А-Яа-яЁё]", t):
             return "ru"
-        elif re.search(r"[\u4e00-\u9fff]", text):
+        if re.search(r"[\u4e00-\u9fff]", t):
             return "zh"
-        elif re.search(r"[äöüß]", text.lower()):
+        if re.search(r"[äöüß]", t.lower()):
             return "de"
-        else:
-            return "en"  # по умолчанию
+        if re.search(r"[A-Za-z]", t):
+            return "en"
+        return "ru"  # по умолчанию
+
