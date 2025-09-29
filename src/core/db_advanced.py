@@ -935,7 +935,7 @@ class DatabaseAdvanced:
             try:
                 cursor = await conn.execute(
                     """SELECT id, request_id, user_id, rating, feedback_text, created_at, username, answer_text 
-                       FROM ratings WHERE request_id = ? AND rating != 0 AND user_id = ?""",
+                       FROM ratings WHERE request_id = ? AND user_id = ?""",
                     (request_id, user_id),
                 )
                 row = await cursor.fetchone()
