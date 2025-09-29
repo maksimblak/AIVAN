@@ -77,6 +77,8 @@ class RatingRecord:
     rating: int  # 1 = like, -1 = dislike
     feedback_text: str | None
     created_at: int
+    username: str | None = None
+    answer_text: str | None = None
 
 
 class ConnectionPool:
@@ -369,6 +371,8 @@ class DatabaseAdvanced:
                     rating INTEGER NOT NULL, -- 1 = like, -1 = dislike
                     feedback_text TEXT,
                     created_at INTEGER NOT NULL,
+                    username TEXT,
+                    answer_text TEXT,
                     FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE CASCADE,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 );
@@ -387,6 +391,8 @@ class DatabaseAdvanced:
                     "ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;",
                     "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE ratings ADD COLUMN username TEXT;",
+                    "ALTER TABLE ratings ADD COLUMN answer_text TEXT;",
                 ]
 
                 for migration in migrations:
@@ -888,19 +894,32 @@ class DatabaseAdvanced:
         user_id: int,
         rating: int,  # 1 = like, -1 = dislike
         feedback_text: str | None = None,
+        *,
+        username: str | None = None,
+        answer_text: str | None = None,
     ) -> bool:
-        """Добавление/обновление рейтинга для запроса"""
+        """Insert or update rating and optional feedback"""
         async with self.pool.acquire() as conn:
             try:
                 now = int(time.time())
 
-                # Используем INSERT OR REPLACE для обновления существующего рейтинга
-                await conn.execute(
-                    """INSERT OR REPLACE INTO ratings 
-                       (request_id, user_id, rating, feedback_text, created_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (request_id, user_id, rating, feedback_text, now),
+                cursor = await conn.execute(
+                    """INSERT INTO ratings 
+                       (request_id, user_id, rating, feedback_text, created_at, username, answer_text)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(request_id, user_id) DO UPDATE SET
+                           rating = excluded.rating,
+                           feedback_text = COALESCE(excluded.feedback_text, ratings.feedback_text),
+                           username = COALESCE(excluded.username, ratings.username),
+                           answer_text = COALESCE(excluded.answer_text, ratings.answer_text),
+                           created_at = CASE
+                               WHEN ratings.created_at IS NULL OR ratings.created_at = 0 THEN excluded.created_at
+                               ELSE ratings.created_at
+                           END
+                    """,
+                    (request_id, user_id, rating, feedback_text, now, username, answer_text),
                 )
+                await cursor.close()
 
                 self.query_count += 1 if self.enable_metrics else 0
                 return True
@@ -915,8 +934,8 @@ class DatabaseAdvanced:
         async with self.pool.acquire() as conn:
             try:
                 cursor = await conn.execute(
-                    """SELECT id, request_id, user_id, rating, feedback_text, created_at 
-                       FROM ratings WHERE request_id = ? AND user_id = ?""",
+                    """SELECT id, request_id, user_id, rating, feedback_text, created_at, username, answer_text 
+                       FROM ratings WHERE request_id = ? AND rating != 0 AND user_id = ?""",
                     (request_id, user_id),
                 )
                 row = await cursor.fetchone()
@@ -940,7 +959,7 @@ class DatabaseAdvanced:
                        SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as likes,
                        SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as dislikes,
                        AVG(rating) as avg_rating
-                       FROM ratings WHERE request_id = ?""",
+                       FROM ratings WHERE request_id = ? AND rating != 0""",
                     (request_id,),
                 )
                 row = await cursor.fetchone()
@@ -976,7 +995,7 @@ class DatabaseAdvanced:
                        SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as total_dislikes,
                        AVG(rating) as avg_rating,
                        COUNT(CASE WHEN feedback_text IS NOT NULL THEN 1 END) as feedback_count
-                       FROM ratings WHERE created_at >= ?""",
+                       FROM ratings WHERE created_at >= ? AND rating != 0""",
                     (period_start,),
                 )
                 row = await cursor.fetchone()
