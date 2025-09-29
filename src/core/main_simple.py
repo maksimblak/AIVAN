@@ -41,6 +41,7 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    User,
 )
 from dotenv import load_dotenv
 
@@ -73,6 +74,41 @@ from src.telegram_legal_bot.config import load_config
 from src.telegram_legal_bot.ratelimit import RateLimiter
 
 SAFE_LIMIT = 3900  # чуть меньше телеграмного 4096 (запас на теги)
+
+def _format_user_display(user: User | None) -> str:
+    if user is None:
+        return ""
+    parts: list[str] = []
+    if user.username:
+        parts.append(f"@{user.username}")
+    name = " ".join(filter(None, [user.first_name, user.last_name])).strip()
+    if name and name not in parts:
+        parts.append(name)
+    if not parts and user.first_name:
+        parts.append(user.first_name)
+    if not parts:
+        parts.append(str(user.id))
+    return " ".join(parts)
+
+
+async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, answer_text: str) -> None:
+    if db is None or not answer_text.strip():
+        return
+    if telegram_user is None:
+        return
+    add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
+    if not add_rating_fn:
+        return
+    username = _format_user_display(telegram_user)
+    await add_rating_fn(
+        request_id,
+        telegram_user.id,
+        0,
+        None,
+        username=username,
+        answer_text=answer_text,
+    )
+
 # ============ КОНФИГУРАЦИЯ ============
 
 load_dotenv()
@@ -697,6 +733,7 @@ async def process_question(message: Message, *, text_override: str | None = None
         stream_manager: StreamManager | None = None
         had_stream_content = False
         stream_final_text: str | None = None
+        final_answer_text: str | None = None
         result: dict[str, Any] = {}
         request_start_time = time.time()
         request_record_id: int | None = None
@@ -806,11 +843,13 @@ async def process_question(message: Message, *, text_override: str | None = None
         if USE_STREAMING and had_stream_content and stream_manager is not None:
             final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
             combined_stream_text = (final_stream_text.rstrip() + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
+            final_answer_text = combined_stream_text
             await stream_manager.finalize(combined_stream_text)
         else:
             text_to_send = (isinstance(result, dict) and (result.get("text") or "")) or ""
             if text_to_send:
                 combined_text = f"{text_to_send.rstrip()}\n\n{time_footer_raw}"
+                final_answer_text = combined_text
                 await send_html_text(
                     bot=message.bot,
                     chat_id=message.chat.id,
@@ -819,6 +858,9 @@ async def process_question(message: Message, *, text_override: str | None = None
                 )
 
         # Сообщения про квоту/подписку
+        if final_answer_text:
+            user_session.last_answer_snapshot = final_answer_text
+
         if quota_text and not quota_is_trial:
             with suppress(Exception):
                 await message.answer(quota_text, parse_mode=ParseMode.HTML)
@@ -842,6 +884,9 @@ async def process_question(message: Message, *, text_override: str | None = None
                         error_type=None,
                     )
         if request_record_id:
+            if final_answer_text and message.from_user:
+                with suppress(Exception):
+                    await _ensure_rating_snapshot(request_record_id, message.from_user, final_answer_text)
             with suppress(Exception):
                 await send_rating_request(message, request_record_id)
 
@@ -1252,7 +1297,7 @@ async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
 
 
 async def handle_pending_feedback(message: Message, user_session: UserSession, text_override: str | None = None):
-    """Обработка текстового комментария для рейтинга"""
+    """Обработка текстового комментария после оценки"""
     if not message.from_user:
         return
 
@@ -1270,80 +1315,129 @@ async def handle_pending_feedback(message: Message, user_session: UserSession, t
     request_id = user_session.pending_feedback_request_id
     feedback_text = feedback_source.strip()
 
-    # Очищаем pending состояние
+    # Сбрасываем ожидание комментария после обработки
     user_session.pending_feedback_request_id = None
 
     add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
     if not add_rating_fn:
-        await message.answer("❌ Система обратной связи недоступна")
+        await message.answer("❌ Сервис отзывов временно недоступен")
         return
 
-    success = await add_rating_fn(request_id, user_id, -1, feedback_text)
+    get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
+    existing_rating = await get_rating_fn(request_id, user_id) if get_rating_fn else None
+
+    rating_value = -1
+    answer_snapshot = ""
+    if existing_rating:
+        if existing_rating.rating not in (None, 0):
+            rating_value = existing_rating.rating
+        if getattr(existing_rating, 'answer_text', None):
+            answer_snapshot = existing_rating.answer_text or ""
+
+    if not answer_snapshot:
+        session_snapshot = getattr(user_session, "last_answer_snapshot", None)
+        if session_snapshot:
+            answer_snapshot = session_snapshot
+
+    username_display = _format_user_display(message.from_user)
+
+    success = await add_rating_fn(
+        request_id,
+        user_id,
+        rating_value,
+        feedback_text,
+        username=username_display,
+        answer_text=answer_snapshot,
+    )
     if success:
         await message.answer(
-            "✅ <b>Спасибо за развернутый отзыв!</b>\n\n"
-            "Ваш комментарий поможет нам улучшить качество ответов.",
+            "Спасибо за подробный отзыв!\n\n"
+            "Ваш комментарий поможет нам сделать ответы лучше.",
             parse_mode=ParseMode.HTML,
         )
-        logger.info(f"Received feedback for request {request_id} from user {user_id}")
+        logger.info(
+            "Received feedback for request %s from user %s: %s",
+            request_id,
+            user_id,
+            feedback_text,
+        )
+        user_session.last_answer_snapshot = None
     else:
-        await message.answer("❌ Ошибка сохранения комментария")
+        await message.answer("❌ Не удалось сохранить отзыв")
 
 
 async def handle_rating_callback(callback: CallbackQuery):
-    """Обработчик нажатий на кнопки рейтинга"""
+    """Обработка кнопок рейтинга и запрос текстового комментария"""
     if not callback.data or not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
+        await callback.answer("Некорректные данные")
         return
 
     try:
         user_id = _ensure_valid_user_id(callback.from_user.id, context="handle_rating_callback")
     except ValidationException as exc:
-        logger.warning("Invalid user id in rating callback: %s", exc)
-        await callback.answer("❌ Ошибка пользователя", show_alert=True)
+        logger.warning("Некорректный пользователь id in rating callback: %s", exc)
+        await callback.answer("Некорректный пользователь", show_alert=True)
         return
+
+    user_session = get_user_session(user_id)
 
     try:
         parts = callback.data.split("_")
         if len(parts) != 3:
-            await callback.answer("❌ Неверный формат данных")
+            await callback.answer("Некорректный формат данных")
             return
         action = parts[1]
         if action not in {"like", "dislike"}:
-            await callback.answer("❌ Неверная команда")
+            await callback.answer("Неизвестное действие")
             return
         request_id = int(parts[2])
     except (ValueError, IndexError):
-        await callback.answer("❌ Неверный формат данных")
+        await callback.answer("Некорректный формат данных")
         return
 
     get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
-    if get_rating_fn:
-        existing_rating = await get_rating_fn(request_id, user_id)
-        if existing_rating:
-            await callback.answer("ℹ️ Вы уже оценивали этот ответ")
-            return
+    existing_rating = await get_rating_fn(request_id, user_id) if get_rating_fn else None
+
+    if existing_rating and existing_rating.rating not in (None, 0):
+        await callback.answer("По этому ответу уже собрана обратная связь")
+        return
 
     add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
     if not add_rating_fn:
-        await callback.answer("❌ Система рейтинга недоступна")
+        await callback.answer("Сервис рейтингов временно недоступен")
         return
 
     rating_value = 1 if action == "like" else -1
-    success = await add_rating_fn(request_id, user_id, rating_value)
+    answer_snapshot = ""
+    if existing_rating and getattr(existing_rating, 'answer_text', None):
+        answer_snapshot = existing_rating.answer_text or ""
+    if not answer_snapshot:
+        session_snapshot = getattr(user_session, "last_answer_snapshot", None)
+        if session_snapshot:
+            answer_snapshot = session_snapshot
+    username_display = _format_user_display(callback.from_user)
+
+    success = await add_rating_fn(
+        request_id,
+        user_id,
+        rating_value,
+        None,
+        username=username_display,
+        answer_text=answer_snapshot,
+    )
     if not success:
-        await callback.answer("❌ Ошибка сохранения оценки")
+        await callback.answer("Не удалось сохранить оценку")
         return
 
     if action == "like":
-        await callback.answer("✅ Спасибо за оценку! Рады, что ответ был полезен.")
+        await callback.answer("Спасибо за оценку! Рады, что ответ оказался полезным.")
         await callback.message.edit_text(
             "💬 <b>Спасибо за оценку!</b> ✅ Отмечено как полезное",
             parse_mode=ParseMode.HTML,
         )
         return
 
-    await callback.answer("📝 Спасибо за обратную связь!")
+    await callback.answer("Спасибо за обратную связь!")
     feedback_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1361,8 +1455,7 @@ async def handle_rating_callback(callback: CallbackQuery):
         ]
     )
     await callback.message.edit_text(
-        "💬 <b>Что можно улучшить?</b>\n\n"
-        "Ваша обратная связь поможет нам стать лучше:",
+        "💬 <b>Что можно улучшить?</b>\n\nВаша обратная связь поможет нам стать лучше:",
         reply_markup=feedback_keyboard,
         parse_mode=ParseMode.HTML,
     )
@@ -1377,7 +1470,7 @@ async def handle_feedback_callback(callback: CallbackQuery):
     try:
         user_id = _ensure_valid_user_id(callback.from_user.id, context="handle_feedback_callback")
     except ValidationException as exc:
-        logger.warning("Invalid user id in feedback callback: %s", exc)
+        logger.warning("Некорректный пользователь id in feedback callback: %s", exc)
         await callback.answer("❌ Ошибка пользователя", show_alert=True)
         return
 
@@ -2463,7 +2556,7 @@ async def cmd_ratings_stats(message: Message):
     try:
         user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_ratings_stats")
     except ValidationException as exc:
-        logger.warning("Invalid user id in cmd_ratings_stats: %s", exc)
+        logger.warning("Некорректный пользователь id in cmd_ratings_stats: %s", exc)
         await message.answer("❌ Ошибка идентификатора пользователя")
         return
 
@@ -2519,7 +2612,7 @@ async def cmd_error_stats(message: Message):
     try:
         user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_error_stats")
     except ValidationException as exc:
-        logger.warning("Invalid user id in cmd_error_stats: %s", exc)
+        logger.warning("Некорректный пользователь id in cmd_error_stats: %s", exc)
         await message.answer("❌ Ошибка идентификатора пользователя")
         return
 
