@@ -230,7 +230,6 @@ class OCRConverter(DocumentProcessor):
                 try:
                     import cv2  # type: ignore
                     import numpy as np  # type: ignore
-
                     arr = np.array(im)
                     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
                     arr = clahe.apply(arr)
