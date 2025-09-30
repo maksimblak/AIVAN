@@ -14,6 +14,112 @@ from openai import AsyncOpenAI
 
 load_dotenv()
 
+
+
+LEGAL_RESPONSE_SCHEMA = {
+    "name": "legal_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Short summary for the user",
+            },
+            "legal_basis": {
+                "type": "array",
+                "description": "List of cited legal sources with references",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "reference": {
+                            "type": "string",
+                            "description": "For example: Civil Code, Article 432",
+                        },
+                        "explanation": {
+                            "type": "string",
+                            "description": "Why the norm is applicable",
+                        },
+                    },
+                    "required": ["reference"],
+                    "additionalProperties": False,
+                },
+            },
+            "analysis": {
+                "type": "string",
+                "description": "Key reasoning and conclusions",
+            },
+            "risks": {
+                "type": "array",
+                "description": "Potential risks or alternative interpretations",
+                "items": {"type": "string"},
+            },
+            "disclaimer": {
+                "type": "string",
+                "description": "Disclaimer that the answer is informational",
+            },
+        },
+        "required": ["summary", "legal_basis", "analysis", "disclaimer"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _format_legal_sections(payload: dict[str, Any]) -> str:
+    sections = [
+        ("summary", "Summary"),
+        ("legal_basis", "Legal Basis"),
+        ("analysis", "Analysis"),
+        ("risks", "Risks"),
+        ("disclaimer", "Disclaimer"),
+    ]
+    lines: list[str] = []
+
+    def _ensure_lines(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if isinstance(value, list):
+            collected: list[str] = []
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    collected.append(item.strip())
+                elif isinstance(item, dict):
+                    ref = (item.get('reference') or item.get('citation') or '').strip()
+                    expl = (item.get('explanation') or item.get('comment') or '').strip()
+                    parts = [p for p in (ref, expl) if p]
+                    if parts:
+                        collected.append(': '.join(parts))
+            return collected
+        return []
+
+    for key, title in sections:
+        values = _ensure_lines(payload.get(key))
+        if not values:
+            continue
+        lines.append(f"{title}:")
+        if key in {"legal_basis", "risks"}:
+            lines.extend(f"- {item}" for item in values)
+        else:
+            lines.extend(values)
+        lines.append('')
+
+    return "\n".join(item for item in lines if item).strip()
+
+
+def format_legal_response_text(raw: str) -> str:
+    if not raw:
+        return ''
+    candidate = raw.strip()
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return candidate
+    if isinstance(data, dict):
+        formatted = _format_legal_sections(data)
+        if formatted:
+            return formatted
+    return candidate
+
+
 logger = logging.getLogger(__name__)
 REDACT_HEADERS = {"authorization", "proxy-authorization", "x-api-key", "openai-api-key"}
 
@@ -127,6 +233,14 @@ async def _ask_legal_internal(
     max_out = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
     verb = os.getenv("OPENAI_VERBOSITY", "medium").lower()
     effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").lower()
+    try:
+        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.15"))
+    except (TypeError, ValueError):
+        temperature = 0.15
+    try:
+        top_p = float(os.getenv("OPENAI_TOP_P", "0.3"))
+    except (TypeError, ValueError):
+        top_p = 0.3
 
     base = dict(
         model=model,
@@ -137,6 +251,9 @@ async def _ask_legal_internal(
         text={"verbosity": verb},
         reasoning={"effort": effort},
         max_output_tokens=max_out,
+        temperature=temperature,
+        top_p=top_p,
+        response_format={"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA},
     )
     # web-инструмент по умолчанию можно отключить переменной окружения
     if not (os.getenv("DISABLE_WEB", "0").strip() in ("1", "true", "yes", "on")):
@@ -214,19 +331,19 @@ async def _ask_legal_internal(
                                 text = "\n\n".join(chunks) if chunks else ""
 
                             # Финальный колбэк
-                            if callback and (accumulated_text or text):
+                            final_raw = (text or accumulated_text or "").strip()
+                            formatted_final = format_legal_response_text(final_raw) if final_raw else ""
+                            if callback and formatted_final:
                                 try:
-                                    full = text or accumulated_text
                                     if asyncio.iscoroutinefunction(callback):
-                                        await callback(full, True)
+                                        await callback(formatted_final, True)
                                     else:
-                                        callback(full, True)
+                                        callback(formatted_final, True)
                                 except Exception as cb_err:
                                     logger.warning(f"Final callback error: {cb_err}")
 
-                            full_text = (text or accumulated_text or "").strip()
-                            if full_text:
-                                return {"ok": True, "text": full_text, "usage": usage_info}
+                            if formatted_final:
+                                return {"ok": True, "text": formatted_final, "usage": usage_info}
 
                     except Exception as stream_error:
                         logger.error(f"Streaming error: {stream_error}")
@@ -236,7 +353,8 @@ async def _ask_legal_internal(
                 resp = await oai.responses.create(**payload)
                 text = getattr(resp, "output_text", None)
                 if text and text.strip():
-                    return {"ok": True, "text": text.strip(), "usage": getattr(resp, "usage", None)}
+                    formatted_text = format_legal_response_text(text)
+                    return {"ok": True, "text": formatted_text, "usage": getattr(resp, "usage", None)}
 
                 # запасной парсер
                 items = getattr(resp, "output", []) or []
@@ -247,9 +365,10 @@ async def _ask_legal_internal(
                         if t:
                             chunks.append(t)
                 if chunks:
+                    joined = "\n\n".join(chunks).strip()
                     return {
                         "ok": True,
-                        "text": "\n\n".join(chunks).strip(),
+                        "text": format_legal_response_text(joined),
                         "usage": getattr(resp, "usage", None),
                     }
 

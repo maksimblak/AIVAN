@@ -752,6 +752,12 @@ async def process_question(message: Message, *, text_override: str | None = None
                 selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
                 user_session.practice_search_mode = False
 
+            if text_override is not None and getattr(message, "voice", None):
+                selected_prompt = (
+                    selected_prompt
+                    + "\n\nГолосовой режим: сохрани указанную структуру блоков, обязательно перечисли нормативные акты с точными реквизитами и уточни, что текстовый ответ уже предоставлен в чате."
+                )
+
             # --- Запрос к OpenAI (стрим/нестрим) ---
             if openai_service is None:
                 raise SystemException("OpenAI service not initialized", error_context)
