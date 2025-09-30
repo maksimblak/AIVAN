@@ -137,8 +137,8 @@ def create_container(settings: AppSettings) -> DIContainer:
 
     container.register_factory(
         AccessService,
-        lambda db: AccessService(
-            db=db,
+        lambda: AccessService(
+            db=container.get(DatabaseAdvanced),
             trial_limit=settings.trial_requests,
             admin_ids=set(settings.admin_ids),
         ),

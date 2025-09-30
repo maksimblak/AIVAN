@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 import tempfile
 from contextlib import suppress
@@ -43,9 +42,7 @@ from aiogram.types import (
     PreCheckoutQuery,
     User,
 )
-from dotenv import load_dotenv
 
-from src.bot.logging_setup import setup_logging
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
 from src.bot.status_manager import ProgressStatus, progress_router
 
@@ -69,8 +66,9 @@ from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
 from src.core.session_store import SessionStore, UserSession
 from src.core.validation import InputValidator, ValidationSeverity
+from src.core.runtime import AppRuntime, DerivedRuntime, WelcomeMedia
+from src.core.settings import AppSettings
 from src.documents.base import ProcessingError
-from src.telegram_legal_bot.config import load_config
 from src.telegram_legal_bot.ratelimit import RateLimiter
 
 SAFE_LIMIT = 3900  # чуть меньше телеграмного 4096 (запас на теги)
@@ -89,6 +87,45 @@ def _format_user_display(user: User | None) -> str:
     if not parts:
         parts.append(str(user.id))
     return " ".join(parts)
+
+
+
+# Runtime-managed globals (synchronised via refresh_runtime_globals)
+# Defaults keep module usable before runtime initialisation.
+WELCOME_MEDIA: WelcomeMedia | None = None
+BOT_TOKEN = ""
+USE_ANIMATION = True
+USE_STREAMING = True
+MAX_MESSAGE_LENGTH = 4000
+DB_PATH = ""
+TRIAL_REQUESTS = 0
+SUB_DURATION_DAYS = 0
+RUB_PROVIDER_TOKEN = ""
+SUB_PRICE_RUB = 0
+SUB_PRICE_RUB_KOPEKS = 0
+STARS_PROVIDER_TOKEN = ""
+SUB_PRICE_XTR = 0
+DYNAMIC_PRICE_XTR = 0
+ADMIN_IDS: set[int] = set()
+USER_SESSIONS_MAX = 0
+USER_SESSION_TTL_SECONDS = 0
+
+# Service-like dependencies
+db = None
+rate_limiter = None
+access_service = None
+openai_service = None
+audio_service = None
+session_store = None
+crypto_provider = None
+error_handler = None
+document_manager = None
+response_cache = None
+stream_manager = None
+metrics_collector = None
+task_manager = None
+health_checker = None
+scaling_components = None
 
 
 async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, answer_text: str) -> None:
@@ -111,37 +148,82 @@ async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, a
 
 # ============ КОНФИГУРАЦИЯ ============
 
-load_dotenv()
-setup_logging()
 logger = logging.getLogger("ai-ivan.simple")
 
-config = load_config()
-
-_CONFIG_VALIDATION_RULES: dict[str, tuple[object, type]] = {
-    "trial_requests": (config.trial_requests, int),
-    "subscription_price_rub": (config.subscription_price_rub, int),
-    "subscription_price_xtr": (config.subscription_price_xtr, int),
-    "rate_limit_requests": (config.rate_limit_requests, int),
-    "rate_limit_window_seconds": (config.rate_limit_window_seconds, int),
-    "user_sessions_max": (config.user_sessions_max, int),
-    "user_session_ttl_seconds": (config.user_session_ttl_seconds, int),
-}
-
-for _cfg_key, (_cfg_value, _cfg_type) in _CONFIG_VALIDATION_RULES.items():
-    validation_result = InputValidator.validate_config_value(_cfg_key, _cfg_value, _cfg_type)
-    if not validation_result.is_valid:
-        joined_errors = '; '.join(validation_result.errors or []) or 'unknown'
-        logger.warning("Config validation issue for %s: %s", _cfg_key, joined_errors)
+_runtime: AppRuntime | None = None
 
 
-@dataclass(frozen=True)
-class WelcomeMedia:
-    path: Path
-    media_type: str
+def set_runtime(runtime: AppRuntime) -> None:
+    global _runtime
+    _runtime = runtime
+    _sync_runtime_globals()
+
+
+def get_runtime() -> AppRuntime:
+    if _runtime is None:
+        raise RuntimeError("Application runtime is not initialized")
+    return _runtime
+
+
+def settings() -> AppSettings:
+    return get_runtime().settings
+
+
+def derived() -> DerivedRuntime:
+    return get_runtime().derived
+
+
+def _sync_runtime_globals() -> None:
+    if _runtime is None:
+        return
+    cfg = _runtime.settings
+    drv = _runtime.derived
+    g = globals()
+    g.update({
+        'WELCOME_MEDIA': drv.welcome_media,
+        'BOT_TOKEN': cfg.telegram_bot_token,
+        'USE_ANIMATION': cfg.use_status_animation,
+        'USE_STREAMING': cfg.use_streaming,
+        'MAX_MESSAGE_LENGTH': drv.max_message_length,
+        'SAFE_LIMIT': drv.safe_limit,
+        'DB_PATH': cfg.db_path,
+        'TRIAL_REQUESTS': cfg.trial_requests,
+        'SUB_DURATION_DAYS': cfg.sub_duration_days,
+        'RUB_PROVIDER_TOKEN': cfg.telegram_provider_token_rub,
+        'SUB_PRICE_RUB': cfg.subscription_price_rub,
+        'SUB_PRICE_RUB_KOPEKS': drv.subscription_price_rub_kopeks,
+        'STARS_PROVIDER_TOKEN': cfg.telegram_provider_token_stars,
+        'SUB_PRICE_XTR': cfg.subscription_price_xtr,
+        'DYNAMIC_PRICE_XTR': drv.dynamic_price_xtr,
+        'ADMIN_IDS': drv.admin_ids,
+        'USER_SESSIONS_MAX': cfg.user_sessions_max,
+        'USER_SESSION_TTL_SECONDS': cfg.user_session_ttl_seconds,
+        'db': _runtime.db,
+        'rate_limiter': _runtime.rate_limiter,
+        'access_service': _runtime.access_service,
+        'openai_service': _runtime.openai_service,
+        'audio_service': _runtime.audio_service,
+        'session_store': _runtime.session_store,
+        'crypto_provider': _runtime.crypto_provider,
+        'error_handler': _runtime.error_handler,
+        'document_manager': _runtime.document_manager,
+        'response_cache': _runtime.response_cache,
+        'stream_manager': _runtime.stream_manager,
+        'metrics_collector': _runtime.metrics_collector,
+        'task_manager': _runtime.task_manager,
+        'health_checker': _runtime.health_checker,
+        'scaling_components': _runtime.scaling_components,
+    })
+
+
+def refresh_runtime_globals() -> None:
+    _sync_runtime_globals()
+
+
 
 class ResponseTimer:
     def __init__(self) -> None:
-        self._t0 = None
+        self._t0: float | None = None
         self.duration = 0.0
 
     def start(self) -> None:
@@ -154,77 +236,6 @@ class ResponseTimer:
     def get_duration_text(self) -> str:
         s = int(self.duration)
         return f"{s//60:02d}:{s%60:02d}"
-
-
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
-ANIMATION_EXTENSIONS = {".gif"}
-PHOTO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-
-
-def _discover_welcome_media() -> WelcomeMedia | None:
-    try:
-        images_dir = Path(__file__).resolve().parents[2] / "images"
-        if not images_dir.exists():
-            return None
-        for candidate in sorted(images_dir.iterdir()):
-            if not candidate.is_file():
-                continue
-            suffix = candidate.suffix.lower()
-            if suffix in VIDEO_EXTENSIONS:
-                return WelcomeMedia(candidate, "video")
-            if suffix in ANIMATION_EXTENSIONS:
-                return WelcomeMedia(candidate, "animation")
-            if suffix in PHOTO_EXTENSIONS:
-                return WelcomeMedia(candidate, "photo")
-    except Exception as discover_error:
-        logger.debug("Welcome media discovery failed: %s", discover_error)
-    return None
-
-WELCOME_MEDIA = _discover_welcome_media()
-BOT_TOKEN = config.telegram_bot_token
-USE_ANIMATION = config.use_status_animation
-USE_STREAMING = os.getenv("USE_STREAMING", "1").lower() in ("1", "true", "yes", "on")
-MAX_MESSAGE_LENGTH = 4000
-
-# Подписки и платежи
-DB_PATH = config.db_path
-TRIAL_REQUESTS = config.trial_requests
-SUB_DURATION_DAYS = config.sub_duration_days
-
-# RUB платеж через Telegram Payments (провайдер-эквайринг)
-RUB_PROVIDER_TOKEN = config.telegram_provider_token_rub
-SUB_PRICE_RUB = config.subscription_price_rub  # руб.
-SUB_PRICE_RUB_KOPEKS = int(float(SUB_PRICE_RUB) * 100)
-
-# Telegram Stars (XTR)
-STARS_PROVIDER_TOKEN = config.telegram_provider_token_stars
-SUB_PRICE_XTR = config.subscription_price_xtr  # XTR
-# Динамическая цена в XTR, рассчитанная на старте по курсу (если задан RUB_PER_XTR)
-DYNAMIC_PRICE_XTR = convert_rub_to_xtr(
-    amount_rub=float(SUB_PRICE_RUB),
-    rub_per_xtr=getattr(config, "rub_per_xtr", None),
-    default_xtr=SUB_PRICE_XTR,
-)
-
-# Админы
-ADMIN_IDS = set(config.admin_ids)
-
-# Глобальная БД/лимитер
-db: Database | DatabaseAdvanced | None = None
-rate_limiter: RateLimiter | None = None
-access_service: AccessService | None = None
-openai_service: OpenAIService | None = None
-audio_service: AudioService | None = None
-session_store: SessionStore | None = None
-crypto_provider: CryptoPayProvider | None = None
-error_handler: ErrorHandler | None = None
-document_manager: Any | None = None  # DocumentManager будет инициализирован позже
-
-# Политика сессий
-USER_SESSIONS_MAX = int(getattr(config, "user_sessions_max", 10000) or 10000)
-USER_SESSION_TTL_SECONDS = int(getattr(config, "user_session_ttl_seconds", 3600) or 3600)
-
-# ============ СОСТОЯНИЯ ДЛЯ РАБОТЫ С ДОКУМЕНТАМИ ============
 
 
 class DocumentProcessingStates(StatesGroup):
@@ -277,27 +288,26 @@ def _get_safe_db_method(method_name: str, default_return=None):
 # ============ УТИЛИТЫ ============
 
 
-def chunk_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
-    """Разбивает текст на части для отправки в Telegram"""
-    if len(text) <= max_length:
+def chunk_text(text: str, max_length: int | None = None) -> list[str]:
+    """Split long Telegram messages into chunks respecting limits."""
+    limit = max_length or derived().max_message_length
+    if len(text) <= limit:
         return [text]
 
-    chunks = []
-    current_chunk = ""
+    chunks: list[str] = []
+    current_chunk = ''
 
-    paragraphs = text.split("\n\n")
-    for paragraph in paragraphs:
-        if len(current_chunk + paragraph + "\n\n") <= max_length:
-            current_chunk += paragraph + "\n\n"
+    for paragraph in text.split('\n\n'):
+        if len(current_chunk + paragraph + '\n\n') <= limit:
+            current_chunk += paragraph + '\n\n'
         elif current_chunk:
             chunks.append(current_chunk.strip())
-            current_chunk = paragraph + "\n\n"
+            current_chunk = paragraph + '\n\n'
         else:
-            # Параграф слишком длинный, разбиваем принудительно
-            while len(paragraph) > max_length:
-                chunks.append(paragraph[:max_length])
-                paragraph = paragraph[max_length:]
-            current_chunk = paragraph + "\n\n"
+            while len(paragraph) > limit:
+                chunks.append(paragraph[:limit])
+                paragraph = paragraph[limit:]
+            current_chunk = paragraph + '\n\n'
 
     if current_chunk:
         chunks.append(current_chunk.strip())
@@ -985,7 +995,7 @@ async def send_stars_invoice(message: Message):
         raise RuntimeError("Telegram Stars provider token is not configured")
     dynamic_xtr = convert_rub_to_xtr(
         amount_rub=float(SUB_PRICE_RUB),
-        rub_per_xtr=getattr(config, "rub_per_xtr", None),
+        rub_per_xtr=settings().rub_per_xtr,
         default_xtr=SUB_PRICE_XTR,
     )
     prices = [LabeledPrice(label="Подписка на 30 дней", amount=dynamic_xtr)]
@@ -1005,7 +1015,7 @@ async def send_stars_invoice(message: Message):
 async def cmd_buy(message: Message):
     dynamic_xtr = convert_rub_to_xtr(
         amount_rub=float(SUB_PRICE_RUB),
-        rub_per_xtr=getattr(config, "rub_per_xtr", None),
+        rub_per_xtr=settings().rub_per_xtr,
         default_xtr=SUB_PRICE_XTR,
     )
     text = (
@@ -1207,7 +1217,7 @@ async def process_voice_message(message: Message):
     if not message.voice:
         return
 
-    if audio_service is None or not config.voice_mode_enabled:
+    if audio_service is None or not settings().voice_mode_enabled:
         await message.answer("Voice mode is currently unavailable. Please send text.")
         return
 
@@ -2363,6 +2373,9 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 for export in exports:
                     export_path = export.get("path")
                     if not export_path:
+                        error_msg = export.get("error")
+                        if error_msg:
+                            await message.answer(f"{Emoji.WARNING} {error_msg}")
                         continue
                     try:
                         caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
@@ -2505,6 +2518,9 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                 for export in exports:
                     export_path = export.get("path")
                     if not export_path:
+                        error_msg = export.get("error")
+                        if error_msg:
+                            await message.answer(f"{Emoji.WARNING} {error_msg}")
                         continue
                     try:
                         caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
@@ -2652,7 +2668,7 @@ async def pre_checkout(pre: PreCheckoutQuery):
             expected_currency = "XTR"
             expected_amount = convert_rub_to_xtr(
                 amount_rub=float(SUB_PRICE_RUB),
-                rub_per_xtr=getattr(config, "rub_per_xtr", None),
+                rub_per_xtr=settings().rub_per_xtr,
                 default_xtr=SUB_PRICE_XTR,
             )
         elif method == "rub":
@@ -2749,31 +2765,37 @@ async def _maybe_call(coro_or_func):
     return res
 
 
-async def main():
-    """Запуск простого бота"""
-    if not BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в переменных окружения")
+async def run_bot() -> None:
+    """Main coroutine launching the bot."""
+    ctx = get_runtime()
+    cfg = ctx.settings
+    container = ctx.get_dependency('container')
+    if container is None:
+        raise RuntimeError('DI container is not available')
 
-    # Настройка прокси (опционально)
+    refresh_runtime_globals()
+
+    if not cfg.telegram_bot_token:
+        raise RuntimeError('TELEGRAM_BOT_TOKEN is required')
+
     session = None
-    proxy_url = os.getenv("TELEGRAM_PROXY_URL", "").strip()
+    proxy_url = (cfg.telegram_proxy_url or '').strip()
     if proxy_url:
-        logger.info("Using proxy: %s", proxy_url.split("@")[-1])
-        proxy_user = os.getenv("TELEGRAM_PROXY_USER", "").strip()
-        proxy_pass = os.getenv("TELEGRAM_PROXY_PASS", "").strip()
+        logger.info('Using proxy: %s', proxy_url.split('@')[-1])
+        proxy_user = (cfg.telegram_proxy_user or '').strip()
+        proxy_pass = (cfg.telegram_proxy_pass or '').strip()
         if proxy_user and proxy_pass:
             from urllib.parse import quote, urlparse, urlunparse
 
-            if "://" not in proxy_url:
-                proxy_url = "http://" + proxy_url
+            if '://' not in proxy_url:
+                proxy_url = 'http://' + proxy_url
             u = urlparse(proxy_url)
             userinfo = f"{quote(proxy_user, safe='')}:{quote(proxy_pass, safe='')}"
             netloc = f"{userinfo}@{u.hostname}{':' + str(u.port) if u.port else ''}"
-            proxy_url = urlunparse((u.scheme, netloc, u.path or "", u.params, u.query, u.fragment))
+            proxy_url = urlunparse((u.scheme, netloc, u.path or '', u.params, u.query, u.fragment))
         session = AiohttpSession(proxy=proxy_url)
 
-    # Создаем бота и диспетчер
-    bot = Bot(BOT_TOKEN, session=session)
+    bot = Bot(cfg.telegram_bot_token, session=session)
     dp = Dispatcher()
     register_progressbar(dp)
 
@@ -2798,11 +2820,12 @@ async def main():
     from src.core.metrics import init_metrics, set_system_status
     from src.core.scaling import LoadBalancer, ScalingManager, ServiceRegistry, SessionAffinity
 
-    prometheus_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
+    prometheus_port = cfg.prometheus_port
     metrics_collector = init_metrics(
-        enable_prometheus=os.getenv("ENABLE_PROMETHEUS", "1") == "1",
+        enable_prometheus=cfg.enable_prometheus,
         prometheus_port=prometheus_port,
     )
+    ctx.metrics_collector = metrics_collector
     set_system_status("starting")
 
     logger.info("🚀 Starting AI-Ivan (simple)")
@@ -2812,63 +2835,68 @@ async def main():
 
     # Используем продвинутую базу данных с connection pooling
     logger.info("Using advanced database with connection pooling")
-    db = DatabaseAdvanced(
-        DB_PATH, max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "5")), enable_metrics=True
-    )
-
-    # Инициализация БД
+    db = ctx.db or container.get(DatabaseAdvanced)
+    ctx.db = db
     await db.init()
 
-    # Инициализация кеша
     cache_backend = await create_cache_backend(
-        redis_url=config.redis_url,
+        redis_url=cfg.redis_url,
         fallback_to_memory=True,
-        memory_max_size=int(os.getenv("CACHE_MAX_SIZE", "1000")),
+        memory_max_size=cfg.cache_max_size,
     )
 
     response_cache = ResponseCache(
         backend=cache_backend,
-        default_ttl=int(os.getenv("CACHE_TTL", "3600")),
-        enable_compression=os.getenv("CACHE_COMPRESSION", "1") == "1",
+        default_ttl=cfg.cache_ttl,
+        enable_compression=cfg.cache_compression,
     )
+    ctx.response_cache = response_cache
 
-    # Инициализация rate limiter
-    rate_limiter = RateLimiter(
-        redis_url=config.redis_url,
-        max_requests=config.rate_limit_requests,
-        window_seconds=config.rate_limit_window_seconds,
-    )
+    rate_limiter = ctx.rate_limiter or container.get(RateLimiter)
+    ctx.rate_limiter = rate_limiter
     await rate_limiter.init()
 
-    # Инициализация сервисов
-    access_service = AccessService(db=db, trial_limit=TRIAL_REQUESTS, admin_ids=ADMIN_IDS)
-    openai_service = OpenAIService(
-        cache=response_cache, enable_cache=False  # Временно отключаем кеш для тестирования
-    )
-    if config.voice_mode_enabled:
+    access_service = ctx.access_service or container.get(AccessService)
+    ctx.access_service = access_service
+
+    openai_service = ctx.openai_service or container.get(OpenAIService)
+    openai_service.cache = response_cache
+    ctx.openai_service = openai_service
+
+    if cfg.voice_mode_enabled:
         audio_service = AudioService(
-            stt_model=config.voice_stt_model,
-            tts_model=config.voice_tts_model,
-            tts_voice=config.voice_tts_voice,
-            tts_format=config.voice_tts_format,
-            max_duration_seconds=config.voice_max_duration_seconds,
+            stt_model=cfg.voice_stt_model,
+            tts_model=cfg.voice_tts_model,
+            tts_voice=cfg.voice_tts_voice,
+            tts_format=cfg.voice_tts_format,
+            max_duration_seconds=cfg.voice_max_duration_seconds,
         )
-        logger.info("Voice mode enabled (stt=%s, tts=%s, voice=%s, format=%s)",
-                    config.voice_stt_model,
-                    config.voice_tts_model,
-                    config.voice_tts_voice,
-                    config.voice_tts_format)
+        ctx.audio_service = audio_service
+        logger.info(
+            "Voice mode enabled (stt=%s, tts=%s, voice=%s, format=%s)",
+            cfg.voice_stt_model,
+            cfg.voice_tts_model,
+            cfg.voice_tts_voice,
+            cfg.voice_tts_format,
+        )
     else:
         audio_service = None
+        ctx.audio_service = None
         logger.info("Voice mode disabled")
-    session_store = SessionStore(max_size=USER_SESSIONS_MAX, ttl_seconds=USER_SESSION_TTL_SECONDS)
-    crypto_provider = CryptoPayProvider(asset=os.getenv("CRYPTO_ASSET", "USDT"))
-    error_handler = ErrorHandler(logger=logger)
 
-    # Инициализация системы документооборота
+    session_store = ctx.session_store or container.get(SessionStore)
+    ctx.session_store = session_store
+    crypto_provider = ctx.crypto_provider or container.get(CryptoPayProvider)
+    ctx.crypto_provider = crypto_provider
+
+    error_handler = ErrorHandler(logger=logger)
+    ctx.error_handler = error_handler
 
     document_manager = DocumentManager(openai_service=openai_service)
-    logger.info("📄 Document processing system initialized")
+    ctx.document_manager = document_manager
+    logger.info("Document processing system initialized")
+
+    refresh_runtime_globals()
 
     # Регистрируем recovery handler для БД
     async def database_recovery_handler(exc):
@@ -2887,11 +2915,12 @@ async def main():
 
     # Инициализация компонентов масштабирования (опционально)
     scaling_components = None
-    if os.getenv("ENABLE_SCALING", "0") == "1":
+    ctx.scaling_components = None
+    if cfg.enable_scaling:
         try:
             service_registry = ServiceRegistry(
-                redis_url=config.redis_url,
-                heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "15.0")),
+                redis_url=cfg.redis_url,
+                heartbeat_interval=cfg.heartbeat_interval,
             )
             await service_registry.initialize()
             await service_registry.start_background_tasks()
@@ -2899,7 +2928,7 @@ async def main():
             load_balancer = LoadBalancer(service_registry)
             session_affinity = SessionAffinity(
                 redis_client=getattr(cache_backend, "_redis", None),
-                ttl=int(os.getenv("SESSION_AFFINITY_TTL", "3600")),
+                ttl=cfg.session_affinity_ttl,
             )
             scaling_manager = ScalingManager(
                 service_registry=service_registry,
@@ -2913,37 +2942,40 @@ async def main():
                 "session_affinity": session_affinity,
                 "scaling_manager": scaling_manager,
             }
+            ctx.scaling_components = scaling_components
             logger.info("🔄 Scaling components initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize scaling components: {e}")
 
     # Health checks
-    health_checker = HealthChecker(check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "30.0")))
+    health_checker = HealthChecker(check_interval=cfg.health_check_interval)
+    ctx.health_checker = health_checker
     health_checker.register_check(DatabaseHealthCheck(db))
     health_checker.register_check(OpenAIHealthCheck(openai_service))
     health_checker.register_check(SessionStoreHealthCheck(session_store))
     health_checker.register_check(RateLimiterHealthCheck(rate_limiter))
-    if os.getenv("ENABLE_SYSTEM_MONITORING", "1") == "1":
+    if cfg.enable_system_monitoring:
         health_checker.register_check(SystemResourcesHealthCheck())
     await health_checker.start_background_checks()
 
     # Фоновые задачи
     task_manager = BackgroundTaskManager(error_handler)
+    ctx.task_manager = task_manager
     task_manager.register_task(
         DatabaseCleanupTask(
             db,
-            interval_seconds=float(os.getenv("DB_CLEANUP_INTERVAL", "3600")),
-            max_old_transactions_days=int(os.getenv("DB_CLEANUP_DAYS", "90")),
+            interval_seconds=cfg.db_cleanup_interval,
+            max_old_transactions_days=cfg.db_cleanup_days,
         )
     )
     task_manager.register_task(
         CacheCleanupTask(
-            [openai_service], interval_seconds=float(os.getenv("CACHE_CLEANUP_INTERVAL", "300"))
+            [openai_service], interval_seconds=cfg.cache_cleanup_interval
         )
     )
     task_manager.register_task(
         SessionCleanupTask(
-            session_store, interval_seconds=float(os.getenv("SESSION_CLEANUP_INTERVAL", "600"))
+            session_store, interval_seconds=cfg.session_cleanup_interval
         )
     )
 
@@ -2960,18 +2992,20 @@ async def main():
 
     task_manager.register_task(
         HealthCheckTask(
-            all_components, interval_seconds=float(os.getenv("HEALTH_CHECK_TASK_INTERVAL", "120"))
+            all_components, interval_seconds=cfg.health_check_task_interval
         )
     )
     if getattr(metrics_collector, "enable_prometheus", False):
         task_manager.register_task(
             MetricsCollectionTask(
                 all_components,
-                interval_seconds=float(os.getenv("METRICS_COLLECTION_INTERVAL", "30")),
+                interval_seconds=cfg.metrics_collection_interval,
             )
         )
     await task_manager.start_all()
-    logger.info(f"🔧 Started {len(task_manager.tasks)} background tasks")
+    logger.info("Started %s background tasks", len(task_manager.tasks))
+
+    refresh_runtime_globals()
 
     # Команды
     await bot.set_my_commands(
@@ -3056,7 +3090,7 @@ async def main():
         handle_photo_upload, DocumentProcessingStates.waiting_for_document, F.photo
     )
 
-    if config.voice_mode_enabled:
+    if settings().voice_mode_enabled:
         dp.message.register(process_voice_message, F.voice)
 
     dp.message.register(on_successful_payment, F.successful_payment)
@@ -3155,29 +3189,4 @@ async def main():
                 logger.error(f"❌ Error closing {service_name}: {e}")
 
         logger.info("👋 AI-Ivan shutdown complete")
-
-
-if __name__ == "__main__":
-    try:
-        # Настройка event loop для Windows
-        import sys
-        if sys.platform == "win32":
-            # Для Windows используем WindowsProactorEventLoopPolicy
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            logger.info("Настроен ProactorEventLoop для Windows")
-        else:
-            # Для других платформ пробуем uvloop
-            try:
-                import uvloop  # type: ignore
-                uvloop.install()
-                logger.info("Включен uvloop для повышенной производительности")
-            except ImportError:
-                logger.info("uvloop не доступен, используем стандартный event loop")
-
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен")
-    except Exception as e:
-        logger.exception("Критическая ошибка: %s", e)
-        raise
 
