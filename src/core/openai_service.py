@@ -17,6 +17,8 @@ try:
 except Exception:  # noqa: BLE001
     oai_ask_legal_stream = None  # type: ignore
 
+from src.bot.openai_gateway import format_legal_response_text
+
 from .cache import ResponseCache
 
 logger = logging.getLogger(__name__)
@@ -142,15 +144,15 @@ class OpenAIService:
                     text = str(cached.get("text", ""))
                     # «поток» из кэша
                     if callback:
-                        if len(text) <= pseudo_chunk:
-                            await _safe_fire_callback(callback, text, True)
+                        if len(formatted_text) <= pseudo_chunk:
+                            await _safe_fire_callback(callback, formatted_text, True)
                         else:
-                            for i in range(0, len(text), pseudo_chunk):
+                            for i in range(0, len(formatted_text), pseudo_chunk):
                                 await _safe_fire_callback(
                                     callback, text[i : i + pseudo_chunk], False
                                 )
                             await _safe_fire_callback(callback, "", True)
-                    self.last_full_text = text
+                    self.last_full_text = formatted_text
                     return cached
             except Exception as e:  # noqa: BLE001
                 logger.warning("Cache get failed (stream): %s", e)
@@ -176,10 +178,11 @@ class OpenAIService:
                     async for delta in candidate:  # type: ignore[attr-defined]
                         await on_delta(str(delta))
                     text = "".join(parts).strip()
+                    formatted_text = format_legal_response_text(text)
                     await _safe_fire_callback(callback, "", True)
-                    self.last_full_text = text
+                    self.last_full_text = formatted_text
 
-                    resp = {"ok": True, "text": text}
+                    resp = {"ok": True, "text": formatted_text}
                     # кэшируем
                     if self.cache and self.enable_cache and text:
                         try:
@@ -194,10 +197,16 @@ class OpenAIService:
                 if not text:
                     text = "".join(parts).strip()
                     result = {"ok": True, "text": text}
+                formatted_text = format_legal_response_text(text or "")
                 await _safe_fire_callback(callback, "", True)
-                self.last_full_text = text or ""
+                self.last_full_text = formatted_text
 
-                if self.cache and self.enable_cache and text:
+                if isinstance(result, dict):
+                    result["text"] = formatted_text
+                else:
+                    result = {"ok": True, "text": formatted_text}
+
+                if self.cache and self.enable_cache and formatted_text:
                     try:
                         await self.cache.cache_response(system_prompt, user_text, result)  # type: ignore[arg-type]
                     except Exception as e:  # noqa: BLE001
@@ -211,17 +220,21 @@ class OpenAIService:
         # фолбэк: обычный запрос + псевдострим кусками
         try:
             result = await oai_ask_legal(system_prompt, user_text)
-            text = str(result.get("text", "") or "")
+            original_text = str(result.get("text", "") or "")
+            formatted_text = format_legal_response_text(original_text)
 
             if callback:
-                if len(text) <= pseudo_chunk:
-                    await _safe_fire_callback(callback, text, True)
+                if len(formatted_text) <= pseudo_chunk:
+                    await _safe_fire_callback(callback, formatted_text, True)
                 else:
-                    for i in range(0, len(text), pseudo_chunk):
-                        await _safe_fire_callback(callback, text[i : i + pseudo_chunk], False)
+                    for i in range(0, len(formatted_text), pseudo_chunk):
+                        await _safe_fire_callback(callback, formatted_text[i : i + pseudo_chunk], False)
                     await _safe_fire_callback(callback, "", True)
 
-            self.last_full_text = text
+            self.last_full_text = formatted_text
+
+            if isinstance(result, dict):
+                result["text"] = formatted_text
 
             # кэшируем обычным способом (если еще не закэшировано)
             if self.cache and self.enable_cache and result.get("ok") and result.get("text"):
