@@ -142,6 +142,7 @@ class OpenAIService:
                 if cached and cached.get("ok") and cached.get("text"):
                     self.cached_requests += 1
                     text = str(cached.get("text", ""))
+                    formatted_text = format_legal_response_text(text)
                     # «поток» из кэша
                     if callback:
                         if len(formatted_text) <= pseudo_chunk:
@@ -149,10 +150,12 @@ class OpenAIService:
                         else:
                             for i in range(0, len(formatted_text), pseudo_chunk):
                                 await _safe_fire_callback(
-                                    callback, text[i : i + pseudo_chunk], False
+                                    callback, formatted_text[i : i + pseudo_chunk], False
                                 )
                             await _safe_fire_callback(callback, "", True)
                     self.last_full_text = formatted_text
+                    cached = dict(cached)
+                    cached["text"] = formatted_text
                     return cached
             except Exception as e:  # noqa: BLE001
                 logger.warning("Cache get failed (stream): %s", e)
