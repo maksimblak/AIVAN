@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from html import escape as html_escape
 from pathlib import Path
@@ -39,6 +40,11 @@ class DocumentManager:
         self.translator = DocumentTranslator(openai_service)
         self.ocr_converter = OCRConverter()
 
+        self._dependencies: dict[str, bool] = {
+            'docx': self._module_available('docx'),
+            'reportlab': self._module_available('reportlab.pdfgen'),
+        }
+
         self.PROCESSOR_PARAM_WHITELIST: dict[str, set[str]] = {
             "summarize": {"detail_level", "language", "output_formats"},
             "analyze_risks": {"custom_criteria"},
@@ -47,6 +53,19 @@ class DocumentManager:
             "translate": {"source_lang", "target_lang", "output_formats"},
             "ocr": {"output_format"},
         }
+
+    @staticmethod
+    def _module_available(module: str) -> bool:
+        return importlib.util.find_spec(module) is not None
+
+    def _dependency_available(self, key: str) -> bool:
+        return self._dependencies.get(key, True)
+
+    def _dependency_notice(self, *, dependency: str, feature: str, format_name: str) -> dict[str, str]:
+        message = f"{feature} requires {dependency} to be installed."
+        logger.warning(message)
+        return {"format": format_name, "error": message}
+
 
     async def process_document(
         self,
@@ -172,21 +191,35 @@ class DocumentManager:
         export_dir = document_info.file_path.parent
 
         if "docx" in formats:
-            try:
+            if not self._dependency_available('docx'):
+                exports.append(
+                    self._dependency_notice(
+                        dependency='python-docx',
+                        feature='DOCX export',
+                        format_name='docx',
+                    )
+                )
+            else:
                 from docx import Document  # type: ignore
 
                 doc = Document()
-                doc.add_heading("Итоги документа", level=1)
+                doc.add_heading("Сводка по документу", level=1)
                 for block in summary_content.split("\n\n"):
                     doc.add_paragraph(block)
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
                 exports.append({"path": str(docx_path), "format": "docx"})
-            except ImportError:
-                logger.warning("python-docx недоступен: пропускаем экспорт DOCX для саммаризации")
 
         if "pdf" in formats:
-            try:
+            if not self._dependency_available('reportlab'):
+                exports.append(
+                    self._dependency_notice(
+                        dependency='reportlab',
+                        feature='PDF export',
+                        format_name='pdf',
+                    )
+                )
+            else:
                 from reportlab.lib.pagesizes import A4  # type: ignore
                 from reportlab.lib.units import mm  # type: ignore
                 from reportlab.pdfgen import canvas  # type: ignore
@@ -204,8 +237,7 @@ class DocumentManager:
                 canv.drawText(text_obj)
                 canv.save()
                 exports.append({"path": str(pdf_path), "format": "pdf"})
-            except ImportError:
-                logger.warning("reportlab недоступен: пропускаем экспорт PDF для саммаризации")
+
 
         return exports
 
@@ -221,7 +253,15 @@ class DocumentManager:
         export_dir = document_info.file_path.parent
 
         if "docx" in formats:
-            try:
+            if not self._dependency_available('docx'):
+                exports.append(
+                    self._dependency_notice(
+                        dependency='python-docx',
+                        feature='Translation DOCX export',
+                        format_name='docx',
+                    )
+                )
+            else:
                 from docx import Document  # type: ignore
 
                 doc = Document()
@@ -230,8 +270,6 @@ class DocumentManager:
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
                 exports.append({"path": str(docx_path), "format": "docx"})
-            except ImportError:
-                logger.warning("python-docx недоступен: пропускаем экспорт DOCX для перевода")
 
         if "txt" in formats:
             txt_path = export_dir / f"{base_name}.txt"
@@ -257,7 +295,15 @@ class DocumentManager:
             self._write_text_file(txt_path, recognized_text)
             exports.append({"path": str(txt_path), "format": "txt"})
         elif fmt == "docx":
-            try:
+            if not self._dependency_available('docx'):
+                exports.append(
+                    self._dependency_notice(
+                        dependency='python-docx',
+                        feature='OCR DOCX export',
+                        format_name='docx',
+                    )
+                )
+            else:
                 from docx import Document  # type: ignore
 
                 doc = Document()
@@ -266,10 +312,17 @@ class DocumentManager:
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
                 exports.append({"path": str(docx_path), "format": "docx"})
-            except ImportError:
-                logger.warning("python-docx недоступен: пропускаем экспорт DOCX для OCR")
+
         elif fmt == "pdf":
-            try:
+            if not self._dependency_available('reportlab'):
+                exports.append(
+                    self._dependency_notice(
+                        dependency='reportlab',
+                        feature='OCR PDF export',
+                        format_name='pdf',
+                    )
+                )
+            else:
                 from reportlab.lib.pagesizes import A4  # type: ignore
                 from reportlab.lib.units import mm  # type: ignore
                 from reportlab.pdfgen import canvas  # type: ignore
@@ -287,8 +340,8 @@ class DocumentManager:
                 canv.drawText(text_obj)
                 canv.save()
                 exports.append({"path": str(pdf_path), "format": "pdf"})
-            except ImportError:
-                logger.warning("reportlab недоступен: пропускаем экспорт PDF для OCR")
+
+
         else:
             logger.warning("Неподдерживаемый формат экспорта OCR: %s", output_format)
 
