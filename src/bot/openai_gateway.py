@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -10,6 +10,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from dotenv import load_dotenv
+import inspect
 from openai import AsyncOpenAI
 
 load_dotenv()
@@ -64,6 +65,7 @@ LEGAL_RESPONSE_SCHEMA = {
 }
 
 
+
 def _format_legal_sections(payload: dict[str, Any]) -> str:
     sections = [
         ("summary", "Summary"),
@@ -73,6 +75,21 @@ def _format_legal_sections(payload: dict[str, Any]) -> str:
         ("disclaimer", "Disclaimer"),
     ]
     lines: list[str] = []
+
+def format_legal_response_text(raw: str) -> str:
+    if not raw:
+        return ''
+    candidate = raw.strip()
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return candidate
+    if isinstance(data, dict):
+        formatted = _format_legal_sections(data)
+        if formatted:
+            return formatted
+    return candidate
+
 
     def _ensure_lines(value: Any) -> list[str]:
         if isinstance(value, str):
@@ -103,21 +120,6 @@ def _format_legal_sections(payload: dict[str, Any]) -> str:
         lines.append('')
 
     return "\n".join(item for item in lines if item).strip()
-
-
-def format_legal_response_text(raw: str) -> str:
-    if not raw:
-        return ''
-    candidate = raw.strip()
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError:
-        return candidate
-    if isinstance(data, dict):
-        formatted = _format_legal_sections(data)
-        if formatted:
-            return formatted
-    return candidate
 
 
 logger = logging.getLogger(__name__)
@@ -206,7 +208,7 @@ async def _make_async_client() -> AsyncOpenAI:
 
 
 async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
-    """Единая точка запроса к Responses API.
+    """Запрос на Responses API без стриминга.
 
     Возвращает dict: { ok: bool, text?: str, usage?: Any, error?: str }
     """
@@ -214,10 +216,10 @@ async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
 
 
 async def ask_legal_stream(system_prompt: str, user_text: str, callback=None):
-    """Streaming версия запроса к Responses API.
+    """Streaming запрос к Responses API.
 
-    Callback вызывается с частичными ответами: callback(partial_text: str, is_final: bool)
-    Возвращает финальный dict: { ok: bool, text?: str, usage?: Any, error?: str }
+    Callback принимает (partial_text: str, is_final: bool)
+    Возвращает dict: { ok: bool, text?: str, usage?: Any, error?: str }
     """
     return await _ask_legal_internal(system_prompt, user_text, stream=True, callback=callback)
 
@@ -225,10 +227,7 @@ async def ask_legal_stream(system_prompt: str, user_text: str, callback=None):
 async def _ask_legal_internal(
     system_prompt: str, user_text: str, stream: bool = False, callback=None
 ) -> dict[str, Any]:
-    """
-    Внутренняя реализация запроса к Responses API с поддержкой streaming.
-    Возвращает dict: { ok: bool, text?: str, usage?: Any, error?: str }
-    """
+    """Unified Responses API invocation with optional streaming."""
     model = os.getenv("OPENAI_MODEL", "gpt-5")
     max_out = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
     verb = os.getenv("OPENAI_VERBOSITY", "medium").lower()
@@ -242,25 +241,39 @@ async def _ask_legal_internal(
     except (TypeError, ValueError):
         top_p = 0.3
 
-    base = dict(
-        model=model,
-        input=[
+    base_common: dict[str, Any] = {
+        "model": model,
+        "input": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
-        text={"verbosity": verb},
-        reasoning={"effort": effort},
-        max_output_tokens=max_out,
-        temperature=temperature,
-        top_p=top_p,
-        response_format={"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA},
-    )
-    # web-инструмент по умолчанию можно отключить переменной окружения
+        "text": {"verbosity": verb},
+        "reasoning": {"effort": effort},
+        "max_output_tokens": max_out,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+
     if not (os.getenv("DISABLE_WEB", "0").strip() in ("1", "true", "yes", "on")):
-        base |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
+        base_common |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     async with await _make_async_client() as oai:
-        # Проверка модели с небольшим ретраем
+        schema_supported = "response_format" in inspect.signature(oai.responses.create).parameters
+        schema_payload: dict[str, Any] = {}
+        if schema_supported:
+            schema_payload = {"response_format": {"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA}}
+        else:
+            logger.debug("Responses API does not accept response_format; falling back to raw JSON parsing")
+
+        def build_attempts(include_schema: bool) -> list[dict[str, Any]]:
+            payload_base = base_common | (schema_payload if include_schema else {})
+            with_tools = payload_base
+            without_tools = {k: v for k, v in payload_base.items() if k != "tools"}
+            boosted = without_tools | {"max_output_tokens": max_out * 2}
+            return [with_tools, without_tools, boosted]
+
+        attempts = build_attempts(schema_supported)
+
         last_err = None
         for i in range(2):
             try:
@@ -272,27 +285,19 @@ async def _ask_legal_internal(
                     return {"ok": False, "error": last_err}
                 await asyncio.sleep(0.6)
 
-        attempts = [base]
-        # Повтор без tools
-        attempts.append({k: v for k, v in base.items() if k != "tools"})
-        # Буст по количеству токенов
-        boosted = attempts[-1] | {"max_output_tokens": max_out * 2}
+        while True:
+            schema_retry = False
+            for payload in attempts:
+                try:
+                    if stream and callback:
+                        accumulated_text = ""
+                        usage_info = None
 
-        for payload in (attempts[0], attempts[1], boosted):
-            try:
-                if stream and callback:
-                    # --- ПРАВИЛЬНЫЙ streaming через responses.stream ---
-                    accumulated_text = ""
-                    usage_info = None
-
-                    try:
                         async with oai.responses.stream(**payload) as s:
                             async for event in s:
                                 etype = getattr(event, "type", "") or ""
 
-                                # Основные дельты текста
                                 if etype.endswith(".delta"):
-                                    # Пытаемся достать текст из разных мест (зависит от версии SDK)
                                     delta = getattr(event, "delta", None)
                                     piece = ""
                                     if isinstance(delta, dict):
@@ -308,19 +313,15 @@ async def _ask_legal_internal(
                                             else:
                                                 callback(accumulated_text, False)
                                         except Exception as cb_err:
-                                            logger.warning(f"Callback error during streaming: {cb_err}")
+                                            logger.warning("Callback error during streaming: %s", cb_err)
 
-                                # Можно ловить финал/usage
                                 if etype == "response.completed":
-                                    pass
+                                    continue
 
-                            # финальный объект ответа
                             final = await s.get_final_response()
                             usage_info = getattr(final, "usage", None)
-                            # Сам текст
                             text = getattr(final, "output_text", None)
                             if not text:
-                                # запасной разбор
                                 items = getattr(final, "output", []) or []
                                 chunks: list[str] = []
                                 for it in items:
@@ -330,7 +331,8 @@ async def _ask_legal_internal(
                                             chunks.append(t)
                                 text = "\n\n".join(chunks) if chunks else ""
 
-                            # Финальный колбэк
+
+
                             final_raw = (text or accumulated_text or "").strip()
                             formatted_final = format_legal_response_text(final_raw) if final_raw else ""
                             if callback and formatted_final:
@@ -340,49 +342,57 @@ async def _ask_legal_internal(
                                     else:
                                         callback(formatted_final, True)
                                 except Exception as cb_err:
-                                    logger.warning(f"Final callback error: {cb_err}")
+                                    logger.warning("Final callback error: %s", cb_err)
 
                             if formatted_final:
                                 return {"ok": True, "text": formatted_final, "usage": usage_info}
 
-                    except Exception as stream_error:
-                        logger.error(f"Streaming error: {stream_error}")
-                        raise  # пойдём в обычный режим/следующую попытку
+                    resp = await oai.responses.create(**payload)
+                    text = getattr(resp, "output_text", None)
+                    if text and text.strip():
+                        formatted_text = format_legal_response_text(text)
+                        return {"ok": True, "text": formatted_text, "usage": getattr(resp, "usage", None)}
 
-                # --- Обычный (нестриминговый) режим ---
-                resp = await oai.responses.create(**payload)
-                text = getattr(resp, "output_text", None)
-                if text and text.strip():
-                    formatted_text = format_legal_response_text(text)
-                    return {"ok": True, "text": formatted_text, "usage": getattr(resp, "usage", None)}
+                    items = getattr(resp, "output", []) or []
+                    chunks: list[str] = []
+                    for it in items:
+                        for c in getattr(it, "content", []) or []:
+                            t = getattr(c, "text", None)
+                            if t:
+                                chunks.append(t)
+                    if chunks:
+                        joined = "\n\n".join(chunks).strip()
+                        return {
+                            "ok": True,
+                            "text": format_legal_response_text(joined),
+                            "usage": getattr(resp, "usage", None),
+                        }
 
-                # запасной парсер
-                items = getattr(resp, "output", []) or []
-                chunks: list[str] = []
-                for it in items:
-                    for c in getattr(it, "content", []) or []:
-                        t = getattr(c, "text", None)
-                        if t:
-                            chunks.append(t)
-                if chunks:
-                    joined = "\n\n".join(chunks).strip()
-                    return {
-                        "ok": True,
-                        "text": format_legal_response_text(joined),
-                        "usage": getattr(resp, "usage", None),
-                    }
+                except TypeError as type_err:
+                    if schema_supported and "response_format" in payload and "response_format" in str(type_err):
+                        logger.warning(
+                            "Responses API rejected response_format; retrying without JSON schema enforcement"
+                        )
+                        schema_supported = False
+                        attempts = build_attempts(False)
+                        schema_retry = True
+                        break
+                    last_err = str(type_err)
+                    break
+                except Exception as e:
+                    last_err = str(e)
 
-            except Exception as e:  # переходим к следующей попытке
-                last_err = str(e)
+            if schema_retry:
+                continue
+            break
 
         return {"ok": False, "error": last_err or "unknown_error"}
 
 
 
 def _extract_text_from_chunk(chunk) -> str:
-    """Извлекает текст из stream chunk"""
+    """Извлекает текстовую часть из stream chunk"""
     try:
-        # Пробуем разные способы извлечения текста
         if hasattr(chunk, "output_text") and chunk.output_text:
             return chunk.output_text
 
