@@ -96,8 +96,6 @@ def _format_user_display(user: User | None) -> str:
         parts.append(str(user.id))
     return " ".join(parts)
 
-
-
 # Runtime-managed globals (synchronised via refresh_runtime_globals)
 # Defaults keep module usable before runtime initialisation.
 WELCOME_MEDIA: WelcomeMedia | None = None
@@ -227,8 +225,6 @@ def _sync_runtime_globals() -> None:
 def refresh_runtime_globals() -> None:
     _sync_runtime_globals()
 
-
-
 class ResponseTimer:
     def __init__(self) -> None:
         self._t0: float | None = None
@@ -296,9 +292,6 @@ def _get_safe_db_method(method_name: str, default_return=None):
         return safe_execute(error_handler, default_return)(method)
     return method
 
-
-
-
 # ============ УТИЛИТЫ ============
 
 
@@ -333,8 +326,54 @@ def chunk_text(text: str, max_length: int | None = None) -> list[str]:
 
 
 
+    
 
+def _split_plain_text(text: str, limit: int = SAFE_LIMIT) -> list[str]:
+    if not text:
+        return []
 
+    if len(text) <= limit:
+        return [text]
+
+    line_sep = chr(10)
+    paragraph_sep = line_sep * 2
+    chunks: list[str] = []
+    current: list[str] = []
+
+    def flush_current() -> None:
+        if current:
+            chunks.append(paragraph_sep.join(current))
+            current.clear()
+
+    paragraphs: list[str] = []
+    buffer: list[str] = []
+    for line in text.splitlines():
+        if line.strip():
+            buffer.append(line)
+        else:
+            if buffer:
+                paragraphs.append(line_sep.join(buffer))
+                buffer.clear()
+    if buffer:
+        paragraphs.append(line_sep.join(buffer))
+
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        joined = paragraph_sep.join(current + [paragraph])
+        if len(joined) <= limit:
+            current.append(paragraph)
+            continue
+        flush_current()
+        if len(paragraph) > limit:
+            for i in range(0, len(paragraph), limit):
+                chunks.append(paragraph[i : i + limit])
+        else:
+            current.append(paragraph)
+    flush_current()
+
+    return chunks
 
 
 def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
@@ -402,9 +441,6 @@ def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
                 final.append(block[i : i + hard_limit])
 
     return [b.strip() for b in final if b.strip()]
-
-
-
 
 
 async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> str | None:
@@ -570,9 +606,6 @@ async def cmd_start(message: Message):
 
     # Подробное приветствие
 
-
-
-
     welcome_raw = f"""
  
  <b>Добро пожаловать, {user_name}!</b>
@@ -582,8 +615,6 @@ async def cmd_start(message: Message):
     
  <b>📌 ЧТО Я УМЕЮ ?</b>
   ═══════════════════════════════════════════
-
-
 
     
  <b>📌 ПРИМЕРЫ ОБРАЩЕНИЙ </b>
@@ -602,9 +633,6 @@ async def cmd_start(message: Message):
     <b>ПОПРОБУЙ ПРЯМО СЕЙЧАС 👇</b>
     """
 
-
-
-
     # Создаем inline клавиатуру с кнопками (компактное размещение)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -620,8 +648,6 @@ async def cmd_start(message: Message):
             ],
         ]
     )
-
-
 
     if WELCOME_MEDIA and WELCOME_MEDIA.path.exists():
         try:
@@ -644,9 +670,6 @@ async def cmd_start(message: Message):
         reply_markup=keyboard
     )
     logger.info("User %s started bot", message.from_user.id)
-
-
-
 
 
 async def process_question(message: Message, *, text_override: str | None = None):
@@ -1284,9 +1307,6 @@ async def process_voice_message(message: Message):
 
 # ============ СИСТЕМА РЕЙТИНГА ============
 
-
-
-
 async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
     """Prepare state for another OCR upload after a result message."""
     output_format = "txt"
@@ -1530,8 +1550,6 @@ async def handle_feedback_callback(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in handle_feedback_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
-
-
 
 async def handle_search_practice_callback(callback: CallbackQuery):
     """Обработчик кнопки 'Поиск и аналитика судебной практики'"""
@@ -2158,7 +2176,8 @@ async def handle_doc_draft_request(message: Message, state: FSMContext) -> None:
     )
 
     summary = format_plan_summary(plan)
-    await message.answer(summary)
+    for chunk in _split_plain_text(summary):
+        await message.answer(chunk)
 
     if plan.questions:
         await state.set_state(DocumentDraftStates.asking_details)
@@ -2910,8 +2929,6 @@ async def cmd_error_stats(message: Message):
         lines.append(f"• {error_type}: {count}")
 
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
 
 async def pre_checkout(pre: PreCheckoutQuery):
     try:
