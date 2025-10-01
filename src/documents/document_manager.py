@@ -270,10 +270,6 @@ class DocumentManager:
         base_name = f"{document_info.file_path.stem}_anonymized"
         export_dir = document_info.file_path.parent
 
-        txt_path = export_dir / f"{base_name}.txt"
-        self._write_text_file(txt_path, anonymized_text)
-        exports.append({"path": str(txt_path), "format": "txt", "label": "Обезличенный текст"})
-
         if not self._dependency_available('docx'):
             exports.append(
                 self._dependency_notice(
@@ -282,28 +278,22 @@ class DocumentManager:
                     format_name='docx',
                 )
             )
-        else:
-            try:
-                from docx import Document  # type: ignore
+            return exports
 
-                doc = Document()
-                for block in anonymized_text.split("\n\n"):
-                    doc.add_paragraph(block)
-                docx_path = export_dir / f"{base_name}.docx"
-                doc.save(docx_path)
-                exports.append({"path": str(docx_path), "format": "docx", "label": "Обезличенный DOCX"})
-            except Exception as docx_error:
-                logger.warning("Failed to build anonymized DOCX: %s", docx_error)
-                exports.append({"format": "docx", "error": "Не удалось сформировать DOCX экспорт"})
+        try:
+            from docx import Document  # type: ignore
 
-        mapping = data.get("anonymization_map") or {}
-        if mapping:
-            map_path = export_dir / f"{base_name}_map.json"
-            map_path.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
-            exports.append({"path": str(map_path), "format": "json", "label": "Ключ восстановления"})
+            doc = Document()
+            for block in anonymized_text.split("\n\n"):
+                doc.add_paragraph(block)
+            docx_path = export_dir / f"{base_name}.docx"
+            doc.save(docx_path)
+            exports.append({"path": str(docx_path), "format": "docx", "label": "Обезличенный DOCX"})
+        except Exception as docx_error:
+            logger.warning("Failed to build anonymized DOCX: %s", docx_error)
+            exports.append({"format": "docx", "error": "Не удалось сформировать DOCX экспорт"})
 
         return exports
-
 
     def _export_translation(
         self, document_info, data: dict[str, Any], formats: list[str]

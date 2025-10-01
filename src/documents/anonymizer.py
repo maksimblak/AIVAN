@@ -85,11 +85,17 @@ def _inn_ok(inn: str) -> bool:
         return c1 == int(d[10]) and c2 == int(d[11])
     return False
 
+def _is_passport(doc: str) -> bool:
+    digits = _digits(doc)
+    return len(digits) == 10
+
+
+
 
 def _iban_ok(iban: str) -> bool:
     """IBAN mod-97 (упрощённая проверка формата + контроль)."""
     s = re.sub(r"\s+", "", iban).upper()
-    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{11,30}", s):
+    if not re.fullmatch(r"[A-Z]{2}\\d{2}[A-Z0-9]{11,30}", s):
         return False
     s = s[4:] + s[:4]
     num = []
@@ -176,11 +182,11 @@ class DocumentAnonymizer(DocumentProcessor):
         # Набор паттернов с минимизацией фолс-позитивов
         self._specs: List[PatternSpec] = [
             # ФИО: 2–3 слова, каждое ≥2 символов (отсечь «И.П.»)
-            PatternSpec("names", r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b"),
+            PatternSpec("names", r"\b[А-ЯЁ][а-яё]+(?:ов|ев|ёв|ин|ын|кий|цкий|ская|цкая|ова|ева|ёва|ина|ына|ский|ской)\b\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b"),
             # Телефоны: международные/локальные, суммарно 10–15 цифр
             PatternSpec(
                 "phones",
-                r"(?:\+?\d[\d\-\s().]{6,}\d)",
+                r"(?:\+?\\d[\\d\-\s().]{6,}\\d)",
                 validate=lambda s: 10 <= len(_digits(s)) <= 15,
             ),
             # Email: поддерживаем unicode \w в локальной части
@@ -189,20 +195,20 @@ class DocumentAnonymizer(DocumentProcessor):
             PatternSpec(
                 "addresses",
                 r"\b(?:г\.\s*[А-ЯЁ][а-яё\- ]+|ул\.\s*[А-ЯЁ][а-яё\- ]+|просп\.?\s*[А-ЯЁ][а-яё\- ]+|"
-                r"пр-кт\.?\s*[А-ЯЁ][а-яё\- ]+|пер\.\s*[А-ЯЁ][а-яё\- ]+|дом\s*\d+\w*|д\.\s*\d+\w*)\b",
+                r"пр-кт\.?\s*[А-ЯЁ][а-яё\- ]+|пер\.\s*[А-ЯЁ][а-яё\- ]+|дом\s*\\d+\w*|д\.\s*\\d+\w*)\b",
             ),
             # Документы РФ: паспорт 4+6, СНИЛС, ИНН 10/12 (с проверкой)
             PatternSpec(
                 "documents",
-                r"\b(?:\d{4}\s?\d{6}|\d{3}-?\d{3}-?\d{3}\s?\d{2}|\d{10}|\d{12})\b",
+                r"\b(?:(?:серия\s*)?\d{4}(?:\s*№\s*|\s+)?\d{6}|\d{3}-?\d{3}-?\d{3}\s?\d{2}|\d{10}|\d{12})\b",
                 validate=lambda s: (
-                    _snils_ok(s) or _inn_ok(s) or re.fullmatch(r"\d{4}\s?\d{6}", s) is not None
+                    _snils_ok(s) or _inn_ok(s) or _is_passport(s)
                 ),
             ),
             # Банковские реквизиты: р/с 20, БИК 9, карты 13–19 (Luhn)
             PatternSpec(
                 "bank_details",
-                r"\b(?:\d[\d\-\s]{11,}\d|\d{9}|\d{20})\b",
+                r"(?:(?:р/с|к/с|р\s?с|к\s?с|бик|p/c|k/c)[:\s]*)?(?:\d[\d\s-]{11,}\d|\d{9}|\d{20})",
                 validate=lambda s: (
                     len(_digits(s)) == 20
                     or len(_digits(s)) == 9
@@ -210,9 +216,9 @@ class DocumentAnonymizer(DocumentProcessor):
                 ),
             ),
             # IBAN (международные счета)
-            PatternSpec("iban", r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", validate=_iban_ok),
+            PatternSpec("iban", r"\b[A-Z]{2}\\d{2}[A-Z0-9]{11,30}\b", validate=_iban_ok),
             # Даты рождения (простая форма)
-            PatternSpec("dates", r"\b(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(19\d{2}|20\d{2})\b"),
+            PatternSpec("dates", r"\b(0[1-9]|[12]\\d|3[01])\.(0[1-9]|1[0-2])\.(19\\d{2}|20\д{2})\b"),
         ]
 
         label_overrides = {
@@ -230,13 +236,21 @@ class DocumentAnonymizer(DocumentProcessor):
                 spec.label = label_overrides[spec.kind]
 
         self._specs.extend([
-            PatternSpec("badge_numbers", r"(?i)\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\d{3,10}\b", label="Табельный номер"),
-            PatternSpec("registration_numbers", r"(?i)\b(?:огрн(?:ип)?|грн|рег\.?\s*№?|окпо|оквэд|свид\.?|гос\.?рег\.?№?)\s*[:№-]*[a-z0-9\-]{5,25}\b", label="Регистрационный номер"),
-            PatternSpec("domains", r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b", label="Домен"),
-            PatternSpec("urls", r"(?i)\bhttps?://[^\s<'\"]+", label="Ссылка"),
+            PatternSpec("badge_numbers", r"\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\\d{3,10}\b", label="Табельный номер"),
+            PatternSpec("registration_numbers", r"\b(?:огрн(?:ип)?|грн|рег\.?\s*№?|окпо|оквэд|свид\.?|гос\.?рег\.?№?)\s*[:№-]*[a-z0-9\-]{5,25}\b", label="Регистрационный номер"),
+            PatternSpec("domains", r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b", label="Домен"),
+            PatternSpec("urls", r"\bhttps?://[^\s<'\"]+", label="Ссылка"),
         ])
 
         self._base_specs: List[PatternSpec] = list(self._specs)
+
+    @staticmethod
+    def _normalize_pattern(pattern: str) -> str:
+        match = re.match(r'^\(\?([aiLmsux]+)\)(.*)$', pattern, flags=re.DOTALL)
+        if match:
+            flags, rest = match.groups()
+            return f'(?{flags}:{rest})'
+        return pattern
 
     # --------------------------------- API ---------------------------------
 
@@ -412,6 +426,13 @@ class DocumentAnonymizer(DocumentProcessor):
             if not pattern:
                 continue
 
+            normalized_pattern = self._normalize_pattern(pattern)
+            try:
+                re.compile(normalized_pattern, re.IGNORECASE | re.UNICODE)
+            except re.error as exc:
+                logger.warning("Skip custom pattern %s: %s", pattern, exc)
+                continue
+
             slug_source = label or f"pattern_{idx}"
             slug = re.sub(r"[^a-z0-9]+", "_", slug_source.lower()).strip("_")
             if not slug:
@@ -426,7 +447,7 @@ class DocumentAnonymizer(DocumentProcessor):
             used_kinds.add(kind)
 
             human_label = label or "Пользовательский шаблон"
-            specs.append(PatternSpec(kind, pattern, label=human_label))
+            specs.append(PatternSpec(kind, normalized_pattern, label=human_label))
 
         return specs
 
