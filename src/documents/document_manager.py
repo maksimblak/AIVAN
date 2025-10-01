@@ -10,7 +10,7 @@ import logging
 from html import escape as html_escape
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 from .anonymizer import DocumentAnonymizer
 from .base import DocumentResult, DocumentStorage, ProcessingError
@@ -302,13 +302,10 @@ class DocumentManager:
             return exports
 
         try:
-            from docx import Document  # type: ignore
-
-            doc = Document()
-            for block in anonymized_text.split("\n\n"):
-                doc.add_paragraph(block)
             docx_path = export_dir / f"{base_name}.docx"
-            doc.save(docx_path)
+            original_path = Path(document_info.file_path)
+            if not self._render_text_with_original_formatting(original_path, anonymized_text, docx_path):
+                self._create_plain_docx(anonymized_text, docx_path)
             exports.append({"path": str(docx_path), "format": "docx", "label": "Обезличенный DOCX"})
         except Exception as docx_error:
             logger.warning("Failed to build anonymized DOCX: %s", docx_error)
@@ -319,13 +316,14 @@ class DocumentManager:
     def _export_translation(
         self, document_info, data: dict[str, Any], formats: list[str]
     ) -> list[dict[str, Any]]:
-        translated_text = data.get("translated_text")
+        translated_text = data.get("translated_text") or ""
         if not translated_text:
             return []
 
         exports: list[dict[str, Any]] = []
         base_name = f"{document_info.file_path.stem}_translation"
         export_dir = document_info.file_path.parent
+        original_path = Path(document_info.file_path)
 
         if "docx" in formats:
             if not self._dependency_available('docx'):
@@ -337,14 +335,15 @@ class DocumentManager:
                     )
                 )
             else:
-                from docx import Document  # type: ignore
-
-                doc = Document()
-                for block in translated_text.split("\n\n"):
-                    doc.add_paragraph(block)
-                docx_path = export_dir / f"{base_name}.docx"
-                doc.save(docx_path)
-                exports.append({"path": str(docx_path), "format": "docx", "label": "Перевод (DOCX)"})
+                try:
+                    docx_path = export_dir / f"{base_name}.docx"
+                    self._create_translated_docx(original_path, translated_text, docx_path)
+                    exports.append({"path": str(docx_path), "format": "docx", "label": "Перевод (DOCX)"})
+                except Exception as exc:
+                    logger.error("Не удалось сохранить перевод с форматированием: %s", exc)
+                    fallback_path = export_dir / f"{base_name}_plain.docx"
+                    self._create_plain_docx(translated_text, fallback_path)
+                    exports.append({"path": str(fallback_path), "format": "docx", "label": "Перевод (DOCX)"})
 
         if "txt" in formats:
             txt_path = export_dir / f"{base_name}.txt"
@@ -850,3 +849,90 @@ class DocumentManager:
     async def cleanup_user_files(self, user_id: int, max_age_hours: int = 24):
         self.storage.cleanup_old_files(user_id, max_age_hours)
         self.document_chat.cleanup_old_documents(max_age_hours)
+
+    def _create_translated_docx(self, original_path: Path, translated_text: str, export_path: Path) -> None:
+        if not self._render_text_with_original_formatting(original_path, translated_text, export_path):
+            self._create_plain_docx(translated_text, export_path)
+
+    def _render_text_with_original_formatting(self, original_path: Path, text: str, export_path: Path) -> bool:
+        if original_path.suffix.lower() != ".docx" or not original_path.exists():
+            return False
+
+        from docx import Document  # type: ignore
+
+        doc = Document(original_path)
+        paragraphs = self._collect_paragraphs(doc)
+        if not paragraphs:
+            return False
+
+        segments = self._split_text_segments(len(paragraphs), text)
+        for paragraph, segment in zip(paragraphs, segments):
+            self._replace_paragraph_text(paragraph, segment)
+        doc.save(export_path)
+        return True
+
+    def _collect_paragraphs(self, document) -> List[Any]:
+        paragraphs: List[Any] = list(document.paragraphs)
+        for table in document.tables:
+            paragraphs.extend(self._collect_table_paragraphs(table))
+        return paragraphs
+
+    def _collect_table_paragraphs(self, table) -> List[Any]:
+        paragraphs: List[Any] = []
+        for row in table.rows:
+            for cell in row.cells:
+                paragraphs.extend(cell.paragraphs)
+                for inner_table in cell.tables:
+                    paragraphs.extend(self._collect_table_paragraphs(inner_table))
+        return paragraphs
+
+    def _split_text_segments(self, paragraph_count: int, text: str) -> List[str]:
+        if paragraph_count == 0:
+            raise ValueError("Document has no paragraphs")
+
+        normalized = (text or "").replace("\r\n", "\n")
+
+        double_segments = [seg.strip("\n") for seg in normalized.split("\n\n")]
+        if len(double_segments) == paragraph_count:
+            return double_segments
+        if len(double_segments) == paragraph_count + 1 and double_segments[-1] == "":
+            return double_segments[:-1]
+
+        single_segments = [seg.strip("\n") for seg in normalized.split("\n")]
+        if len(single_segments) == paragraph_count:
+            return single_segments
+        if len(single_segments) == paragraph_count + 1 and single_segments[-1] == "":
+            return single_segments[:-1]
+
+        if len(single_segments) < paragraph_count:
+            single_segments.extend([""] * (paragraph_count - len(single_segments)))
+            return single_segments[:paragraph_count]
+        if paragraph_count == 1:
+            return ["\n".join(single_segments)]
+
+        head = single_segments[: paragraph_count - 1]
+        tail = "\n".join(single_segments[paragraph_count - 1 :])
+        head.append(tail)
+        return head
+
+    def _replace_paragraph_text(self, paragraph, text: str) -> None:
+        style = paragraph.style
+        for run in list(paragraph.runs):
+            paragraph._element.remove(run._element)
+        paragraph.style = style
+
+        lines = text.split("\n") if text else [""]
+        for index, line in enumerate(lines):
+            run = paragraph.add_run(line)
+            if index < len(lines) - 1:
+                run.add_break()
+
+    def _create_plain_docx(self, text: str, export_path: Path) -> None:
+        from docx import Document  # type: ignore
+
+        doc = Document()
+        normalized = (text or "").replace("\r\n", "\n")
+        blocks = normalized.split("\n\n")
+        for block in blocks:
+            doc.add_paragraph(block)
+        doc.save(export_path)
