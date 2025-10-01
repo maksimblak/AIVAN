@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import html
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -220,10 +219,7 @@ class InputValidator:
 
     @classmethod
     def _sanitize_text(cls, text: str) -> str:
-        """Санитизация текста"""
-        # HTML escape
-        text = html.escape(text)
-
+        """Нормализует текст без изменения HTML-разметки"""
         # Удаление лишних пробелов
         text = re.sub(r"\s+", " ", text).strip()
 

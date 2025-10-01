@@ -319,33 +319,39 @@ class RateLimiterHealthCheck(HealthCheck):
                     status=HealthStatus.UNKNOWN, message="Rate limiter not initialized"
                 )
 
-            # Тестовый запрос к rate limiter
-            test_user_id = 999999999  # Тестовый ID
-            allowed = await self.rate_limiter.allow(test_user_id)
+            stats: dict[str, Any] | None = None
+            if hasattr(self.rate_limiter, "get_stats"):
+                stats_method = getattr(self.rate_limiter, "get_stats")
+                if callable(stats_method):
+                    stats = await stats_method()
 
-            # Проверяем состояние Redis если используется
-            backend_status = "memory"
-            if hasattr(self.rate_limiter, "_redis") and self.rate_limiter._redis:
-                try:
-                    await self.rate_limiter._redis.ping()
-                    backend_status = "redis"
-                except:
-                    backend_status = "redis_fallback_to_memory"
+            if stats is None:
+                stats = {
+                    "backend": "unknown",
+                    "max_requests": getattr(self.rate_limiter, "max_requests", None),
+                    "window_seconds": getattr(self.rate_limiter, "window_seconds", None),
+                }
+
+            status = HealthStatus.HEALTHY
+            message = "Rate limiter healthy"
+
+            if stats.get("backend") == "redis" and stats.get("redis_ok") is False:
+                status = HealthStatus.UNHEALTHY
+                message = "Redis backend not reachable"
+            elif stats.get("limiter_saturated"):
+                status = HealthStatus.DEGRADED
+                message = "Limiter saturated for at least one user"
 
             return HealthCheckResult(
-                status=HealthStatus.HEALTHY,
-                message="Rate limiter healthy",
-                details={
-                    "backend": backend_status,
-                    "max_requests": self.rate_limiter.max_requests,
-                    "window_seconds": self.rate_limiter.window_seconds,
-                    "test_allowed": allowed,
-                },
+                status=status,
+                message=message,
+                details=stats,
             )
 
         except Exception as e:
             return HealthCheckResult(
-                status=HealthStatus.UNHEALTHY, message=f"Rate limiter error: {str(e)}"
+                status=HealthStatus.UNHEALTHY,
+                message=f"Rate limiter error: {str(e)}",
             )
 
 

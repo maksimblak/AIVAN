@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from typing import Any
 
 try:
     from redis import asyncio as redis_async  # type: ignore
@@ -67,3 +68,35 @@ class RateLimiter:
             return False
         dq.append(now)
         return True
+
+    async def get_stats(self) -> dict[str, Any]:
+        """Return non-destructive snapshot of limiter state for health checks."""
+        snapshot: dict[str, Any] = {
+            "backend": "redis" if self._redis else "memory",
+            "max_requests": self.max_requests,
+            "window_seconds": self.window_seconds,
+        }
+
+        if self._redis is not None:
+            try:
+                pong = await self._redis.ping()  # type: ignore[union-attr]
+                snapshot["redis_ok"] = True
+                snapshot["redis_response"] = pong
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                snapshot["redis_ok"] = False
+                snapshot["redis_error"] = str(exc)
+        else:
+            now = time.time()
+            active_counts = [
+                sum(1 for ts in dq if ts >= now - self.window_seconds)
+                for dq in self._local.values()
+            ]
+            snapshot["tracked_users"] = len(self._local)
+            snapshot["max_active_requests"] = max(active_counts, default=0)
+            snapshot["limiter_saturated"] = (
+                self.max_requests > 0
+                and snapshot["max_active_requests"] >= self.max_requests
+            )
+
+        return snapshot
+
