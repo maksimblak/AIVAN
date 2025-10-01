@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(npm run test:*)",
+      "Bash(git diff:*)",
+      "Read"
+    ]
+  }
+}
