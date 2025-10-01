@@ -367,45 +367,10 @@ def _render_plain_text(text: str) -> str:
 
 
 def format_legal_response_text(raw: str) -> str:
-    if not raw:
-        return ''
-    candidate = raw.strip()
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError:
-        return _render_plain_text(candidate)
-    if not isinstance(data, dict):
-        return _render_plain_text(candidate)
+    """Return raw text without additional formatting."""
+    return (raw or "").strip()
 
-    sections: list[str] = []
 
-    summary = data.get('summary')
-    if isinstance(summary, str) and summary.strip():
-        sections.append(_render_paragraphs('Ответ (кратко)', summary, emphasise_first=True))
-
-    legal_basis_html = _render_legal_basis(data.get('legal_basis'))
-    if legal_basis_html:
-        sections.append(legal_basis_html)
-
-    analysis = data.get('analysis')
-    if isinstance(analysis, str) and analysis.strip():
-        lines = [line.strip() for line in analysis.splitlines() if line.strip()]
-        if lines and all(re.match(r'^\d+[\).:-]\s+', line) for line in lines):
-            items = [re.sub(r'^\d+[\).:-]\s+', '', line).strip() for line in lines]
-            sections.append(_render_numbered_section('Анализ', items))
-        else:
-            sections.append(_render_paragraphs('Анализ', analysis, emphasise_first=True))
-
-    risks = _normalise_generic_list(data.get('risks'))
-    if risks:
-        sections.append(_render_bullet_section('Риски', risks, icon='•'))
-
-    disclaimer = data.get('disclaimer')
-    if isinstance(disclaimer, str) and disclaimer.strip():
-        sections.append(_render_paragraphs('Дисклеймер', disclaimer, underline=True))
-
-    result = '<br><br>'.join(filter(None, sections)).strip()
-    return result or _render_plain_text(candidate)
 
 
 
@@ -525,8 +490,8 @@ async def _ask_legal_internal(
                                 text = "\n\n".join(chunks) if chunks else ""
 
                             final_raw = (text or accumulated_text or "").strip()
-                            logger.info("OpenAI raw response (stream): %s", final_raw)
-                            formatted_final = format_legal_response_text(final_raw) if final_raw else ""
+                            logger.debug("OpenAI raw response (stream): %s", final_raw)
+                            formatted_final = final_raw
                             if callback and formatted_final:
                                 try:
                                     if asyncio.iscoroutinefunction(callback):
@@ -543,9 +508,8 @@ async def _ask_legal_internal(
                     text = getattr(resp, "output_text", None)
                     if text and text.strip():
                         raw = text.strip()
-                        logger.info("OpenAI raw response: %s", raw)
-                        formatted_text = format_legal_response_text(raw)
-                        return {"ok": True, "text": formatted_text, "usage": getattr(resp, "usage", None)}
+                        logger.debug("OpenAI raw response: %s", raw)
+                        return {"ok": True, "text": raw, "usage": getattr(resp, "usage", None)}
 
                     items = getattr(resp, "output", []) or []
                     chunks: list[str] = []
@@ -559,7 +523,7 @@ async def _ask_legal_internal(
                         logger.debug("OpenAI raw response (joined): %s", joined)
                         return {
                             "ok": True,
-                            "text": format_legal_response_text(joined),
+                            "text": joined,
                             "usage": getattr(resp, "usage", None),
                         }
 
