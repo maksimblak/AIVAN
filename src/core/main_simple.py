@@ -45,6 +45,13 @@ from aiogram.types import (
 )
 
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
+from src.bot.document_drafter import (
+    DocumentDraftingError,
+    build_docx_from_markdown,
+    format_plan_summary,
+    generate_document,
+    plan_document,
+)
 from src.bot.status_manager import ProgressStatus, progress_router
 
 from src.bot.stream_manager import StreamingCallback, StreamManager
@@ -242,6 +249,12 @@ class ResponseTimer:
 class DocumentProcessingStates(StatesGroup):
     waiting_for_document = State()
     processing_document = State()
+
+
+class DocumentDraftStates(StatesGroup):
+    waiting_for_request = State()
+    asking_details = State()
+    generating = State()
 
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
@@ -2074,6 +2087,209 @@ async def handle_help_info_callback(callback: CallbackQuery):
 # ============ ОБРАБОТЧИКИ СИСТЕМЫ ДОКУМЕНТООБОРОТА ============
 
 
+async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Запуск режима подготовки нового документа."""
+    if not callback.from_user:
+        await callback.answer("❌ Не удалось определить пользователя")
+        return
+
+    try:
+        await state.clear()
+        await state.set_state(DocumentDraftStates.waiting_for_request)
+        intro_text = (
+            f"{Emoji.MAGIC} <b>Создание юридического документа</b>\n\n"
+            "Кратко опишите, какой документ нужен и для какой ситуации. "
+            "После этого я задам нужные уточнения и подготовлю проект в формате DOCX."
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=f"{Emoji.BACK} Отмена", callback_data="doc_draft_cancel")]]
+        )
+        await callback.message.answer(intro_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Не удалось запустить конструктор документа: %s", exc, exc_info=True)
+        await callback.answer("Не удалось запустить конструктор", show_alert=True)
+
+
+async def handle_doc_draft_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    """Отмена процесса создания документа."""
+    await state.clear()
+    with suppress(Exception):
+        await callback.message.answer(f"{Emoji.BACK} Создание документа отменено")
+    with suppress(Exception):
+        await callback.answer()
+
+
+async def handle_doc_draft_request(message: Message, state: FSMContext) -> None:
+    """Обработка исходного запроса юриста."""
+    request_text = (message.text or "").strip()
+    if not request_text:
+        await message.answer(f"{Emoji.WARNING} Опишите, пожалуйста, какой документ нужен")
+        return
+
+    if openai_service is None:
+        await message.answer(f"{Emoji.ERROR} Сервис генерации документов временно недоступен. Попробуйте позже.")
+        await state.clear()
+        return
+
+    status_msg = await message.answer(f"{Emoji.LOADING} Анализирую запрос…")
+    try:
+        plan = await plan_document(openai_service, request_text)
+    except DocumentDraftingError as err:
+        with suppress(Exception):
+            await status_msg.edit_text(f"{Emoji.ERROR} Не получилось составить план вопросов: {err}")
+        await state.clear()
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Ошибка планирования документа: %s", exc, exc_info=True)
+        with suppress(Exception):
+            await status_msg.edit_text(f"{Emoji.ERROR} Что-то пошло не так при обращении к модели")
+        await state.clear()
+        return
+    else:
+        with suppress(Exception):
+            await status_msg.delete()
+
+    await state.update_data(
+        draft_request=request_text,
+        draft_plan={"title": plan.title, "questions": plan.questions, "notes": plan.notes},
+        draft_answers=[],
+        current_question_index=0,
+    )
+
+    summary = format_plan_summary(plan)
+    await message.answer(summary)
+
+    if plan.questions:
+        await state.set_state(DocumentDraftStates.asking_details)
+        await _send_next_question(message, state, prefix="Вопрос")
+    else:
+        await state.set_state(DocumentDraftStates.generating)
+        await message.answer(f"{Emoji.LOADING} Деталей достаточно, формирую документ…")
+        await _finalize_draft(message, state)
+
+
+async def handle_doc_draft_answer(message: Message, state: FSMContext) -> None:
+    """Обработка ответов юриста на уточняющие вопросы."""
+    data = await state.get_data()
+    plan = data.get("draft_plan") or {}
+    questions = plan.get("questions") or []
+    index = data.get("current_question_index", 0)
+
+    if index >= len(questions):
+        await message.answer(f"{Emoji.WARNING} Все ответы уже получены, приступаю к формированию документа")
+        await state.set_state(DocumentDraftStates.generating)
+        await _finalize_draft(message, state)
+        return
+
+    answer_text = (message.text or "").strip()
+    if not answer_text:
+        await message.answer(f"{Emoji.WARNING} Пожалуйста, введите ответ")
+        return
+
+    answers = data.get("draft_answers") or []
+    answers.append({"question": questions[index]["text"], "answer": answer_text})
+    index += 1
+
+    await state.update_data(draft_answers=answers, current_question_index=index)
+
+    if index < len(questions):
+        await _send_next_question(message, state, prefix="Вопрос")
+    else:
+        await state.set_state(DocumentDraftStates.generating)
+        await message.answer(f"{Emoji.LOADING} Спасибо! Формирую документ…")
+        await _finalize_draft(message, state)
+
+
+async def _send_next_question(message: Message, state: FSMContext, *, prefix: str) -> None:
+    data = await state.get_data()
+    plan = data.get("draft_plan") or {}
+    questions = plan.get("questions") or []
+    index = data.get("current_question_index", 0)
+
+    if index >= len(questions):
+        return
+
+    question = questions[index]
+    purpose = question.get("purpose")
+    text = question.get("text", "")
+    parts = [f"{Emoji.MAGIC} {prefix} {index + 1}: {text}"]
+    if purpose:
+        parts.append(f"<i>Цель: {purpose}</i>")
+    await message.answer("\n".join(parts), parse_mode=ParseMode.HTML)
+
+
+async def _finalize_draft(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    request_text = data.get("draft_request", "")
+    plan = data.get("draft_plan") or {}
+    answers = data.get("draft_answers") or []
+    title = plan.get("title", "Документ")
+
+    if openai_service is None:
+        await message.answer(f"{Emoji.ERROR} Сервис генерации документов временно недоступен. Попробуйте позже.")
+        await state.clear()
+        return
+
+    try:
+        result = await generate_document(openai_service, request_text, title, answers)
+    except DocumentDraftingError as err:
+        await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
+        await state.clear()
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
+        await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
+        await state.clear()
+        return
+
+    if result.status != "ok":
+        if result.follow_up_questions:
+            extra_questions = [
+                {"id": f"f{i+1}", "text": item, "purpose": "Дополнительное уточнение"}
+                for i, item in enumerate(result.follow_up_questions)
+            ]
+            await state.update_data(
+                draft_plan={
+                    "title": result.title or title,
+                    "questions": extra_questions,
+                    "notes": plan.get("notes", []),
+                },
+                current_question_index=0,
+                draft_answers=answers,
+            )
+            await state.set_state(DocumentDraftStates.asking_details)
+            await message.answer(f"{Emoji.WARNING} Нужно несколько уточнений, чтобы завершить документ.")
+            await _send_next_question(message, state, prefix="Дополнительный вопрос")
+            return
+
+        issues_text = "\n".join(result.issues) or "Модель не смогла подготовить документ."
+        await message.answer(f"{Emoji.WARNING} Документ не готов. Причина:\n{issues_text}")
+        await state.clear()
+        return
+
+    notes: list[str] = []
+    if result.validated:
+        notes.append("Проверено:\n- " + "\n- ".join(result.validated))
+    if result.issues:
+        notes.append(f"{Emoji.WARNING} На что обратить внимание:\n- " + "\n- ".join(result.issues))
+    if notes:
+        await message.answer("\n\n".join(notes))
+
+
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+    try:
+        build_docx_from_markdown(result.markdown, str(tmp_path))
+        caption = f"{Emoji.DOCUMENT} {result.title}" if result.title else f"{Emoji.DOCUMENT} Документ"
+        await message.answer_document(FSInputFile(str(tmp_path)), caption=caption)
+    except DocumentDraftingError as err:
+        await message.answer(f"{Emoji.ERROR} Не удалось сформировать DOCX: {err}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    await state.clear()
+
+
 async def handle_document_processing(callback: CallbackQuery):
     """Обработка кнопки работы с документами"""
     try:
@@ -2095,6 +2311,9 @@ async def handle_document_processing(callback: CallbackQuery):
         for i in range(0, len(operation_buttons), 2):
             row = operation_buttons[i:i+2]
             buttons.append(row)
+
+        # Запуск конструктора документа отдельной кнопкой
+        buttons.append([InlineKeyboardButton(text=f"{Emoji.MAGIC} Создать документ", callback_data="doc_draft_start")])
 
         # Кнопка "Назад" в отдельном ряду
         buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
@@ -3114,10 +3333,18 @@ async def run_bot() -> None:
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
 
     # Обработчики системы документооборота
+    dp.callback_query.register(handle_doc_draft_start, F.data == "doc_draft_start")
+    dp.callback_query.register(handle_doc_draft_cancel, F.data == "doc_draft_cancel")
     dp.callback_query.register(handle_document_processing, F.data == "document_processing")
     dp.callback_query.register(handle_document_operation, F.data.startswith("doc_operation_"))
     dp.callback_query.register(handle_ocr_upload_more, F.data.startswith("ocr_upload_more:"))
     dp.callback_query.register(handle_back_to_menu, F.data == "back_to_menu")
+    dp.message.register(
+        handle_doc_draft_request, DocumentDraftStates.waiting_for_request, F.text
+    )
+    dp.message.register(
+        handle_doc_draft_answer, DocumentDraftStates.asking_details, F.text
+    )
     dp.message.register(
         handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
     )
