@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 from html import escape as html_escape
 from pathlib import Path
@@ -49,7 +50,7 @@ class DocumentManager:
             "summarize": {"detail_level", "language", "output_formats"},
             "analyze_risks": {"custom_criteria"},
             "chat": set(),
-            "anonymize": {"anonymization_mode", "exclude_types"},
+            "anonymize": {"anonymization_mode", "exclude_types", "custom_patterns"},
             "translate": {"source_lang", "target_lang", "output_formats"},
             "ocr": {"output_format"},
         }
@@ -95,6 +96,21 @@ class DocumentManager:
                 if key == "exclude_types" and isinstance(value, list):
                     normalized = sorted({str(item).lower() for item in value if item})
                     safe_kwargs[key] = normalized
+                elif key == "custom_patterns" and isinstance(value, list):
+                    sanitized = []
+                    for item in value:
+                        if isinstance(item, str):
+                            pattern = item.strip()
+                            if pattern:
+                                sanitized.append({"pattern": pattern})
+                        elif isinstance(item, dict) and item.get("pattern"):
+                            pattern = str(item["pattern"]).strip()
+                            if not pattern:
+                                continue
+                            name = str(item.get("name") or item.get("label") or "custom")
+                            sanitized.append({"pattern": pattern, "name": name})
+                    if sanitized:
+                        safe_kwargs[key] = sanitized
                 else:
                     safe_kwargs[key] = value
 
@@ -175,6 +191,8 @@ class DocumentManager:
                 exports.extend(self._export_ocr(document_info, data, output_format))
             elif operation == "analyze_risks":
                 exports.extend(self._export_risk_report(document_info, data))
+            elif operation == "anonymize":
+                exports.extend(self._export_anonymized(document_info, data))
         except Exception as export_error:
             logger.warning("Не удалось подготовить экспорт для %s: %s", operation, export_error)
         return exports
@@ -240,6 +258,52 @@ class DocumentManager:
 
 
         return exports
+
+    def _export_anonymized(
+        self, document_info, data: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        anonymized_text = data.get("anonymized_text")
+        if not anonymized_text:
+            return []
+
+        exports: list[dict[str, Any]] = []
+        base_name = f"{document_info.file_path.stem}_anonymized"
+        export_dir = document_info.file_path.parent
+
+        txt_path = export_dir / f"{base_name}.txt"
+        self._write_text_file(txt_path, anonymized_text)
+        exports.append({"path": str(txt_path), "format": "txt", "label": "Обезличенный текст"})
+
+        if not self._dependency_available('docx'):
+            exports.append(
+                self._dependency_notice(
+                    dependency='python-docx',
+                    feature='Anonymized DOCX export',
+                    format_name='docx',
+                )
+            )
+        else:
+            try:
+                from docx import Document  # type: ignore
+
+                doc = Document()
+                for block in anonymized_text.split("\n\n"):
+                    doc.add_paragraph(block)
+                docx_path = export_dir / f"{base_name}.docx"
+                doc.save(docx_path)
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Обезличенный DOCX"})
+            except Exception as docx_error:
+                logger.warning("Failed to build anonymized DOCX: %s", docx_error)
+                exports.append({"format": "docx", "error": "Не удалось сформировать DOCX экспорт"})
+
+        mapping = data.get("anonymization_map") or {}
+        if mapping:
+            map_path = export_dir / f"{base_name}_map.json"
+            map_path.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+            exports.append({"path": str(map_path), "format": "json", "label": "Ключ восстановления"})
+
+        return exports
+
 
     def _export_translation(
         self, document_info, data: dict[str, Any], formats: list[str]
@@ -415,10 +479,10 @@ class DocumentManager:
                 "description": "Удаление персональных данных из документа",
                 "emoji": "🔐",
                 "formats": [".pdf", ".docx", ".doc", ".txt"],
-                "parameters": ["anonymization_mode", "exclude_types"],
+                "parameters": ["anonymization_mode", "exclude_types", "custom_patterns"],
             },
             "translate": {
-                "name": "Перевод",
+                "name": "Перевод документов",
                 "description": "Перевод документа на другие языки",
                 "emoji": "🌍",
                 "formats": [".pdf", ".docx", ".doc", ".txt"],
@@ -583,11 +647,23 @@ class DocumentManager:
                 "addresses": "🏠 Адреса",
                 "documents": "📄 Номера документов",
                 "bank_details": "🏦 Банковские реквизиты",
+                "badge_numbers": "🆔 Табельные номера",
+                "registration_numbers": "🗂️ Регистрационные записи",
+                "domains": "🌐 Домены",
+                "urls": "🔗 Ссылки",
             }
+            label_map = report.get("type_labels", {})
             for data_type, count in stats.items():
                 if int(count) > 0:
-                    name = type_names.get(data_type, data_type)
+                    name = label_map.get(data_type) or type_names.get(data_type) or data_type
                     result += f"• {html_escape(str(name))}: {int(count)}\n"
+
+        custom_used = data.get("applied_custom_patterns") or []
+        if custom_used:
+            result += "\n<b>Пользовательские шаблоны:</b>\n"
+            for entry in custom_used:
+                label = entry.get("label") or entry.get("kind")
+                result += f"• {html_escape(str(label))}\n"
 
         result += "\n✅ Документ готов к безопасной передаче"
         return self._append_export_note(result, data)

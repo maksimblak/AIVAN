@@ -160,6 +160,7 @@ class PatternSpec:
     kind: str
     pattern: str
     validate: Callable[[str], bool] | None = None  # опциональная доп. проверка
+    label: str | None = None
 
 
 # ------------------------------ ОСНОВНОЙ КЛАСС ------------------------------
@@ -214,6 +215,29 @@ class DocumentAnonymizer(DocumentProcessor):
             PatternSpec("dates", r"\b(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(19\d{2}|20\d{2})\b"),
         ]
 
+        label_overrides = {
+            "names": "ФИО",
+            "phones": "Телефон",
+            "emails": "Email",
+            "addresses": "Адрес",
+            "documents": "Документ",
+            "bank_details": "Банк. реквизит",
+            "iban": "IBAN",
+            "dates": "Дата",
+        }
+        for spec in self._specs:
+            if spec.label is None and spec.kind in label_overrides:
+                spec.label = label_overrides[spec.kind]
+
+        self._specs.extend([
+            PatternSpec("badge_numbers", r"(?i)\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\d{3,10}\b", label="Табельный номер"),
+            PatternSpec("registration_numbers", r"(?i)\b(?:огрн(?:ип)?|грн|рег\.?\s*№?|окпо|оквэд|свид\.?|гос\.?рег\.?№?)\s*[:№-]*[a-z0-9\-]{5,25}\b", label="Регистрационный номер"),
+            PatternSpec("domains", r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b", label="Домен"),
+            PatternSpec("urls", r"(?i)\bhttps?://[^\s<'\"]+", label="Ссылка"),
+        ])
+
+        self._base_specs: List[PatternSpec] = list(self._specs)
+
     # --------------------------------- API ---------------------------------
 
     async def process(
@@ -221,6 +245,7 @@ class DocumentAnonymizer(DocumentProcessor):
         file_path: str | Path,
         anonymization_mode: str = "replace",  # replace | mask | remove | pseudonym
         exclude_types: List[str] | None = None,
+        custom_patterns: List[dict[str, str]] | List[str] | None = None,
         **kwargs,
     ) -> DocumentResult:
         """
@@ -240,8 +265,18 @@ class DocumentAnonymizer(DocumentProcessor):
         exclude_set = {item.lower() for item in (exclude_types or [])}
 
         # 3) Анонимизация
-        anonymized_text, report = self._anonymize_text(cleaned_text, anonymization_mode, exclude_set)
+        custom_specs = self._prepare_custom_specs(custom_patterns)
+        anonymized_text, report = self._anonymize_text(
+            cleaned_text,
+            anonymization_mode,
+            exclude_set,
+            custom_specs=custom_specs,
+        )
         report["excluded_types"] = sorted(exclude_set) if exclude_set else []
+        if custom_specs and "custom_patterns" not in report:
+            report["custom_patterns"] = [
+                {"kind": spec.kind, "label": spec.label} for spec in custom_specs
+            ]
 
         # 4) Ответ
         result_data = {
@@ -251,6 +286,10 @@ class DocumentAnonymizer(DocumentProcessor):
             "original_file": str(file_path),
             "mode": anonymization_mode,
         }
+        if custom_specs:
+            result_data["applied_custom_patterns"] = [
+                {"kind": spec.kind, "label": spec.label} for spec in custom_specs
+            ]
         return DocumentResult.success_result(
             data=result_data, message="Обезличивание документа успешно завершено"
         )
@@ -258,98 +297,144 @@ class DocumentAnonymizer(DocumentProcessor):
     # ----------------------------- ЯДРО ЛОГИКИ -----------------------------
 
     def _anonymize_text(
-        self, text: str, mode: str, exclude: set[str] | None = None
+        self,
+        text: str,
+        mode: str,
+        exclude: set[str] | None = None,
+        custom_specs: List[PatternSpec] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """
         Один проход слева-направо с единым комбинированным паттерном.
-        Исключённые типы пропускаются (не заменяются и не считаются).
-        Перекрывающиеся совпадения не ломают индексы.
+        Пользовательские шаблоны подключаются динамически.
         """
-        exclude = exclude or set()
+        exclude = set(exclude or set())
+        specs: List[PatternSpec] = list(self._base_specs)
+        if custom_specs:
+            specs.extend(custom_specs)
 
-        stats: Dict[str, int] = {
-            "names": 0,
-            "phones": 0,
-            "emails": 0,
-            "addresses": 0,
-            "documents": 0,
-            "bank_details": 0,
-            "iban": 0,
-            "dates": 0,
-        }
+        exclude_custom_all = any(key in exclude for key in ("custom", "custom_patterns"))
+
+        active_specs: List[PatternSpec] = []
+        label_map: Dict[str, str] = {}
+        for spec in specs:
+            if spec.kind in exclude:
+                continue
+            if exclude_custom_all and spec.kind.startswith("custom_"):
+                continue
+            active_specs.append(spec)
+            label_map[spec.kind] = spec.label or self._pretty_type(spec.kind)
+
+        if not active_specs:
+            return text, {"processed_items": [], "statistics": {}, "type_labels": {}}
+
+        stats: Dict[str, int] = {kind: 0 for kind in label_map}
         processed_items: List[Dict[str, Any]] = []
 
-        # Включаем только не-исключённые спецификации
-        active_specs: List[PatternSpec] = [s for s in self._specs if s.kind not in exclude]
-        if not active_specs:
-            return text, {"processed_items": [], "statistics": stats}
-
-        # Комбинированный паттерн с именованными группами
         named_parts = [f"(?P<{s.kind}>{s.pattern})" for s in active_specs]
         combined = re.compile("|".join(named_parts), flags=re.IGNORECASE | re.UNICODE)
 
         out: List[str] = []
         idx = 0
-        counts_by_type: Dict[str, int] = {}  # для нумерации [Тип-1], [Тип-2], ...
+        counts_by_type: Dict[str, int] = {}
 
-        for m in combined.finditer(text):
-            start, end = m.start(), m.end()
+        for match in combined.finditer(text):
+            start, end = match.start(), match.end()
             if start < idx:
-                # Перекрытие с предыдущей заменой — пропускаем
                 continue
 
-            # Определяем, какой вид сработал
-            kind = None
-            for s in active_specs:
-                if m.group(s.kind):
-                    kind = s.kind
-                    spec = s
+            spec = None
+            for candidate in active_specs:
+                if match.group(candidate.kind):
+                    spec = candidate
                     break
-            if not kind:
+            if spec is None:
                 continue
 
-            original = m.group(0)
+            original = match.group(0)
 
-            # Доп. валидация (если есть)
             if spec.validate and not spec.validate(original):
                 continue
 
-            # Хвост до совпадения
             out.append(text[idx:start])
 
-            # Замена
+            data_type = label_map.get(spec.kind, self._pretty_type(spec.kind))
             replacement = self._get_replacement_deterministic(
                 original=original,
-                kind=kind,
-                data_type=self._pretty_type(kind),
+                kind=spec.kind,
+                data_type=data_type,
                 mode=mode,
                 counts_by_type=counts_by_type,
             )
             out.append(replacement)
             idx = end
 
-            # Отчёт/сниппет
             left = max(0, start - 20)
             right = min(len(text), end + 20)
             processed_items.append(
                 {
-                    "type": kind,
+                    "type": spec.kind,
+                    "label": data_type,
                     "value": original,
                     "start": start,
                     "end": end,
                     "snippet": text[left:right],
                 }
             )
-            stats[kind] = stats.get(kind, 0) + 1
+            stats[spec.kind] = stats.get(spec.kind, 0) + 1
 
         out.append(text[idx:])
-        return "".join(out), {"processed_items": processed_items, "statistics": stats}
+        report = {"processed_items": processed_items, "statistics": stats, "type_labels": label_map}
+        if custom_specs:
+            report["custom_patterns"] = [
+                {"kind": spec.kind, "label": label_map.get(spec.kind, spec.label)}
+                for spec in custom_specs
+            ]
+        return "".join(out), report
+
+    def _prepare_custom_specs(
+        self, custom_patterns: List[dict[str, str]] | List[str] | None
+    ) -> List[PatternSpec]:
+        specs: List[PatternSpec] = []
+        if not custom_patterns:
+            return specs
+
+        used_kinds = {spec.kind for spec in self._base_specs}
+
+        for idx, entry in enumerate(custom_patterns, start=1):
+            pattern = ""
+            label = ""
+            if isinstance(entry, dict):
+                pattern = str(entry.get("pattern", "")).strip()
+                label = str(entry.get("name") or entry.get("label") or "").strip()
+            else:
+                pattern = str(entry).strip()
+
+            if not pattern:
+                continue
+
+            slug_source = label or f"pattern_{idx}"
+            slug = re.sub(r"[^a-z0-9]+", "_", slug_source.lower()).strip("_")
+            if not slug:
+                slug = f"pattern_{idx}"
+
+            base_kind = f"custom_{slug}"
+            kind = base_kind
+            counter = 2
+            while kind in used_kinds:
+                kind = f"{base_kind}_{counter}"
+                counter += 1
+            used_kinds.add(kind)
+
+            human_label = label or "Пользовательский шаблон"
+            specs.append(PatternSpec(kind, pattern, label=human_label))
+
+        return specs
 
     # ------------------------- ПОДМЕНА / ФОРМАТИРОВАНИЕ -------------------------
 
     @staticmethod
     def _pretty_type(kind: str) -> str:
-        return {
+        mapping = {
             "names": "Лицо",
             "phones": "Телефон",
             "emails": "Email",
@@ -358,7 +443,14 @@ class DocumentAnonymizer(DocumentProcessor):
             "bank_details": "БанкРеквизит",
             "iban": "IBAN",
             "dates": "Дата",
-        }.get(kind, "Данные")
+            "badge_numbers": "Табельный номер",
+            "registration_numbers": "Регистрационный номер",
+            "domains": "Домен",
+            "urls": "Ссылка",
+        }
+        if kind.startswith("custom_"):
+            return "Пользовательский шаблон"
+        return mapping.get(kind, "Данные")
 
     def _get_replacement_deterministic(
         self,
