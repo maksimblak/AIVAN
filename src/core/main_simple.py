@@ -492,16 +492,6 @@ def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
         ]]
     )
 
-    """Создает клавиатуру с кнопками рейтинга для оценки ответа"""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="👍", callback_data=f"rate_like_{request_id}"),
-                InlineKeyboardButton(text="👎", callback_data=f"rate_dislike_{request_id}"),
-            ]
-        ]
-    )
-
 
 async def send_rating_request(message: Message, request_id: int):
     """Отправляет сообщение с запросом на оценку ответа, если пользователь ещё не голосовал."""
@@ -2407,6 +2397,9 @@ async def handle_document_upload(message: Message, state: FSMContext):
                         await message.answer(
                             f"Не удалось отправить файл {file_name}"
                         )
+                    finally:
+                        with suppress(Exception):
+                            Path(export_path).unlink(missing_ok=True)
 
                 logger.info(
                     f"Successfully processed document {file_name} for user {message.from_user.id}"
@@ -2571,6 +2564,9 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                         await message.answer(
                             f"Не удалось отправить файл {file_name}"
                         )
+                    finally:
+                        with suppress(Exception):
+                            Path(export_path).unlink(missing_ok=True)
 
                 logger.info(
                     f"Successfully processed photo {file_name} for user {message.from_user.id}"
