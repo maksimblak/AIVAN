@@ -589,12 +589,13 @@ def render_legal_html(
         if m_num:
             bullet = f"{m_num.group(1)} "
             s = m_num.group(2)
-        elif re.match(r"^([\-–—*•])\s+(.*)$", s):
-            s = re.sub(r"^([\-–—*•])\s+", "", s, count=1)
+        elif re.match(r"^[\-–—*•]\s+(.*)$", s):
+            s = re.sub(r"^[\-–—*•]\s+", "", s, count=1)
             bullet = "• "
 
         # Экранируем HTML
         e = html_escape(s)
+        e = re.sub(r'_(?!\s)([^_<>]{1,200}?)(?<!\s)_', r'<i>\1</i>', e)
 
         # «Термин: пояснение» — по двоеточию (без словарей)
         m_term = re.match(r"^([^:\n]{3,80}:\s*)(.*)$", e)

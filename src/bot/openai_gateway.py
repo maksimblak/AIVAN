@@ -525,6 +525,7 @@ async def _ask_legal_internal(
                                 text = "\n\n".join(chunks) if chunks else ""
 
                             final_raw = (text or accumulated_text or "").strip()
+                            logger.debug("OpenAI raw response (stream): %s", final_raw)
                             formatted_final = format_legal_response_text(final_raw) if final_raw else ""
                             if callback and formatted_final:
                                 try:
@@ -541,7 +542,9 @@ async def _ask_legal_internal(
                     resp = await oai.responses.create(**payload)
                     text = getattr(resp, "output_text", None)
                     if text and text.strip():
-                        formatted_text = format_legal_response_text(text)
+                        raw = text.strip()
+                        logger.debug("OpenAI raw response: %s", raw)
+                        formatted_text = format_legal_response_text(raw)
                         return {"ok": True, "text": formatted_text, "usage": getattr(resp, "usage", None)}
 
                     items = getattr(resp, "output", []) or []
@@ -553,6 +556,7 @@ async def _ask_legal_internal(
                                 chunks.append(t)
                     if chunks:
                         joined = "\n\n".join(chunks).strip()
+                        logger.debug("OpenAI raw response (joined): %s", joined)
                         return {
                             "ok": True,
                             "text": format_legal_response_text(joined),

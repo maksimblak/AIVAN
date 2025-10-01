@@ -17,23 +17,35 @@ logger = logging.getLogger(__name__)
 
 
 def format_safe_html(raw_text: str) -> str:
-    """
-    Форматируем сырой текст в наш «красивый» HTML и санитизируем под Telegram.
-    Гарантируем, что на выходе безопасный для отправки HTML (или plain в фолбэке).
-    """
-    try:
-        html = render_legal_html(raw_text or "")
-    except Exception as e:
-        logger.warning("render_legal_html failed: %s", e)
+    """Prepare text for safe HTML delivery to Telegram.
+    Accepts plain text or already formatted HTML."""
+
+    def _looks_like_html(value: str | None) -> bool:
+        if not value:
+            return False
+        return bool(re.search(r"</?[a-zA-Z][^>]*>", value))
+
+    if _looks_like_html(raw_text):
         html = (raw_text or "").strip()
+    else:
+        try:
+            html = render_legal_html(raw_text or "")
+        except Exception as e:
+            logger.warning("render_legal_html failed: %s", e)
+            html = (raw_text or "").strip()
+
     try:
         safe_html = sanitize_telegram_html(html)
     except Exception as e:
         logger.warning("sanitize_telegram_html failed: %s", e)
-        # безопасный фолбэк — экранируем все HTML
         from html import escape
+
         safe_html = escape(html)
+
     return safe_html
+
+
+
 
 
 def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
