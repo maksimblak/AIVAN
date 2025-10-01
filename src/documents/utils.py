@@ -213,15 +213,9 @@ class TextProcessor:
             return ""
 
         # Убираем лишние пробелы и переносы
-        lines = text.split("\n")
-        cleaned_lines = []
-
-        for line in lines:
-            cleaned_line = " ".join(line.split())  # Убираем множественные пробелы
-            if cleaned_line:  # Пропускаем пустые строки
-                cleaned_lines.append(cleaned_line)
-
-        return "\n".join(cleaned_lines)
+        lines = text.splitlines()
+        cleaned = [line.rstrip() for line in lines]
+        return "\n".join(cleaned)
 
     @staticmethod
     def split_into_chunks(text: str, max_chunk_size: int = 4000, overlap: int = 200) -> list[str]:
