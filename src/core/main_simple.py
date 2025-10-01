@@ -13,6 +13,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from src.core.safe_telegram import send_html_text
@@ -2345,15 +2346,27 @@ async def handle_document_upload(message: Message, state: FSMContext):
 
             file_content = await message.bot.download_file(file_path)
 
-            # Обрабатываем документ
-            result = await document_manager.process_document(
-                user_id=message.from_user.id,
-                file_content=file_content.read(),
-                original_name=file_name,
-                mime_type=mime_type,
-                operation=operation,
-                **options,
-            )
+            documents_dir = Path("documents")
+            documents_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = Path(file_name).name or "document"
+            unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+            stored_path = documents_dir / unique_name
+
+            file_bytes = file_content.read()
+            stored_path.write_bytes(file_bytes)
+
+            try:
+                result = await document_manager.process_document(
+                    user_id=message.from_user.id,
+                    file_content=file_bytes,
+                    original_name=file_name,
+                    mime_type=mime_type,
+                    operation=operation,
+                    **options,
+                )
+            finally:
+                with suppress(Exception):
+                    stored_path.unlink(missing_ok=True)
 
             # Удаляем статусное сообщение
             try:
@@ -2496,15 +2509,27 @@ async def handle_photo_upload(message: Message, state: FSMContext):
 
             file_content = await message.bot.download_file(file_path)
 
-            # Обрабатываем фотографию через document_manager
-            result = await document_manager.process_document(
-                user_id=message.from_user.id,
-                file_content=file_content.read(),
-                original_name=file_name,
-                mime_type=mime_type,
-                operation=operation,
-                **options,
-            )
+            documents_dir = Path("documents")
+            documents_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = Path(file_name).name or "photo.jpg"
+            unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+            stored_path = documents_dir / unique_name
+
+            file_bytes = file_content.read()
+            stored_path.write_bytes(file_bytes)
+
+            try:
+                result = await document_manager.process_document(
+                    user_id=message.from_user.id,
+                    file_content=file_bytes,
+                    original_name=file_name,
+                    mime_type=mime_type,
+                    operation=operation,
+                    **options,
+                )
+            finally:
+                with suppress(Exception):
+                    stored_path.unlink(missing_ok=True)
 
             # Удаляем статусное сообщение
             try:
