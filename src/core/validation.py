@@ -215,6 +215,7 @@ class InputValidator:
             if re.search(pattern, text):
                 result.errors.append("Обнаружен запрещенный контент (персональные данные)")
                 result.severity = ValidationSeverity.ERROR
+                result.is_valid = False
                 break
 
     @classmethod

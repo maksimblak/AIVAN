@@ -396,22 +396,22 @@ def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
 async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> str | None:
     result = InputValidator.validate_question(text, user_id)
     if not result.is_valid:
-        bullet = "\n\u0007 "
+        bullet = "\n• "
         error_msg = bullet.join(result.errors)
         if result.severity == ValidationSeverity.CRITICAL:
             await message.answer(
-                f"{Emoji.ERROR} <b>Критическая ошибка валидации</b>\n\n\u0007 {error_msg}\n\n<i>Попробуйте переформулировать запрос</i>",
+                f"{Emoji.ERROR} <b>Критическая ошибка валидации</b>\n\n• {error_msg}\n\n<i>Попробуйте переформулировать запрос</i>",
                 parse_mode=ParseMode.HTML,
             )
         else:
             await message.answer(
-                f"{Emoji.WARNING} <b>Ошибка в запросе</b>\n\n\u0007 {error_msg}",
+                f"{Emoji.WARNING} <b>Ошибка в запросе</b>\n\n• {error_msg}",
                 parse_mode=ParseMode.HTML,
             )
         return None
 
     if result.warnings:
-        bullet = "\n\u0007 "
+        bullet = "\n• "
         logger.warning("Validation warnings for user %s: %s", user_id, bullet.join(result.warnings))
 
     cleaned = (result.cleaned_data or "").strip()
@@ -855,7 +855,7 @@ async def process_question(message: Message, *, text_override: str | None = None
             return
 
         # Добавляем время ответа к финальному сообщению
-        time_footer_raw = f"{Emoji.CLOCK} Время ответа: {timer.get_duration_text()}"
+        time_footer_raw = f"{Emoji.CLOCK} Время ответа: {timer.get_duration_text()} "
         if USE_STREAMING and had_stream_content and stream_manager is not None:
             final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
             combined_stream_text = (final_stream_text.rstrip() + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
@@ -2377,15 +2377,22 @@ async def handle_document_upload(message: Message, state: FSMContext):
                         if error_msg:
                             await message.answer(f"{Emoji.WARNING} {error_msg}")
                         continue
+                    label = export.get("label") or export.get("name")
+                    file_name = Path(export_path).name
+                    format_tag = str(export.get("format", "file")).upper()
+                    parts = [f"📄 {format_tag}"]
+                    if label:
+                        parts.append(str(label))
+                    parts.append(file_name)
+                    caption = " • ".join(part for part in parts if part)
                     try:
-                        caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
                         await message.answer_document(FSInputFile(export_path), caption=caption)
                     except Exception as send_error:
                         logger.error(
                             f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
                         )
                         await message.answer(
-                            f"⚠️ Не удалось отправить файл {Path(export_path).name}"
+                            f"Не удалось отправить файл {file_name}"
                         )
 
                 logger.info(
@@ -2522,15 +2529,22 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                         if error_msg:
                             await message.answer(f"{Emoji.WARNING} {error_msg}")
                         continue
+                    label = export.get("label") or export.get("name")
+                    file_name = Path(export_path).name
+                    format_tag = str(export.get("format", "file")).upper()
+                    parts = [f"📄 {format_tag}"]
+                    if label:
+                        parts.append(str(label))
+                    parts.append(file_name)
+                    caption = " • ".join(part for part in parts if part)
                     try:
-                        caption = f"{str(export.get('format', 'file')).upper()} — {Path(export_path).name}"
                         await message.answer_document(FSInputFile(export_path), caption=caption)
                     except Exception as send_error:
                         logger.error(
                             f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
                         )
                         await message.answer(
-                            f"⚠️ Не удалось отправить файл {Path(export_path).name}"
+                            f"Не удалось отправить файл {file_name}"
                         )
 
                 logger.info(
@@ -3189,4 +3203,5 @@ async def run_bot() -> None:
                 logger.error(f"❌ Error closing {service_name}: {e}")
 
         logger.info("👋 AI-Ivan shutdown complete")
+
 

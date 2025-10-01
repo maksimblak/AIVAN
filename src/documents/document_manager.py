@@ -208,7 +208,7 @@ class DocumentManager:
                     doc.add_paragraph(block)
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
-                exports.append({"path": str(docx_path), "format": "docx"})
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Резюме (DOCX)"})
 
         if "pdf" in formats:
             if not self._dependency_available('reportlab'):
@@ -236,7 +236,7 @@ class DocumentManager:
                         text_obj = canv.beginText(20 * mm, height - 20 * mm)
                 canv.drawText(text_obj)
                 canv.save()
-                exports.append({"path": str(pdf_path), "format": "pdf"})
+                exports.append({"path": str(pdf_path), "format": "pdf", "label": "Резюме (PDF)"})
 
 
         return exports
@@ -269,12 +269,12 @@ class DocumentManager:
                     doc.add_paragraph(block)
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
-                exports.append({"path": str(docx_path), "format": "docx"})
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Перевод (DOCX)"})
 
         if "txt" in formats:
             txt_path = export_dir / f"{base_name}.txt"
             self._write_text_file(txt_path, translated_text)
-            exports.append({"path": str(txt_path), "format": "txt"})
+            exports.append({"path": str(txt_path), "format": "txt", "label": "Перевод (TXT)"})
 
         return exports
 
@@ -293,7 +293,7 @@ class DocumentManager:
         if fmt == "txt":
             txt_path = export_dir / f"{base_name}.txt"
             self._write_text_file(txt_path, recognized_text)
-            exports.append({"path": str(txt_path), "format": "txt"})
+            exports.append({"path": str(txt_path), "format": "txt", "label": "Оцифровка (TXT)"})
         elif fmt == "docx":
             if not self._dependency_available('docx'):
                 exports.append(
@@ -311,7 +311,7 @@ class DocumentManager:
                     doc.add_paragraph(block)
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
-                exports.append({"path": str(docx_path), "format": "docx"})
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Оцифровка (DOCX)"})
 
         elif fmt == "pdf":
             if not self._dependency_available('reportlab'):
@@ -339,7 +339,7 @@ class DocumentManager:
                         text_obj = canv.beginText(20 * mm, height - 20 * mm)
                 canv.drawText(text_obj)
                 canv.save()
-                exports.append({"path": str(pdf_path), "format": "pdf"})
+                exports.append({"path": str(pdf_path), "format": "pdf", "label": "Оцифровка (PDF)"})
 
 
         else:
@@ -373,7 +373,7 @@ class DocumentManager:
             document_info.file_path.parent / f"{document_info.file_path.stem}_risk_report.txt"
         )
         self._write_text_file(txt_path, "\n".join(report_lines))
-        return [{"path": str(txt_path), "format": "txt"}]
+        return [{"path": str(txt_path), "format": "txt", "label": "Отчёт о рисках"}]
 
     def _write_text_file(self, path: Path, content: str) -> None:
         path.write_text(content or "", encoding="utf-8")
