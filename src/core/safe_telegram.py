@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from html import escape as html_escape
 import re
 from typing import List, Optional
 
@@ -18,15 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def format_safe_html(raw_text: str) -> str:
-    """Simple HTML-safe representation that preserves line breaks."""
+    """Sanitize text for Telegram while preserving simple markup and line breaks."""
     normalized = (raw_text or "").replace("\r\n", "\n")
-    escaped = html_escape(normalized)
-    html = escaped.replace("\n", "<br>")
     try:
-        return sanitize_telegram_html(html)
+        safe_html = sanitize_telegram_html(normalized)
     except Exception as e:
         logger.warning("sanitize_telegram_html failed: %s", e)
-        return html or "-"
+        safe_html = normalized or "-"
+    return safe_html.replace("\n", "<br>")
 
 
 
