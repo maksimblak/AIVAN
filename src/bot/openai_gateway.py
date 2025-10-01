@@ -20,6 +20,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+MODEL_CAPABILITIES: dict[str, dict[str, bool]] = {}
+_VALIDATED_MODELS: set[str] = set()
+
 StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
 __all__ = ["ask_legal", "ask_legal_stream", "format_legal_response_text", "_make_async_client"]
@@ -404,11 +407,19 @@ async def _ask_legal_internal(
     }
     sampling_payload = {"temperature": temperature, "top_p": top_p}
 
+    model_caps = MODEL_CAPABILITIES.setdefault(model, {})
+    include_sampling = model_caps.get("supports_sampling", True)
+
     if not (os.getenv("DISABLE_WEB", "0").strip() in ("1", "true", "yes", "on")):
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     async with await _make_async_client() as oai:
-        schema_supported = "response_format" in inspect.signature(oai.responses.create).parameters
+        stored_schema = model_caps.get("supports_schema")
+        if stored_schema is None:
+            schema_supported = "response_format" in inspect.signature(oai.responses.create).parameters
+            model_caps["supports_schema"] = schema_supported
+        else:
+            schema_supported = stored_schema
         schema_payload: dict[str, Any] = (
             {"response_format": {"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA}}
             if schema_supported
@@ -416,8 +427,6 @@ async def _ask_legal_internal(
         )
         if not schema_supported:
             logger.debug("Responses API does not accept response_format; falling back to raw JSON parsing")
-
-        include_sampling = True
 
         def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
             payload_base = base_core.copy()
@@ -433,15 +442,18 @@ async def _ask_legal_internal(
         attempts = build_attempts(schema_supported, include_sampling)
 
         last_err = None
-        for i in range(2):
-            try:
-                await oai.models.retrieve(model)
-                break
-            except Exception as e:
-                last_err = str(e)
-                if i == 1:
-                    return {"ok": False, "error": last_err}
-                await asyncio.sleep(0.6)
+        if model not in _VALIDATED_MODELS:
+            for i in range(2):
+                try:
+                    await oai.models.retrieve(model)
+                    _VALIDATED_MODELS.add(model)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = str(e)
+                    if i == 1:
+                        return {"ok": False, "error": last_err}
+                    await asyncio.sleep(0.6)
 
         while True:
             retry_payload = False
@@ -534,6 +546,7 @@ async def _ask_legal_internal(
                             "Responses API rejected response_format; retrying without JSON schema enforcement"
                         )
                         schema_supported = False
+                        model_caps["supports_schema"] = False
                         attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
@@ -542,6 +555,7 @@ async def _ask_legal_internal(
                             "Responses API rejected sampling parameters; retrying with defaults"
                         )
                         include_sampling = False
+                        model_caps["supports_sampling"] = False
                         attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
@@ -554,6 +568,7 @@ async def _ask_legal_internal(
                             "Responses API rejected sampling parameters; retrying with defaults"
                         )
                         include_sampling = False
+                        model_caps["supports_sampling"] = False
                         attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break

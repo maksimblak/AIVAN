@@ -202,7 +202,7 @@ class DocumentManager:
         exports: list[dict[str, Any]] = []
         try:
             if operation == "summarize":
-                formats = options.get("output_formats") or ["docx", "pdf"]
+                formats = options.get("output_formats") or ["docx"]
                 exports.extend(self._export_summary(document_info, data, formats))
             elif operation == "translate":
                 formats = options.get("output_formats") or ["docx", "txt"]
@@ -248,35 +248,6 @@ class DocumentManager:
                 docx_path = export_dir / f"{base_name}.docx"
                 doc.save(docx_path)
                 exports.append({"path": str(docx_path), "format": "docx", "label": "Резюме (DOCX)"})
-
-        if "pdf" in formats:
-            if not self._dependency_available('reportlab'):
-                exports.append(
-                    self._dependency_notice(
-                        dependency='reportlab',
-                        feature='PDF export',
-                        format_name='pdf',
-                    )
-                )
-            else:
-                from reportlab.lib.pagesizes import A4  # type: ignore
-                from reportlab.lib.units import mm  # type: ignore
-                from reportlab.pdfgen import canvas  # type: ignore
-
-                pdf_path = export_dir / f"{base_name}.pdf"
-                canv = canvas.Canvas(str(pdf_path), pagesize=A4)
-                width, height = A4
-                text_obj = canv.beginText(20 * mm, height - 20 * mm)
-                for line in summary_content.splitlines():
-                    text_obj.textLine(line)
-                    if text_obj.getY() < 20 * mm:
-                        canv.drawText(text_obj)
-                        canv.showPage()
-                        text_obj = canv.beginText(20 * mm, height - 20 * mm)
-                canv.drawText(text_obj)
-                canv.save()
-                exports.append({"path": str(pdf_path), "format": "pdf", "label": "Резюме (PDF)"})
-
 
         return exports
 
