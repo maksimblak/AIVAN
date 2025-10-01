@@ -8,6 +8,7 @@ import importlib.util
 import json
 import logging
 from html import escape as html_escape
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,13 @@ logger = logging.getLogger(__name__)
 
 class DocumentManager:
     """Центральный менеджер для работы с документами"""
+    RISK_LEVEL_LABELS = {
+        "low": "низкий",
+        "medium": "средний",
+        "high": "высокий",
+        "critical": "критический",
+    }
+
 
     def __init__(self, openai_service=None, storage_path: str = "data/documents"):
         self.openai_service = openai_service
@@ -66,6 +74,19 @@ class DocumentManager:
         message = f"{feature} requires {dependency} to be installed."
         logger.warning(message)
         return {"format": format_name, "error": message}
+
+    def _localize_risk_level(self, level: str | None, *, uppercase: bool = False, capitalize: bool = False) -> str:
+        if level is None:
+            label = "неизвестный"
+        else:
+            key = str(level).lower()
+            label = self.RISK_LEVEL_LABELS.get(key, str(level))
+        if uppercase:
+            return label.upper()
+        if capitalize:
+            return label.capitalize()
+        return label
+
 
 
     async def process_document(
@@ -401,33 +422,123 @@ class DocumentManager:
 
         return exports
 
+
     def _export_risk_report(self, document_info, data: dict[str, Any]) -> list[dict[str, Any]]:
         overall = data.get("overall_risk_level")
-        pattern_risks = data.get("pattern_risks", [])
-        ai_analysis = data.get("ai_analysis", {}).get("analysis", "")
-        highlighted = data.get("highlighted_text", "")
-        if not overall and not pattern_risks and not ai_analysis:
+        pattern_risks = data.get("pattern_risks", []) or []
+        ai_section = data.get("ai_analysis", {}) or {}
+        ai_risks = ai_section.get("risks", []) or []
+        summary = ai_section.get("summary") or ""
+        highlighted = data.get("highlighted_text", "") or ""
+        recommendations = data.get("recommendations", []) or []
+        compliance = data.get("legal_compliance", {}) or {}
+        violations = compliance.get("violations") or []
+        timestamp = data.get("analysis_timestamp")
+
+        if not (
+            overall
+            or pattern_risks
+            or ai_risks
+            or violations
+            or highlighted
+            or summary
+            or recommendations
+        ):
             return []
 
-        report_lines = [
-            f"Общий уровень риска: {overall}",
-            "",
-            "Найденные риски:",
-        ]
-        for risk in pattern_risks:
-            report_lines.append(
-                f"- [{risk.get('risk_level', 'unknown')}] {risk.get('description', '')}"
-            )
-        if ai_analysis:
-            report_lines.extend(["", "AI-анализ:", ai_analysis])
-        if highlighted:
-            report_lines.extend(["", "Контекст с подсветкой:", highlighted])
+        exports: list[dict[str, str]] = []
+        base_name = f"{document_info.file_path.stem}_risk_report"
+        export_dir = document_info.file_path.parent
 
-        txt_path = (
-            document_info.file_path.parent / f"{document_info.file_path.stem}_risk_report.txt"
-        )
-        self._write_text_file(txt_path, "\n".join(report_lines))
-        return [{"path": str(txt_path), "format": "txt", "label": "Отчёт о рисках"}]
+        docx_created = False
+        if self._dependency_available('docx'):
+            try:
+                from docx import Document  # type: ignore
+
+                doc = Document()
+                doc.add_heading('Отчёт о рисках', level=1)
+                doc.add_paragraph(f"Документ: {document_info.original_name}")
+                if timestamp:
+                    try:
+                        dt = datetime.fromisoformat(str(timestamp))
+                        doc.add_paragraph(f"Дата анализа: {dt.strftime('%d.%m.%Y %H:%M')}")
+                    except (ValueError, TypeError):
+                        doc.add_paragraph(f"Дата анализа: {timestamp}")
+                if overall:
+                    level_text = self._localize_risk_level(overall, capitalize=True)
+                    doc.add_paragraph(f"Общий уровень риска: {level_text}")
+                if summary:
+                    doc.add_heading('Краткое резюме', level=2)
+                    doc.add_paragraph(summary)
+
+                combined_risks = pattern_risks + ai_risks
+                if combined_risks:
+                    doc.add_heading('Обнаруженные риски', level=2)
+                    for risk in combined_risks[:30]:
+                        level_text = self._localize_risk_level(risk.get('risk_level'), capitalize=True)
+                        description = str(risk.get('description') or 'Описание не указано')
+                        paragraph = doc.add_paragraph(style='List Bullet')
+                        run = paragraph.add_run(f"{level_text}: ")
+                        run.bold = True
+                        paragraph.add_run(description)
+                        clause = risk.get('clause_text')
+                        if clause:
+                            doc.add_paragraph(str(clause))
+                        refs = [str(ref) for ref in (risk.get('law_refs') or []) if ref]
+                        if refs:
+                            doc.add_paragraph('Нормативные ссылки: ' + ', '.join(refs))
+                    if len(combined_risks) > 30:
+                        doc.add_paragraph(f"...и ещё {len(combined_risks) - 30} рисков", style='List Bullet')
+
+                if violations:
+                    doc.add_heading('Потенциальные нарушения', level=2)
+                    for violation in violations[:30]:
+                        paragraph = doc.add_paragraph(style='List Bullet')
+                        note = str(violation.get('note') or violation.get('text') or 'Нарушение')
+                        paragraph.add_run(note)
+                        refs = [str(ref) for ref in (violation.get('law_refs') or []) if ref]
+                        if refs:
+                            doc.add_paragraph('Нормативные ссылки: ' + ', '.join(refs))
+                    if len(violations) > 30:
+                        doc.add_paragraph(f"...и ещё {len(violations) - 30} пунктов", style='List Bullet')
+
+                if recommendations:
+                    doc.add_heading('Рекомендации', level=2)
+                    for rec in recommendations[:20]:
+                        doc.add_paragraph(str(rec), style='List Bullet')
+
+                if highlighted:
+                    doc.add_heading('Контекст с подсветкой', level=2)
+                    doc.add_paragraph(str(highlighted))
+
+                docx_path = export_dir / f"{base_name}.docx"
+                doc.save(docx_path)
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Отчёт о рисках (DOCX)"})
+                docx_created = True
+            except Exception as exc:  # pragma: no cover
+                logger.error("Не удалось сформировать DOCX отчёт о рисках: %s", exc)
+
+        if not docx_created:
+            txt_path = export_dir / f"{base_name}.txt"
+            report_lines = [f"Общий уровень риска: {overall or 'неизвестен'}", "", "Найденные риски:"]
+            for risk in pattern_risks:
+                report_lines.append(
+                    f"- [{risk.get('risk_level', 'unknown')}] {risk.get('description', '')}"
+                )
+            for risk in ai_risks:
+                report_lines.append(
+                    f"- [{risk.get('risk_level', 'unknown')}] {risk.get('description', '')}"
+                )
+            if summary:
+                report_lines.extend(["", "Краткое резюме:", summary])
+            if recommendations:
+                report_lines.extend(["", "Рекомендации:"] + [f"- {rec}" for rec in recommendations])
+            if highlighted:
+                report_lines.extend(["", "Контекст с подсветкой:", highlighted])
+            self._write_text_file(txt_path, "\n".join(report_lines))
+            exports.append({"path": str(txt_path), "format": "txt", "label": "Отчёт о рисках"})
+
+        return exports
 
     def _write_text_file(self, path: Path, content: str) -> None:
         path.write_text(content or "", encoding="utf-8")
@@ -550,45 +661,58 @@ class DocumentManager:
 
         return self._append_export_note(result, data)
 
+
     def _format_risk_analysis_result(self, header: str, data: dict[str, Any]) -> str:
-        overall_risk = data.get("overall_risk_level", "неизвестен")
+        overall_risk = data.get("overall_risk_level")
         risk_emojis = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}
-        emoji = risk_emojis.get(str(overall_risk).lower(), "✅")
+        level_key = str(overall_risk).lower() if overall_risk is not None else ""
+        emoji = risk_emojis.get(level_key, "✅")
+        localized_level = self._localize_risk_level(overall_risk, uppercase=True)
+        result = f"{header}<b>{emoji} Общий уровень риска: {html_escape(localized_level)}</b>\n\n"
 
-        result = f"{header}<b>{emoji} Общий уровень риска: {html_escape(str(overall_risk).upper())}</b>\n\n"
+        pattern_risks = data.get("pattern_risks", []) or []
+        ai_risks = data.get("ai_analysis", {}).get("risks", []) or []
+        combined_risks = pattern_risks + ai_risks
+        if combined_risks:
+            result += f"<b>⚠️ Обнаруженные риски: {len(combined_risks)}</b>\n\n"
+            for risk in combined_risks[:3]:
+                level_emoji = risk_emojis.get(str(risk.get('risk_level', 'medium')).lower(), "🟡")
+                level_label = html_escape(self._localize_risk_level(risk.get('risk_level'), capitalize=True))
+                desc = html_escape(str(risk.get('description', 'Неописанный риск')))
+                result += f"{level_emoji} <b>{level_label}</b>: {desc}\n"
+            if len(combined_risks) > 3:
+                result += f"\n<i>...и ещё {len(combined_risks) - 3} рисков</i>\n"
+        else:
+            result += "Риски не обнаружены\n"
 
-        pattern_risks = data.get("pattern_risks", [])
-        if pattern_risks:
-            result += f"<b>⚠️ Обнаруженные риски: {len(pattern_risks)}</b>\n\n"
-            for risk in pattern_risks[:3]:
-                level_emoji = risk_emojis.get(str(risk.get('risk_level', 'medium')).lower(), '🟡')
-                desc = html_escape(risk.get('description', 'Неописанный риск'))
-                result += f"{level_emoji} {desc}\n"
-            if len(pattern_risks) > 3:
-                result += f"\n<i>...и ещё {len(pattern_risks) - 3} рисков</i>\n"
+        ai_analysis = data.get("ai_analysis", {}) or {}
+        summary = ai_analysis.get("summary")
+        if summary:
+            trimmed = summary if len(summary) <= 1500 else summary[:1500] + "...\n\n(Полный отчёт доступен в файле)"
+            result += f"\n<b>🤖 Краткое резюме:</b>\n{html_escape(trimmed)}\n"
 
-        ai_analysis = data.get("ai_analysis", {})
-        if ai_analysis.get("analysis"):
-            analysis_text = ai_analysis["analysis"]
-            if len(analysis_text) > 1500:
-                analysis_text = analysis_text[:1500] + "...\n\n(Полный анализ доступен в файле)"
-            result += f"\n<b>🤖 AI-анализ:</b>\n{html_escape(analysis_text)}\n"
-
-        legal_compliance = data.get("legal_compliance", {})
+        legal_compliance = data.get("legal_compliance", {}) or {}
         violations = legal_compliance.get("violations") or []
         if violations:
             result += "\n<b>⚖️ Возможные нарушения:</b>\n"
             for violation in violations[:3]:
-                reference = violation.get("reference")
-                text = html_escape(violation.get("text", ""))
-                if reference:
-                    result += f"- {text} ({html_escape(reference)})\n"
-                else:
-                    result += f"- {text}\n"
+                text_value = str(violation.get("text") or violation.get("note") or "Нарушение")
+                text_line = html_escape(text_value)
+                refs = [str(ref) for ref in (violation.get("law_refs") or []) if ref]
+                if refs:
+                    refs_text = html_escape(", ".join(refs))
+                    text_line += f" ({refs_text})"
+                result += f"- {text_line}\n"
             if len(violations) > 3:
                 result += f"<i>...и ещё {len(violations) - 3} пунктов</i>\n"
         elif legal_compliance.get("status") == "completed":
             result += "\n<b>⚖️ Возможные нарушения:</b> не выявлены.\n"
+
+        recommendations = data.get("recommendations", []) or []
+        if recommendations:
+            result += "\n<b>Рекомендации:</b>\n"
+            for rec in recommendations[:3]:
+                result += f"• {html_escape(str(rec))}\n"
 
         return self._append_export_note(result, data)
 
