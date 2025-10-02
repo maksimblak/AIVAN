@@ -7,6 +7,7 @@ from .anonymizer import DocumentAnonymizer
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .document_chat import DocumentChat
 from .document_manager import DocumentManager
+from .storage_backends import ArtifactUploader, NoopArtifactUploader, S3ArtifactUploader
 from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
 from .summarizer import DocumentSummarizer
@@ -23,4 +24,7 @@ __all__ = [
     "DocumentAnonymizer",
     "DocumentTranslator",
     "OCRConverter",
+    "ArtifactUploader",
+    "NoopArtifactUploader",
+    "S3ArtifactUploader",
 ]
