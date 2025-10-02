@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+from src.core.settings import AppSettings
+
 import sys
 
 _LEVELS = {
@@ -14,9 +15,9 @@ _LEVELS = {
 }
 
 
-def setup_logging() -> None:
-    level = _LEVELS.get(os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
-    log_json = os.getenv("LOG_JSON", "1") in ("1", "true", "yes")
+def setup_logging(settings: AppSettings) -> None:
+    level = _LEVELS.get(settings.log_level.upper(), logging.INFO)
+    log_json = bool(settings.log_json)
 
     root = logging.getLogger()
     root.setLevel(level)

@@ -12,7 +12,8 @@ import base64
 import hashlib
 import logging
 import mimetypes
-import os
+from src.core.settings import AppSettings
+
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,26 +31,6 @@ logger = logging.getLogger(__name__)
 # Конфигурация по ENV с безопасными дефолтами
 # ————————————————————————————————————————————————————————————————————————————
 
-def _env_bool(name: str, default: bool) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, "").strip() or default)
-    except Exception:
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, "").strip() or default)
-    except Exception:
-        return default
-
 
 # ————————————————————————————————————————————————————————————————————————————
 # Основной класс
@@ -65,21 +46,25 @@ class PageResult:
 class OCRConverter(DocumentProcessor):
     """OCR распознавание и конвертация документов."""
 
-    def __init__(self) -> None:
+    def __init__(self, settings: AppSettings | None = None) -> None:
         super().__init__(name="OCRConverter", max_file_size=100 * 1024 * 1024)  # 100 MB
         self.supported_formats = [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"]
 
-        # Настройки из окружения
-        self.paddle_lang_base: str = (os.getenv("OCR_LANG") or "ru").strip()
-        self.use_openai: bool = _env_bool("OCR_ALLOW_OPENAI", True)
-        self.openai_model: str = (os.getenv("OPENAI_OCR_MODEL") or "gpt-4o-mini").strip()
-        self.openai_timeout: float = _env_float("OPENAI_TIMEOUT", 60.0)
-        self.max_pdf_concurrency: int = max(1, _env_int("OCR_MAX_CONCURRENCY", 3))
-        self.preprocess_max_side: int = max(512, _env_int("OCR_MAX_SIDE", 2600))
+        if settings is None:
+            from src.core.app_context import get_settings  # avoid circular import
 
-        # Пороги второго прохода
-        self.second_pass_conf: float = _env_float("OCR_SECOND_PASS_CONF", 90.0)
-        self.second_pass_qlt: float = _env_float("OCR_SECOND_PASS_QLT", 0.65)
+            settings = get_settings()
+        self._settings = settings
+        self.paddle_lang_base: str = (settings.get_str("OCR_LANG", "ru") or "ru").strip()
+        self.use_openai: bool = settings.get_bool("OCR_ALLOW_OPENAI", True)
+        self.openai_model: str = (settings.get_str("OPENAI_OCR_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
+        self.openai_timeout: float = settings.get_float("OPENAI_TIMEOUT", 60.0)
+        self.max_pdf_concurrency: int = max(1, settings.get_int("OCR_MAX_CONCURRENCY", 3))
+        self.preprocess_max_side: int = max(512, settings.get_int("OCR_MAX_SIDE", 2600))
+        self.second_pass_conf: float = settings.get_float("OCR_SECOND_PASS_CONF", 90.0)
+        self.second_pass_qlt: float = settings.get_float("OCR_SECOND_PASS_QLT", 0.65)
+        self.detector_limit: int = settings.get_int("OCR_DET_LIMIT", 1280)
+        self._openai_api_key: str = settings.openai_api_key
 
         # In-memory кэш: (sha256, engine) -> (text, conf)
         self._cache: Dict[Tuple[str, str], Tuple[str, float]] = {}
@@ -169,7 +154,7 @@ class OCRConverter(DocumentProcessor):
             best_score = self._readability_score(paddle_text) if paddle_text else 0.0
 
             # OpenAI — если пусто или «каша»
-            api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+            api_key = self._openai_api_key
             if self.use_openai and api_key and self._should_try_openai(paddle_text, paddle_conf):
                 cached = self._cache.get((sha, "openai"))
                 if cached:
@@ -273,9 +258,9 @@ class OCRConverter(DocumentProcessor):
             return "", 0.0
 
         try:
-            det_limit = int(os.getenv("OCR_DET_LIMIT", "1280"))
+            det_limit = self.detector_limit
         except Exception:
-            det_limit = 1280
+            det_limit = self.detector_limit
 
         langs_try: list[str] = [self.paddle_lang_base]
         if self.paddle_lang_base.lower() != "en":

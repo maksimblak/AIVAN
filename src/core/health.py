@@ -580,7 +580,7 @@ class HealthChecker:
 
 async def check_health(*, raise_on_degraded: bool = True) -> dict[str, Any]:
     """Run a single-pass health check suitable for Docker health probes."""
-    from dotenv import load_dotenv
+    from src.core.app_context import get_settings, set_settings
 
     from src.core.bootstrap import build_runtime
     from src.core.settings import AppSettings
@@ -589,10 +589,10 @@ async def check_health(*, raise_on_degraded: bool = True) -> dict[str, Any]:
     from src.core.session_store import SessionStore
     from src.telegram_legal_bot.ratelimit import RateLimiter
 
-    load_dotenv()
     health_logger = logging.getLogger("ai-ivan.healthcheck")
 
-    settings = AppSettings.load()
+    settings = get_settings()
+    set_settings(settings)
     runtime, container = build_runtime(settings, logger=health_logger)
 
     db = None

@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+from src.core.settings import AppSettings
+
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -77,17 +78,22 @@ class Chunk:
 class DocumentChat(DocumentProcessor):
     """Класс для интерактивного чата с документами"""
 
-    def __init__(self, openai_service=None):
+    def __init__(self, openai_service=None, settings: AppSettings | None = None):
         super().__init__(name="DocumentChat", max_file_size=50 * 1024 * 1024)
         self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
         self.openai_service = openai_service
         self.loaded_documents: dict[str, dict[str, Any]] = {}
 
-        # настройки из окружения
-        self.allow_ai = (os.getenv("CHAT_ALLOW_AI", "true").lower() in {"1", "true", "yes", "on"})
-        self.max_context_chunks = int(os.getenv("CHAT_MAX_CONTEXT_CHUNKS", "3"))
-        self.chunk_size = int(os.getenv("CHAT_CHUNK_SIZE", "3000"))
-        self.chunk_overlap = int(os.getenv("CHAT_CHUNK_OVERLAP", "400"))
+        if settings is None:
+            from src.core.app_context import get_settings  # avoid circular import
+
+            settings = get_settings()
+        self._settings = settings
+
+        self.allow_ai = settings.get_bool("CHAT_ALLOW_AI", True)
+        self.max_context_chunks = settings.get_int("CHAT_MAX_CONTEXT_CHUNKS", 3)
+        self.chunk_size = settings.get_int("CHAT_CHUNK_SIZE", 3000)
+        self.chunk_overlap = settings.get_int("CHAT_CHUNK_OVERLAP", 400)
 
     # ------------------------------- Загрузка/хранилище -------------------------------
 

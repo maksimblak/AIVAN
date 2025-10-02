@@ -67,15 +67,15 @@ from src.core.exceptions import (
     OpenAIException,
     SystemException,
     ValidationException,
-    handle_exceptions,
-    safe_execute,
 )
+from src.core.middlewares.error_middleware import ErrorHandlingMiddleware
 from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
 from src.core.session_store import SessionStore, UserSession
 from src.core.validation import InputValidator, ValidationSeverity
 from src.core.runtime import AppRuntime, DerivedRuntime, WelcomeMedia
 from src.core.settings import AppSettings
+from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
 from src.telegram_legal_bot.ratelimit import RateLimiter
 
@@ -162,6 +162,7 @@ _runtime: AppRuntime | None = None
 def set_runtime(runtime: AppRuntime) -> None:
     global _runtime
     _runtime = runtime
+    set_settings(runtime.settings)
     _sync_runtime_globals()
 
 
@@ -282,15 +283,14 @@ def _ensure_valid_user_id(raw_user_id: int | None, *, context: str) -> int:
 
 
 def _get_safe_db_method(method_name: str, default_return=None):
-    """Return DB coroutine wrapped with safe_execute when possible."""
+    """Return DB coroutine when available."""
+
+    _ = default_return  # backward compatibility
 
     if db is None or not hasattr(db, method_name):
         return None
 
-    method = getattr(db, method_name)
-    if error_handler:
-        return safe_execute(error_handler, default_return)(method)
-    return method
+    return getattr(db, method_name)
 
 # ============ УТИЛИТЫ ============
 
@@ -3075,6 +3075,7 @@ async def run_bot() -> None:
         BackgroundTaskManager,
         CacheCleanupTask,
         DatabaseCleanupTask,
+        DocumentStorageCleanupTask,
         HealthCheckTask,
         MetricsCollectionTask,
         SessionCleanupTask,
@@ -3163,7 +3164,9 @@ async def run_bot() -> None:
     error_handler = ErrorHandler(logger=logger)
     ctx.error_handler = error_handler
 
-    document_manager = DocumentManager(openai_service=openai_service)
+    dp.update.middleware(ErrorHandlingMiddleware(error_handler, logger=logger))
+
+    document_manager = DocumentManager(openai_service=openai_service, settings=cfg)
     ctx.document_manager = document_manager
     logger.info("Document processing system initialized")
 
@@ -3249,6 +3252,13 @@ async def run_bot() -> None:
             session_store, interval_seconds=cfg.session_cleanup_interval
         )
     )
+    task_manager.register_task(
+        DocumentStorageCleanupTask(
+            document_manager.storage,
+            max_age_hours=document_manager.storage.cleanup_max_age_hours,
+            interval_seconds=document_manager.storage.cleanup_interval_seconds,
+        )
+    )
 
     all_components = {
         "database": db,
@@ -3290,48 +3300,17 @@ async def run_bot() -> None:
         ]
     )
 
-    def _message_context(function_name: str):
-        def builder(message: Message, *args, **kwargs):
-            return ErrorContext(
-                user_id=message.from_user.id if getattr(message, "from_user", None) else None,
-                chat_id=message.chat.id if getattr(message, "chat", None) else None,
-                function_name=function_name,
-            )
-        return builder
-
-    def _callback_context(function_name: str):
-        def builder(callback: CallbackQuery, *args, **kwargs):
-            from_user = getattr(callback, "from_user", None)
-            message_obj = getattr(callback, "message", None)
-            return ErrorContext(
-                user_id=from_user.id if from_user else None,
-                chat_id=message_obj.chat.id if message_obj else None,
-                function_name=function_name,
-            )
-        return builder
-
-    def _wrap_message_handler(handler, name: str):
-        if error_handler:
-            return handle_exceptions(error_handler, _message_context(name))(handler)
-        return handler
-
-    def _wrap_callback_handler(handler, name: str):
-        if error_handler:
-            return handle_exceptions(error_handler, _callback_context(name))(handler)
-        return handler
-
-
     # Роутинг
-    dp.message.register(_wrap_message_handler(cmd_start, "cmd_start"), Command("start"))
-    dp.message.register(_wrap_message_handler(cmd_buy, "cmd_buy"), Command("buy"))
-    dp.message.register(_wrap_message_handler(cmd_status, "cmd_status"), Command("status"))
-    dp.message.register(_wrap_message_handler(cmd_mystats, "cmd_mystats"), Command("mystats"))
-    dp.message.register(_wrap_message_handler(cmd_ratings_stats, "cmd_ratings_stats"), Command("ratings"))
-    dp.message.register(_wrap_message_handler(cmd_error_stats, "cmd_error_stats"), Command("errors"))
+    dp.message.register(cmd_start, Command("start"))
+    dp.message.register(cmd_buy, Command("buy"))
+    dp.message.register(cmd_status, Command("status"))
+    dp.message.register(cmd_mystats, Command("mystats"))
+    dp.message.register(cmd_ratings_stats, Command("ratings"))
+    dp.message.register(cmd_error_stats, Command("errors"))
 
-    dp.callback_query.register(_wrap_callback_handler(handle_rating_callback, "handle_rating_callback"), F.data.startswith("rate_"))
+    dp.callback_query.register(handle_rating_callback, F.data.startswith("rate_"))
     dp.callback_query.register(
-        _wrap_callback_handler(handle_feedback_callback, "handle_feedback_callback"), F.data.startswith(("feedback_", "skip_feedback_"))
+        handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_"))
     )
 
     # Обработчики кнопок главного меню

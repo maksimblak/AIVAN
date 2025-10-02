@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 import re
 
+from src.documents.storage_backends import ArtifactUploader
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,83 +160,195 @@ class DocumentInfo:
     mime_type: str
     upload_time: datetime
     user_id: int
+    remote_path: str | None = None
+
 
 
 class DocumentStorage:
-    """Класс для управления хранением документов"""
+    """Manage on-disk document storage and optional remote uploads."""
 
-    def __init__(self, storage_path: str | Path = "data/documents"):
+    def __init__(
+        self,
+        storage_path: str | Path = "data/documents",
+        *,
+        max_user_quota_mb: int | None = None,
+        cleanup_max_age_hours: int = 24,
+        cleanup_interval_seconds: float = 3600.0,
+        artifact_uploader: ArtifactUploader | None = None,
+    ) -> None:
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self._write_lock = asyncio.Lock()
+        self._max_quota_bytes = (
+            int(max_user_quota_mb * 1024 * 1024) if max_user_quota_mb is not None else None
+        )
+        self._cleanup_max_age_hours = cleanup_max_age_hours
+        self._cleanup_interval_seconds = cleanup_interval_seconds
+        self._artifact_uploader = artifact_uploader
+
+    @property
+    def cleanup_interval_seconds(self) -> float:
+        return self._cleanup_interval_seconds
+
+    @property
+    def cleanup_max_age_hours(self) -> int:
+        return self._cleanup_max_age_hours
 
     def _sanitize_filename(self, filename: str) -> str:
-        """Безопасная санитизация имени файла"""
-        # Убираем путь, оставляем только имя файла
+        """Return a safe file name for storing on disk."""
         filename = Path(filename).name
-
-        # Ограничиваем длину до 100 символов
         if len(filename) > 100:
             name_part = filename[:95]
             ext_part = Path(filename).suffix
             filename = name_part + ext_part
-
-        # Оставляем только безопасные символы: буквы, цифры, точка, дефис, подчеркивание
         safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-
-        # Убираем множественные подчеркивания
         safe_filename = re.sub(r'_+', '_', safe_filename)
-
-        # Убираем начальные и конечные подчеркивания/точки
         safe_filename = safe_filename.strip('._')
-
-        # Если имя стало пустым, даем дефолтное
         if not safe_filename:
             safe_filename = "document"
-
         return safe_filename
-
-    def get_user_storage_path(self, user_id: int) -> Path:
-        """Получить путь к папке пользователя"""
-        user_path = self.storage_path / str(user_id)
-        user_path.mkdir(parents=True, exist_ok=True)
-        return user_path
 
     async def save_document(
         self, user_id: int, file_content: bytes, original_name: str, mime_type: str
     ) -> DocumentInfo:
-        """Сохранить документ пользователя"""
-        user_path = self.get_user_storage_path(user_id)
-
-        # Генерируем безопасное имя файла
+        """Persist a document to disk and optionally upload it to remote storage."""
+        user_path = await asyncio.to_thread(self._ensure_user_path_sync, user_id)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_extension = Path(original_name).suffix
         safe_name = f"{timestamp}_{self._sanitize_filename(original_name)}"
         file_path = user_path / safe_name
+        file_size = len(file_content)
 
-        # Сохраняем файл
         async with self._write_lock:
-            with open(file_path, "wb") as f:
-                f.write(file_content)
+            await self._enforce_user_quota(user_id, user_path, file_size)
+            await asyncio.to_thread(self._write_file_sync, file_path, file_content)
+
+        remote_path = await self._upload_artifact(file_path, mime_type)
+        upload_time = datetime.now()
 
         return DocumentInfo(
             file_path=file_path,
             original_name=original_name,
-            size=len(file_content),
+            size=file_size,
             mime_type=mime_type,
-            upload_time=datetime.now(),
+            upload_time=upload_time,
             user_id=user_id,
+            remote_path=remote_path,
         )
 
-    def cleanup_old_files(self, user_id: int, max_age_hours: int = 24):
-        """Очистка старых файлов пользователя"""
-        user_path = self.get_user_storage_path(user_id)
-        cutoff_time = datetime.now().timestamp() - (max_age_hours * 3600)
+    async def cleanup_old_files(self, user_id: int, max_age_hours: int | None = None) -> int:
+        user_path = self.storage_path / str(user_id)
+        if not user_path.exists():
+            return 0
+        cutoff_time = self._compute_cutoff(max_age_hours)
+        return await asyncio.to_thread(self._cleanup_user_directory_sync, user_path, cutoff_time)
 
+    async def cleanup_all_users(self, max_age_hours: int | None = None) -> int:
+        cutoff_time = self._compute_cutoff(max_age_hours)
+        return await asyncio.to_thread(self._cleanup_all_users_sync, cutoff_time)
+
+    async def get_user_usage(self, user_id: int) -> int:
+        user_path = self.storage_path / str(user_id)
+        return await self._get_directory_size(user_path)
+
+    def _compute_cutoff(self, override_hours: int | None) -> float:
+        hours = override_hours if override_hours is not None else self._cleanup_max_age_hours
+        return datetime.now().timestamp() - (hours * 3600)
+
+    def _ensure_user_path_sync(self, user_id: int) -> Path:
+        user_path = self.storage_path / str(user_id)
+        user_path.mkdir(parents=True, exist_ok=True)
+        return user_path
+
+    async def _get_directory_size(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        return await asyncio.to_thread(self._calculate_directory_size, path)
+
+    async def _enforce_user_quota(self, user_id: int, user_path: Path, incoming_size: int) -> None:
+        if self._max_quota_bytes is None:
+            return
+
+        usage = await self._get_directory_size(user_path)
+        if usage + incoming_size <= self._max_quota_bytes:
+            self._log_quota_usage(user_id, usage + incoming_size)
+            return
+
+        if self._cleanup_max_age_hours > 0:
+            cutoff = self._compute_cutoff(self._cleanup_max_age_hours)
+            await asyncio.to_thread(self._cleanup_user_directory_sync, user_path, cutoff)
+            usage = await self._get_directory_size(user_path)
+
+        if usage + incoming_size > self._max_quota_bytes:
+            raise ProcessingError(
+                "Storage quota exceeded. Remove old files and try again.",
+                "STORAGE_QUOTA_EXCEEDED",
+            )
+
+        self._log_quota_usage(user_id, usage + incoming_size)
+
+    async def _upload_artifact(self, file_path: Path, mime_type: str) -> str | None:
+        if self._artifact_uploader is None:
+            return None
+        try:
+            return await self._artifact_uploader.upload(file_path, content_type=mime_type)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to upload document %s to remote storage: %s", file_path.name, exc)
+            return None
+
+    @staticmethod
+    def _write_file_sync(file_path: Path, data: bytes) -> None:
+        with open(file_path, "wb") as handle:
+            handle.write(data)
+
+    @staticmethod
+    def _calculate_directory_size(path: Path) -> int:
+        total = 0
+        if not path.exists():
+            return total
+        for entry in path.iterdir():
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    @staticmethod
+    def _cleanup_user_directory_sync(user_path: Path, cutoff_time: float) -> int:
+        removed = 0
+        if not user_path.exists():
+            return removed
         for file_path in user_path.iterdir():
-            if file_path.is_file() and file_path.stat().st_mtime < cutoff_time:
-                try:
+            try:
+                if file_path.is_file() and file_path.stat().st_mtime < cutoff_time:
                     file_path.unlink()
-                    logger.info(f"Удален старый файл: {file_path}")
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить файл {file_path}: {e}")
+                    logger.info("Removed stale document: %s", file_path)
+                    removed += 1
+            except OSError as exc:
+                logger.warning("Failed to remove %s during cleanup: %s", file_path, exc)
+        return removed
+
+    def _cleanup_all_users_sync(self, cutoff_time: float) -> int:
+        removed = 0
+        for user_path in self.storage_path.iterdir():
+            if user_path.is_dir():
+                removed += self._cleanup_user_directory_sync(user_path, cutoff_time)
+        return removed
+
+    def _log_quota_usage(self, user_id: int, projected_usage: int) -> None:
+        if self._max_quota_bytes in (None, 0):
+            return
+        ratio = projected_usage / self._max_quota_bytes
+        percent = int(ratio * 100)
+        if ratio >= 0.9:
+            logger.warning(
+                "User %s has used %s%% of the document storage quota",
+                user_id,
+                percent,
+            )
+        elif ratio >= 0.8:
+            logger.info(
+                "User %s has used %s%% of the document storage quota",
+                user_id,
+                percent,
+            )

@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import logging
-import os
+from src.core.settings import AppSettings
+
 import re
 import time
 from pathlib import Path
@@ -142,17 +143,22 @@ def _restore_entities(text: str, mapping: Dict[str, str]) -> str:
 class DocumentTranslator(DocumentProcessor):
     """Класс для перевода документов"""
 
-    def __init__(self, openai_service=None):
+    def __init__(self, openai_service=None, settings: AppSettings | None = None):
         super().__init__(name="DocumentTranslator", max_file_size=50 * 1024 * 1024)
         self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
         self.openai_service = openai_service
         self.supported_languages = SUPPORTED_LANGUAGES.copy()
 
-        # ENV-настройки
-        self.allow_ai = (os.getenv("TRANSLATE_ALLOW_AI", "true").lower() in {"1", "true", "yes", "on"})
-        self.chunk_size = int(os.getenv("TRANSLATE_CHUNK_SIZE", "4000"))
-        self.chunk_overlap = int(os.getenv("TRANSLATE_CHUNK_OVERLAP", "300"))
-        self.max_retries = int(os.getenv("TRANSLATE_MAX_RETRIES", "2"))
+        if settings is None:
+            from src.core.app_context import get_settings  # avoid circular import
+
+            settings = get_settings()
+        self._settings = settings
+
+        self.allow_ai = settings.get_bool("TRANSLATE_ALLOW_AI", True)
+        self.chunk_size = settings.get_int("TRANSLATE_CHUNK_SIZE", 4000)
+        self.chunk_overlap = settings.get_int("TRANSLATE_CHUNK_OVERLAP", 300)
+        self.max_retries = settings.get_int("TRANSLATE_MAX_RETRIES", 2)
 
     async def process(
         self,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+from src.core.app_context import get_settings
+from src.core.settings import AppSettings
+
 from typing import Any
 
 import httpx
@@ -16,13 +18,15 @@ async def create_crypto_invoice_async(
     payload: str,
     expires_in: int = 3600,
     retries: int = 3,
+    settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     """Create a crypto invoice via Crypto Pay API (CryptoBot) asynchronously.
 
     Requires CRYPTO_PAY_TOKEN in env. Returns { ok, url?, error? }.
     Docs: https://help.crypt.bot/crypto-pay-api
     """
-    token = os.getenv("CRYPTO_PAY_TOKEN", "").strip()
+    settings = settings or get_settings()
+    token = (settings.get_str("CRYPTO_PAY_TOKEN", "") or "").strip()
     if not token:
         return {"ok": False, "error": "CRYPTO_PAY_TOKEN is not set"}
 

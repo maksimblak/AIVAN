@@ -5,6 +5,7 @@ import logging
 from typing import Any, Callable, Dict, Optional, Type, TypeVar, get_type_hints
 
 from src.core.settings import AppSettings
+from src.core.app_context import set_settings
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ class DIContainer:
 
 def create_container(settings: AppSettings) -> DIContainer:
     container = DIContainer()
+    set_settings(settings)
     container.register_singleton(AppSettings, settings)
 
     from src.core.db_advanced import DatabaseAdvanced
@@ -176,7 +178,7 @@ def create_container(settings: AppSettings) -> DIContainer:
 
     container.register_factory(
         CryptoPayProvider,
-        lambda: CryptoPayProvider(asset=settings.crypto_asset),
+        lambda: CryptoPayProvider(asset=settings.crypto_asset, settings=settings),
     )
 
     container.register_config("subscription_price_rub", settings.subscription_price_rub)

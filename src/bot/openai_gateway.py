@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
-import os
+from src.core.app_context import get_settings
+from src.core.settings import AppSettings
+
 import html
 import inspect
 import re
@@ -11,14 +13,11 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlparse
 
 import httpx
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-load_dotenv()
-
-
-
 logger = logging.getLogger(__name__)
+
+_SETTINGS: AppSettings = get_settings()
 
 MODEL_CAPABILITIES: dict[str, dict[str, bool]] = {}
 _VALIDATED_MODELS: set[str] = set()
@@ -29,7 +28,7 @@ __all__ = ["ask_legal", "ask_legal_stream", "format_legal_response_text", "_make
 
 
 def _get_env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
+    raw = _SETTINGS.get_str(name)
     if raw is None or not raw.strip():
         return default
     try:
@@ -43,7 +42,7 @@ def _get_env_float(name: str, default: float) -> float:
 
 
 def _get_env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
+    raw = _SETTINGS.get_str(name)
     if raw is None or not raw.strip():
         return default
     try:
@@ -57,7 +56,7 @@ def _get_env_int(name: str, default: int) -> int:
 
 
 def _resolve_proxy_url() -> str | None:
-    proxy = os.getenv("OPENAI_HTTP_PROXY") or os.getenv("OPENAI_PROXY")
+    proxy = _SETTINGS.get_str("OPENAI_HTTP_PROXY") or _SETTINGS.get_str("OPENAI_PROXY")
     if not proxy:
         return None
     proxy = proxy.strip()
@@ -66,8 +65,8 @@ def _resolve_proxy_url() -> str | None:
     if '://' not in proxy:
         proxy = f"http://{proxy}"
 
-    user = os.getenv("OPENAI_PROXY_USER")
-    password = os.getenv("OPENAI_PROXY_PASSWORD") or os.getenv("OPENAI_PROXY_PASS")
+    user = _SETTINGS.get_str("OPENAI_PROXY_USER")
+    password = _SETTINGS.get_str("OPENAI_PROXY_PASSWORD") or _SETTINGS.get_str("OPENAI_PROXY_PASS")
     if user and password and '@' not in proxy:
         parsed = urlparse(proxy)
         netloc = parsed.netloc or parsed.path
@@ -105,7 +104,7 @@ def _build_http_client() -> httpx.AsyncClient:
     if proxy:
         client_kwargs['proxies'] = proxy
 
-    verify = os.getenv("OPENAI_CA_BUNDLE")
+    verify = _SETTINGS.get_str("OPENAI_CA_BUNDLE")
     if verify:
         client_kwargs['verify'] = verify
 
@@ -114,20 +113,24 @@ def _build_http_client() -> httpx.AsyncClient:
 
 async def _make_async_client() -> AsyncOpenAI:
     api_key = (
-        os.getenv("OPENAI_API_KEY")
-        or os.getenv("OPENAI_KEY")
-        or os.getenv("AZURE_OPENAI_KEY")
-    )
+        _SETTINGS.openai_api_key
+        or _SETTINGS.get_str("OPENAI_KEY")
+        or _SETTINGS.get_str("AZURE_OPENAI_KEY")
+        or ""
+    ).strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable is required")
 
     base_url = (
-        os.getenv("OPENAI_BASE_URL")
-        or os.getenv("OPENAI_API_BASE")
-        or os.getenv("AZURE_OPENAI_ENDPOINT")
+        _SETTINGS.get_str("OPENAI_BASE_URL")
+        or _SETTINGS.get_str("OPENAI_API_BASE")
+        or _SETTINGS.get_str("AZURE_OPENAI_ENDPOINT")
     )
-    organization = os.getenv("OPENAI_ORGANIZATION") or os.getenv("OPENAI_ORG_ID")
-    project = os.getenv("OPENAI_PROJECT")
+    organization = (
+        _SETTINGS.get_str("OPENAI_ORGANIZATION")
+        or _SETTINGS.get_str("OPENAI_ORG_ID")
+    )
+    project = _SETTINGS.get_str("OPENAI_PROJECT")
 
     http_client = _build_http_client()
     client_kwargs: dict[str, Any] = {
@@ -146,6 +149,7 @@ async def _make_async_client() -> AsyncOpenAI:
     except Exception:
         await http_client.aclose()
         raise
+
 
 
 async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
@@ -382,18 +386,12 @@ async def _ask_legal_internal(
     system_prompt: str, user_text: str, stream: bool = False, callback=None
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
-    model = os.getenv("OPENAI_MODEL", "gpt-5")
-    max_out = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
-    verb = os.getenv("OPENAI_VERBOSITY", "medium").lower()
-    effort = os.getenv("OPENAI_REASONING_EFFORT", "medium").lower()
-    try:
-        temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.15"))
-    except (TypeError, ValueError):
-        temperature = 0.15
-    try:
-        top_p = float(os.getenv("OPENAI_TOP_P", "0.3"))
-    except (TypeError, ValueError):
-        top_p = 0.3
+    model = (_SETTINGS.get_str("OPENAI_MODEL") or "gpt-5").strip()
+    max_out = _SETTINGS.get_int("MAX_OUTPUT_TOKENS", 4096)
+    verb = (_SETTINGS.get_str("OPENAI_VERBOSITY") or "medium").lower()
+    effort = (_SETTINGS.get_str("OPENAI_REASONING_EFFORT") or "medium").lower()
+    temperature = _SETTINGS.get_float("OPENAI_TEMPERATURE", 0.15)
+    top_p = _SETTINGS.get_float("OPENAI_TOP_P", 0.3)
 
     base_core: dict[str, Any] = {
         "model": model,
@@ -410,7 +408,7 @@ async def _ask_legal_internal(
     model_caps = MODEL_CAPABILITIES.setdefault(model, {})
     include_sampling = model_caps.get("supports_sampling", True)
 
-    if not (os.getenv("DISABLE_WEB", "0").strip() in ("1", "true", "yes", "on")):
+    if not _SETTINGS.get_bool("DISABLE_WEB", False):
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     async with await _make_async_client() as oai:

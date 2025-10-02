@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+from src.core.settings import AppSettings
+
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -134,16 +135,21 @@ class SummaryStruct:
 class DocumentSummarizer(DocumentProcessor):
     """Создает структурированное саммари юридических документов"""
 
-    def __init__(self, openai_service=None):
+    def __init__(self, openai_service=None, settings: AppSettings | None = None):
         super().__init__(name="DocumentSummarizer", max_file_size=50 * 1024 * 1024)
         self.openai_service = openai_service
         self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
 
-        # env-флаги/настройки
-        self.allow_ai = (os.getenv("SUMMARY_ALLOW_AI", "true").lower() in {"1", "true", "yes", "on"})
-        self.max_key_items = int(os.getenv("SUMMARY_MAX_ITEMS", "12"))
-        self.chunk_size = int(os.getenv("SUMMARY_CHUNK_SIZE", "4000"))
-        self.chunk_overlap = int(os.getenv("SUMMARY_CHUNK_OVERLAP", "400"))
+        if settings is None:
+            from src.core.app_context import get_settings  # avoid circular import
+
+            settings = get_settings()
+        self._settings = settings
+
+        self.allow_ai = settings.get_bool("SUMMARY_ALLOW_AI", True)
+        self.max_key_items = settings.get_int("SUMMARY_MAX_ITEMS", 12)
+        self.chunk_size = settings.get_int("SUMMARY_CHUNK_SIZE", 4000)
+        self.chunk_overlap = settings.get_int("SUMMARY_CHUNK_OVERLAP", 400)
 
     # ------------------------------- Публичный API -------------------------------
 

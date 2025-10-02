@@ -319,18 +319,28 @@ class ErrorHandler:
             "user_message": custom_exc.user_message,
             "recoverable": custom_exc.recoverable,
             "timestamp": custom_exc.timestamp.isoformat(),
+            "exception_type": type(original_exc).__name__,
         }
 
         # Добавляем контекст если есть
-        if custom_exc.context:
+        context = custom_exc.context
+        if context:
+            additional = context.additional_data or {}
             log_data.update(
                 {
-                    "user_id": custom_exc.context.user_id,
-                    "chat_id": custom_exc.context.chat_id,
-                    "function": custom_exc.context.function_name,
-                    "additional_data": custom_exc.context.additional_data,
+                    "user_id": context.user_id,
+                    "chat_id": context.chat_id,
+                    "function": context.function_name,
                 }
             )
+            if additional:
+                log_data["additional_data"] = additional
+            payload = additional.get("payload")
+            if payload:
+                log_data["payload"] = payload
+            event_type = additional.get("event_type")
+            if event_type:
+                log_data["event_type"] = event_type
 
         # Добавляем стек трейс для критических ошибок
         if custom_exc.severity in [ErrorSeverity.HIGH, ErrorSeverity.CRITICAL]:
@@ -374,23 +384,6 @@ def handle_exceptions(error_handler: ErrorHandler, context_func: Callable | None
 
                 custom_exc = await error_handler.handle_exception(e, context)
                 raise custom_exc
-
-        return wrapper
-
-    return decorator
-
-
-def safe_execute(error_handler: ErrorHandler, default_return=None):
-    """Декоратор для безопасного выполнения с возвратом значения по умолчанию"""
-
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except Exception as e:
-                await error_handler.handle_exception(e)
-                return default_return
 
         return wrapper
 

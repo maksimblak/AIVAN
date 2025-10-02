@@ -3,7 +3,7 @@
 """
 
 from __future__ import annotations
-
+import asyncio
 import importlib.util
 import json
 import logging
@@ -14,6 +14,7 @@ from typing import Any, List
 
 from .anonymizer import DocumentAnonymizer
 from .base import DocumentResult, DocumentStorage, ProcessingError
+from .storage_backends import ArtifactUploader
 from .document_chat import DocumentChat
 from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
@@ -23,6 +24,7 @@ from .translator import DocumentTranslator
 # Импорт утилит для безопасной HTML сборки
 from src.core.safe_telegram import format_safe_html, split_html_for_telegram
 from src.bot.ui_components import sanitize_telegram_html
+from src.core.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +39,70 @@ class DocumentManager:
     }
 
 
-    def __init__(self, openai_service=None, storage_path: str = "data/documents"):
+    def __init__(
+        self,
+        openai_service=None,
+        storage_path: str = "data/documents",
+        *,
+        storage_quota_mb: int | None = None,
+        storage_cleanup_hours: int | None = None,
+        storage_cleanup_interval: float | None = None,
+        artifact_uploader: ArtifactUploader | None = None,
+        settings: AppSettings | None = None,
+    ):
+        if settings is None:
+            from src.core.app_context import get_settings  # avoid circular import
+
+            settings = get_settings()
+
+        self.settings = settings
         self.openai_service = openai_service
-        self.storage = DocumentStorage(storage_path)
+
+        quota_mb = storage_quota_mb if storage_quota_mb is not None else settings.document_storage_quota_mb
+        cleanup_hours_value = (
+            storage_cleanup_hours if storage_cleanup_hours is not None else settings.document_cleanup_hours
+        )
+        cleanup_interval_value = (
+            storage_cleanup_interval
+            if storage_cleanup_interval is not None
+            else settings.document_cleanup_interval_seconds
+        )
+
+        uploader = artifact_uploader or self._build_artifact_uploader(settings)
+
+        self.storage = DocumentStorage(
+            storage_path,
+            max_user_quota_mb=quota_mb,
+            cleanup_max_age_hours=cleanup_hours_value if cleanup_hours_value is not None else 24,
+            cleanup_interval_seconds=cleanup_interval_value if cleanup_interval_value is not None else 3600.0,
+            artifact_uploader=uploader,
+        )
 
         # Инициализация модулей
-        self.summarizer = DocumentSummarizer(openai_service)
+        self.summarizer = DocumentSummarizer(openai_service, settings=settings)
         self.risk_analyzer = RiskAnalyzer(openai_service)
-        self.document_chat = DocumentChat(openai_service)
-        self.anonymizer = DocumentAnonymizer()
-        self.translator = DocumentTranslator(openai_service)
-        self.ocr_converter = OCRConverter()
+        self.document_chat = DocumentChat(openai_service, settings=settings)
+        self.anonymizer = DocumentAnonymizer(settings=settings)
+        self.translator = DocumentTranslator(openai_service, settings=settings)
+        self.ocr_converter = OCRConverter(settings=settings)
+    def _build_artifact_uploader(self, settings: AppSettings) -> ArtifactUploader | None:
+        bucket = settings.documents_s3_bucket
+        if not bucket:
+            return None
+        try:
+            return S3ArtifactUploader(
+                bucket=bucket,
+                prefix=settings.documents_s3_prefix,
+                region_name=settings.documents_s3_region,
+                endpoint_url=settings.documents_s3_endpoint,
+                public_base_url=settings.documents_s3_public_url,
+                acl=settings.documents_s3_acl or None,
+            )
+        except RuntimeError as exc:
+            logger.warning("S3 artifact uploader disabled: %s", exc)
+            return None
+
+
 
         self._dependencies: dict[str, bool] = {
             'docx': self._module_available('docx'),
@@ -152,7 +207,10 @@ class DocumentManager:
                     "file_size": document_info.size,
                     "upload_time": document_info.upload_time.isoformat(),
                     "user_id": user_id,
+                    "local_path": str(document_info.file_path),
                 }
+                if document_info.remote_path:
+                    result.data["document_info"]["remote_path"] = document_info.remote_path
                 if safe_kwargs:
                     result.data["applied_options"] = dict(safe_kwargs)
 
@@ -160,7 +218,7 @@ class DocumentManager:
                 if exports:
                     result.data["exports"] = exports
 
-            self.storage.cleanup_old_files(user_id, max_age_hours=24)
+            await self.storage.cleanup_old_files(user_id, max_age_hours=24)
             return result
 
         except Exception as exc:
@@ -818,8 +876,8 @@ class DocumentManager:
         return self._append_export_note(result, data)
 
     async def cleanup_user_files(self, user_id: int, max_age_hours: int = 24):
-        self.storage.cleanup_old_files(user_id, max_age_hours)
-        self.document_chat.cleanup_old_documents(max_age_hours)
+        await self.storage.cleanup_old_files(user_id, max_age_hours)
+        await asyncio.to_thread(self.document_chat.cleanup_old_documents, max_age_hours)
 
     def _create_translated_docx(self, original_path: Path, translated_text: str, export_path: Path) -> None:
         if not self._render_text_with_original_formatting(original_path, translated_text, export_path):

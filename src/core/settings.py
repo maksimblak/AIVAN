@@ -11,6 +11,8 @@ class AppSettings(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
+    raw_env: dict[str, str] = Field(default_factory=dict, exclude=True)
+
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
 
@@ -75,6 +77,46 @@ class AppSettings(BaseModel):
     health_check_task_interval: float = Field(default=120.0, alias="HEALTH_CHECK_TASK_INTERVAL")
     metrics_collection_interval: float = Field(default=30.0, alias="METRICS_COLLECTION_INTERVAL")
 
+    document_storage_quota_mb: int | None = Field(default=None, alias="DOCUMENTS_STORAGE_QUOTA_MB")
+    document_cleanup_hours: int = Field(default=24, alias="DOCUMENTS_CLEANUP_HOURS")
+    document_cleanup_interval_seconds: float = Field(default=3600.0, alias="DOCUMENTS_CLEANUP_INTERVAL_SECONDS")
+    documents_s3_bucket: str | None = Field(default=None, alias="DOCUMENTS_S3_BUCKET")
+    documents_s3_prefix: str = Field(default="documents", alias="DOCUMENTS_S3_PREFIX")
+    documents_s3_region: str | None = Field(default=None, alias="DOCUMENTS_S3_REGION")
+    documents_s3_endpoint: str | None = Field(default=None, alias="DOCUMENTS_S3_ENDPOINT")
+    documents_s3_public_url: str | None = Field(default=None, alias="DOCUMENTS_S3_PUBLIC_URL")
+    documents_s3_acl: str | None = Field(default=None, alias="DOCUMENTS_S3_ACL")
+
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    log_json: bool = Field(default=True, alias="LOG_JSON")
+
+    def get_str(self, key: str, default: str | None = None) -> str | None:
+        return self.raw_env.get(key, default)
+
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        value = self.raw_env.get(key)
+        if value is None:
+            return default
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def get_int(self, key: str, default: int = 0) -> int:
+        value = self.raw_env.get(key)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
+
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        value = self.raw_env.get(key)
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except ValueError:
+            return default
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, value: Any) -> list[int]:
@@ -117,5 +159,7 @@ class AppSettings(BaseModel):
     def load(cls, env: Mapping[str, str] | None = None) -> "AppSettings":
         """Load settings from provided mapping or OS environment."""
         source: Mapping[str, str] = env or os.environ
-        # BaseModel.model_validate will honour field aliases.
-        return cls.model_validate(source)
+        source_map = {str(key): str(value) for key, value in source.items()}
+        settings = cls.model_validate(source_map)
+        settings.raw_env = source_map
+        return settings

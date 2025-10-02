@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from dotenv import load_dotenv
+from src.core.app_context import get_settings, set_settings
 
 # Добавляем корень проекта в PYTHONPATH
 project_root = Path(__file__).parent.parent
@@ -95,8 +95,8 @@ async def validate_di_container():
         from src.core.settings import AppSettings
         from src.core.db_advanced import DatabaseAdvanced
 
-        load_dotenv()
-        settings = AppSettings.load()
+        settings = get_settings()
+        set_settings(settings)
         container = create_container(settings)
         assert container is not None
 

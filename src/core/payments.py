@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import os
+from src.core.app_context import get_settings
+from src.core.settings import AppSettings
+
 from typing import Any
 
 from .crypto_pay import create_crypto_invoice_async
@@ -9,8 +11,11 @@ from .crypto_pay import create_crypto_invoice_async
 class CryptoPayProvider:
     """Provider wrapper for CryptoBot payments."""
 
-    def __init__(self, *, asset: str | None = None):
-        self.asset = asset or os.getenv("CRYPTO_ASSET", "USDT")
+    def __init__(self, *, asset: str | None = None, settings: AppSettings | None = None):
+        if settings is None:
+            settings = get_settings()
+        self._settings = settings
+        self.asset = asset or settings.crypto_asset
 
     async def create_invoice(
         self, *, amount_rub: float, description: str, payload: str
@@ -20,6 +25,7 @@ class CryptoPayProvider:
             asset=self.asset,
             description=description,
             payload=payload,
+            settings=self._settings,
         )
 
 

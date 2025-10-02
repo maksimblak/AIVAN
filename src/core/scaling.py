@@ -11,6 +11,9 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
+
+from src.core.app_context import get_settings
+from src.core.settings import AppSettings
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -85,7 +88,9 @@ class ServiceRegistry:
         node_id: str | None = None,
         heartbeat_interval: float = 15.0,
         cleanup_interval: float = 60.0,
+        settings: AppSettings | None = None,
     ):
+        self._settings = settings or get_settings()
         self.redis_url = redis_url
         self.node_id = node_id or self._generate_node_id()
         self.heartbeat_interval = heartbeat_interval
@@ -107,7 +112,7 @@ class ServiceRegistry:
 
     def _generate_node_id(self) -> str:
         """Генерация уникального ID ноды"""
-        hostname = os.getenv("HOSTNAME", "localhost")
+        hostname = (self._settings.get_str("HOSTNAME", "localhost") or "localhost")
         pid = os.getpid()
         timestamp = datetime.now().isoformat()
 
@@ -131,8 +136,8 @@ class ServiceRegistry:
         # Создаем информацию о текущей ноде
         self.current_node = NodeInfo(
             node_id=self.node_id,
-            host=os.getenv("HOST", "localhost"),
-            port=int(os.getenv("PORT", "8000")),
+            host=self._settings.get_str("HOST", "localhost"),
+            port=self._settings.get_int("PORT", 8000),
             started_at=datetime.now(),
             last_heartbeat=datetime.now(),
         )

@@ -1,23 +1,21 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
 import sys
 
-from dotenv import load_dotenv
-
 from src.bot.logging_setup import setup_logging
+from src.core.app_context import get_settings, set_settings
 from src.core.bootstrap import build_runtime
 from src.core.main_simple import refresh_runtime_globals, run_bot, set_runtime
-from src.core.settings import AppSettings
 
 
 async def _run_async() -> None:
-    load_dotenv()
-    setup_logging()
+    settings = get_settings()
+    setup_logging(settings)
     logger = logging.getLogger("ai-ivan.simple")
 
-    settings = AppSettings.load()
+    set_settings(settings)
     runtime, _ = build_runtime(settings, logger=logger)
     set_runtime(runtime)
     refresh_runtime_globals()

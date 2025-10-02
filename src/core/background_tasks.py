@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any
 
 from .exceptions import ErrorContext, ErrorHandler
+from src.documents.base import DocumentStorage
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +330,26 @@ class SessionCleanupTask(BackgroundTask):
             return {"sessions_cleaned": cleaned}
 
         return {"sessions_cleaned": 0}
+
+
+class DocumentStorageCleanupTask(BackgroundTask):
+    """Periodically remove stale files from local document storage."""
+
+    def __init__(
+        self,
+        storage: DocumentStorage,
+        *,
+        max_age_hours: int,
+        interval_seconds: float = 3600.0,
+    ) -> None:
+        super().__init__(name="document_storage_cleanup", interval_seconds=interval_seconds)
+        self.storage = storage
+        self.max_age_hours = max_age_hours
+
+    async def execute(self) -> dict[str, Any]:
+        removed = await self.storage.cleanup_all_users(self.max_age_hours)
+        return {"removed": removed, "max_age_hours": self.max_age_hours}
+
 
 
 class HealthCheckTask(BackgroundTask):

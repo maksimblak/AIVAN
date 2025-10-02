@@ -18,7 +18,8 @@ import base64 as _b64
 import hmac
 import hashlib as _hash
 import logging
-import os
+from src.core.settings import AppSettings
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -174,10 +175,17 @@ class PatternSpec:
 class DocumentAnonymizer(DocumentProcessor):
     """Класс для обезличивания персональных данных в документах"""
 
-    def __init__(self):
+    def __init__(self, settings: AppSettings | None = None):
         super().__init__(name="DocumentAnonymizer", max_file_size=50 * 1024 * 1024)
         self.supported_formats = [".pdf", ".docx", ".doc", ".txt"]
         self.anonymization_map: dict[str, str] = {}
+
+        if settings is None:
+            from src.core.app_context import get_settings  # avoid circular import
+
+            settings = get_settings()
+        self._settings = settings
+        self._secret = settings.get_str("ANON_SECRET", "") or ""
 
         # Набор паттернов с минимизацией фолс-позитивов
         self._specs: List[PatternSpec] = [
@@ -501,8 +509,8 @@ class DocumentAnonymizer(DocumentProcessor):
             else:
                 replacement = _mask_preserve(original)
         elif mode == "pseudonym":
-            secret_env = os.getenv("ANON_SECRET", "")
-            secret = secret_env.encode("utf-8") if secret_env else b"default-anon-secret"
+            secret_bytes = self._secret.encode("utf-8") if self._secret else b"default-anon-secret"
+            secret = secret_bytes
             code = _pseudo_id(kind, original, secret)
             replacement = f"[{data_type}~{code}]"
         else:  # replace
