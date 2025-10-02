@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import suppress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -576,3 +577,80 @@ class HealthChecker:
     def get_all_stats(self) -> dict[str, Any]:
         """Alias для get_stats для совместимости с BackgroundTask"""
         return self.get_stats()
+
+async def check_health(*, raise_on_degraded: bool = True) -> dict[str, Any]:
+    """Run a single-pass health check suitable for Docker health probes."""
+    from dotenv import load_dotenv
+
+    from src.core.bootstrap import build_runtime
+    from src.core.settings import AppSettings
+    from src.core.db_advanced import DatabaseAdvanced
+    from src.core.openai_service import OpenAIService
+    from src.core.session_store import SessionStore
+    from src.telegram_legal_bot.ratelimit import RateLimiter
+
+    load_dotenv()
+    health_logger = logging.getLogger("ai-ivan.healthcheck")
+
+    settings = AppSettings.load()
+    runtime, container = build_runtime(settings, logger=health_logger)
+
+    db = None
+    rate_limiter = None
+    session_store = None
+    openai_service = None
+
+    try:
+        db = runtime.db or container.get(DatabaseAdvanced)
+        runtime.db = db
+        rate_limiter = runtime.rate_limiter or container.get(RateLimiter)
+        runtime.rate_limiter = rate_limiter
+        session_store = runtime.session_store or container.get(SessionStore)
+        runtime.session_store = session_store
+        openai_service = runtime.openai_service or container.get(OpenAIService)
+        runtime.openai_service = openai_service
+
+        await container.init_async_services()
+
+        checker = HealthChecker(check_interval=settings.health_check_interval)
+        checker.register_check(DatabaseHealthCheck(db))
+        checker.register_check(OpenAIHealthCheck(openai_service))
+        checker.register_check(SessionStoreHealthCheck(session_store))
+        checker.register_check(RateLimiterHealthCheck(rate_limiter))
+        if settings.enable_system_monitoring:
+            checker.register_check(SystemResourcesHealthCheck())
+
+        results = await checker.check_all()
+
+        status = HealthStatus.HEALTHY
+        degraded: list[str] = []
+        unhealthy: list[str] = []
+
+        for name, result in results.items():
+            if result.status == HealthStatus.UNHEALTHY:
+                unhealthy.append(f"{name}: {result.message}")
+                status = HealthStatus.UNHEALTHY
+            elif result.status == HealthStatus.DEGRADED:
+                degraded.append(f"{name}: {result.message}")
+                if status != HealthStatus.UNHEALTHY:
+                    status = HealthStatus.DEGRADED
+
+        if unhealthy:
+            health_logger.error("Health check failed: %s", "; ".join(unhealthy))
+        if degraded and status == HealthStatus.DEGRADED:
+            health_logger.warning("Health check degraded: %s", "; ".join(degraded))
+
+        if status == HealthStatus.UNHEALTHY or (raise_on_degraded and status == HealthStatus.DEGRADED):
+            details = [
+                f"{name}: {result.message}"
+                for name, result in results.items()
+                if result.status != HealthStatus.HEALTHY
+            ]
+            raise RuntimeError("Health check failed: " + "; ".join(details))
+
+        return {"status": status.value, "results": {name: result.to_dict() for name, result in results.items()}}
+
+    finally:
+        if container is not None:
+            with suppress(Exception):
+                await container.cleanup()

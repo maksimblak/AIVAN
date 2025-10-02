@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Добавляем корень проекта в PYTHONPATH
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -87,16 +89,23 @@ async def validate_di_container():
     """Проверка DI контейнера"""
     print("\n📦 Проверка DI контейнера...")
 
+    container = None
     try:
-        from src.core.di_container import DIContainer, create_container
+        from src.core.di_container import create_container
+        from src.core.settings import AppSettings
+        from src.core.db_advanced import DatabaseAdvanced
 
-        # Тест создания контейнера
-        container = create_container()
+        load_dotenv()
+        settings = AppSettings.load()
+        container = create_container(settings)
         assert container is not None
 
-        # Тест конфигурации
-        db_path = container.get_config("db_path")
-        assert db_path is not None
+        resolved_settings = container.get(AppSettings)
+        assert resolved_settings is settings
+
+        db = container.get(DatabaseAdvanced)
+        await db.init()
+        await db.close()
 
         print("✅ DI контейнер работает корректно")
         return True
@@ -104,6 +113,14 @@ async def validate_di_container():
     except Exception as e:
         print(f"❌ Ошибка DI контейнера: {e}")
         return False
+
+    finally:
+        if container is not None:
+            try:
+                await container.cleanup()
+            except Exception:
+                pass
+
 
 
 async def validate_performance():
