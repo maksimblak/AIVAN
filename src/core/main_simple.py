@@ -2325,15 +2325,24 @@ async def handle_referral_program_callback(callback: CallbackQuery):
             return
 
         referral_code: str | None = None
-        # Генерируем реферальный код если его нет
-        try:
-            if not user.referral_code:
-                referral_code = await db.generate_referral_code(user_id)
+        stored_code = (getattr(user, 'referral_code', None) or '').strip()
+
+        if stored_code and stored_code != 'SYSTEM_ERROR':
+            referral_code = stored_code
+        else:
+            try:
+                generated_code = (await db.generate_referral_code(user_id) or '').strip()
+            except Exception as e:
+                logger.error(f"Error with referral code: {e}")
+                generated_code = ''
+            if generated_code and generated_code != 'SYSTEM_ERROR':
+                referral_code = generated_code
+                try:
+                    setattr(user, 'referral_code', referral_code)
+                except Exception:
+                    pass
             else:
-                referral_code = user.referral_code
-        except Exception as e:
-            logger.error(f"Error with referral code: {e}")
-            referral_code = None
+                referral_code = None
 
         referral_link, share_code = _build_referral_link(referral_code)
 
