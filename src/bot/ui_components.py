@@ -52,6 +52,7 @@ class Emoji:
     COPY = "📋"
     PRINT = "🖨️"
     DOWNLOAD = "📥"
+    DIAMOND = "💎"
 
     # Статусы
     ONLINE = "🟢"

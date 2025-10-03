@@ -501,13 +501,17 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     for router in routers:
         router.message.filter(lambda msg, _admins=admin_ids: msg.from_user and msg.from_user.id in _admins)
 
-        for handler in router.observers.get('message', []):
-            handler.callback.__globals__['db'] = db
-            handler.callback.__globals__['admin_ids'] = admin_ids
+        message_observer = router.observers.get('message')
+        if message_observer is not None:
+            for handler in getattr(message_observer, 'handlers', []):
+                handler.callback.__globals__['db'] = db
+                handler.callback.__globals__['admin_ids'] = admin_ids
 
-        for handler in router.observers.get('callback_query', []):
-            handler.callback.__globals__['db'] = db
-            handler.callback.__globals__['admin_ids'] = admin_ids
+        callback_observer = router.observers.get('callback_query')
+        if callback_observer is not None:
+            for handler in getattr(callback_observer, 'handlers', []):
+                handler.callback.__globals__['db'] = db
+                handler.callback.__globals__['admin_ids'] = admin_ids
 
         dp.include_router(router)
 
