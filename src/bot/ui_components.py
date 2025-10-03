@@ -303,7 +303,7 @@ import re
 from html import escape as html_escape
 
 # --- Telegram HTML sanitizer (allowlist) ---
-ALLOWED_TAGS = {"b","strong","i","em","u","s","del","code","pre","a","br"}
+ALLOWED_TAGS = {"b","strong","i","em","u","ins","s","strike","del","code","pre","a","br","tg-spoiler","blockquote"}
 ALLOWED_ATTRS = {"a": {"href"}}
 
 
