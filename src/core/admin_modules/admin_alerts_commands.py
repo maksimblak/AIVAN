@@ -16,7 +16,7 @@ alerts_router = Router(name="alerts_admin")
 def _build_no_alerts_view() -> tuple[str, InlineKeyboardMarkup]:
     text = """✅ <b>Все метрики в норме!</b>
 
-Нет критических или warning alerts."""
+Нет критических или предупредительных алертов."""
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Проверить снова", callback_data="alerts:refresh")],
@@ -28,9 +28,9 @@ def _build_no_alerts_view() -> tuple[str, InlineKeyboardMarkup]:
 def _build_overview_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📋 View by Category", callback_data="alerts:by_category")],
-            [InlineKeyboardButton(text="🔄 Refresh", callback_data="alerts:refresh")],
-            [InlineKeyboardButton(text="⚙️ Settings", callback_data="alerts:config")],
+            [InlineKeyboardButton(text="📋 По категориям", callback_data="alerts:by_category")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="alerts:refresh")],
+            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="alerts:config")],
         ]
     )
 
@@ -42,25 +42,25 @@ def _build_alerts_overview(alerts: list) -> tuple[str, InlineKeyboardMarkup]:
     info = grouped.get("info", [])
 
     lines: list[str] = [
-        "🔔 <b>Active Alerts</b>",
+        "🔔 <b>Активные алерты</b>",
         "",
-        f"🚨 Critical: {len(critical)}",
-        f"⚠️ Warnings: {len(warnings)}",
-        f"ℹ️ Info: {len(info)}",
+        f"🚨 Критические: {len(critical)}",
+        f"⚠️ Предупреждения: {len(warnings)}",
+        f"ℹ️ Информация: {len(info)}",
         "",
     ]
 
     if critical:
-        lines.append("<b>🚨 CRITICAL:</b>")
+        lines.append("<b>🚨 КРИТИЧЕСКИЕ:</b>")
         lines.append("")
         for alert in critical[:5]:
             lines.append(f"• <b>{alert.title}</b>")
             lines.append(f"  {alert.message}")
-            lines.append(f"  <i>Action: {alert.action_required}</i>")
+            lines.append(f"  <i>Действие: {alert.action_required}</i>")
             lines.append("")
 
     if warnings:
-        lines.append("<b>⚠️ WARNINGS:</b>")
+        lines.append("<b>⚠️ ПРЕДУПРЕЖДЕНИЯ:</b>")
         lines.append("")
         for alert in warnings[:3]:
             lines.append(f"• <b>{alert.title}</b>")
@@ -75,11 +75,11 @@ def _build_alerts_overview(alerts: list) -> tuple[str, InlineKeyboardMarkup]:
 def _build_category_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💰 Revenue", callback_data="alerts:cat:revenue")],
-            [InlineKeyboardButton(text="🎯 Retention", callback_data="alerts:cat:retention")],
-            [InlineKeyboardButton(text="📊 PMF", callback_data="alerts:cat:pmf")],
-            [InlineKeyboardButton(text="⚙️ Technical", callback_data="alerts:cat:technical")],
-            [InlineKeyboardButton(text="◀️ Back", callback_data="alerts:back")],
+            [InlineKeyboardButton(text="💰 Выручка", callback_data="alerts:cat:revenue")],
+            [InlineKeyboardButton(text="🎯 Удержание", callback_data="alerts:cat:retention")],
+            [InlineKeyboardButton(text="📊 PMF (рынок)", callback_data="alerts:cat:pmf")],
+            [InlineKeyboardButton(text="⚙️ Технические", callback_data="alerts:cat:technical")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="alerts:back")],
         ]
     )
 
@@ -97,18 +97,21 @@ def _build_category_text(category: str, alerts: list) -> str:
         "info": "ℹ️",
     }
 
-    header = f"{emoji_map.get(category, '📋')} <b>{category.title()} Alerts</b>"
+    header = {
+        'revenue': '💰 <b>Алерты по выручке</b>',
+        'retention': '🎯 <b>Алерты по удержанию</b>',
+        'pmf': '📊 <b>Алерты PMF</b>',
+        'technical': '⚙️ <b>Технические алерты</b>'
+    }.get(category, '📋 <b>Алерты</b>')
     if not alerts:
-        return f"""{header}
-
-✅ No alerts in this category"""
+        return f"{header} ✅ В этой категории сейчас нет алертов"
 
     lines = [header, ""]
     for alert in alerts:
         severity = severity_map.get(alert.severity, "")
         lines.append(f"{severity} <b>{alert.title}</b>")
         lines.append(f"  {alert.message}")
-        lines.append(f"  <i>Action: {alert.action_required}</i>")
+        lines.append(f"  <i>Действие: {alert.action_required}</i>")
         lines.append("")
 
     joiner = chr(10)
@@ -153,9 +156,9 @@ async def handle_alerts_refresh(callback: CallbackQuery, db, bot, admin_ids: lis
 @require_admin
 async def handle_alerts_by_category(callback: CallbackQuery, db, bot, admin_ids: list[int]):
     """Показать меню выбора категории алертов."""
-    text = """📋 <b>Select Alert Category:</b>
+    text = """📋 <b>Выберите категорию алертов</b>
 
-Choose category to view detailed alerts"""
+Укажите, что нужно показать подробнее"""
     await edit_or_answer(callback, text, _build_category_keyboard())
     await callback.answer()
 
@@ -172,7 +175,7 @@ async def handle_category_alerts(callback: CallbackQuery, db, bot, admin_ids: li
 
     text = _build_category_text(category, category_alerts)
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="alerts:by_category")]]
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="alerts:by_category")]]
     )
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -184,35 +187,30 @@ async def handle_alerts_config(callback: CallbackQuery, db, admin_ids: list[int]
     """Показать текущие пороги для алертов."""
     config = AlertConfig()
 
-    text = f"""⚙️ <b>Alert Configuration</b>
+    text = f"""⚙️ <b>Конфигурация алертов</b>
 
-"""
-    text += f"""<b>💰 Revenue Thresholds:</b>
-  MRR drop: >{config.mrr_drop_threshold}%
-  Churn spike: >{config.churn_spike_threshold}%
-  Quick Ratio min: {config.quick_ratio_min}
+<b>💰 Пороговые значения по выручке:</b>
+  Падение MRR: >{config.mrr_drop_threshold}%
+  Рост оттока: >{config.churn_spike_threshold}%
+  Минимальный Quick Ratio: {config.quick_ratio_min}
 
-"""
-    text += f"""<b>🎯 Retention Thresholds:</b>
-  Day-30 retention min: {config.day_30_retention_min}%
-  Power user churn: {config.power_user_churn_threshold} users
+<b>🎯 Пороговые значения по удержанию:</b>
+  Retention на 30-й день: >{config.day_30_retention_min}%
+  Отток power-пользователей: >{config.power_user_churn_threshold}
 
-"""
-    text += f"""<b>📊 PMF Thresholds:</b>
-  NPS min: {config.nps_min}
-  NPS drop: >{config.nps_drop_threshold}
-  DAU/MAU min: {config.dau_mau_min}%
+<b>📊 Пороговые значения PMF:</b>
+  Минимальный NPS: {config.nps_min}
+  Падение NPS: >{config.nps_drop_threshold}
+  Минимальный DAU/MAU: {config.dau_mau_min}%
 
-"""
-    text += f"""<b>⚙️ Technical Thresholds:</b>
-  Error rate: >{config.error_rate_threshold}%
-  Success rate min: {config.feature_success_rate_min}%
+<b>⚙️ Пороговые значения технических метрик:</b>
+  Доля ошибок: >{config.error_rate_threshold}%
+  Минимальный процент успешных запросов: {config.feature_success_rate_min}%
 
-"""
-    text += "<i>Для изменения настроек используйте /alert_config</i>"
+<i>Изменить значения можно командой /alert_config</i>"""
 
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="alerts:back")]]
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="alerts:back")]]
     )
 
     await edit_or_answer(callback, text, keyboard)
@@ -240,5 +238,5 @@ async def handle_back_to_alerts(callback: CallbackQuery, db, bot, admin_ids: lis
 async def cmd_daily_digest(message: Message, db, bot, admin_ids: list[int]):
     """Отправить принудительный daily digest."""
     alert_system = AutomatedAlerts(db, bot, admin_ids)
-    await message.answer("📊 Генерирую daily digest...")
+    await message.answer("📊 Генерирую ежедневный дайджест...")
     await alert_system.send_daily_digest()

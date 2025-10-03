@@ -1,5 +1,5 @@
 """
-Admin команды для поведенческой аналитики
+Админ-команды для поведенческой аналитики
 Что нравится пользователям, что не нравится, где отваливаются
 """
 
@@ -32,15 +32,15 @@ def create_behavior_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🔥 Точки трения", callback_data="behavior:friction"),
-                InlineKeyboardButton(text="😊 Feedback по фичам", callback_data="behavior:feedback"),
+                InlineKeyboardButton(text="😊 Отзывы по функциям", callback_data="behavior:feedback"),
             ],
             [
-                InlineKeyboardButton(text="🛣️ User Journey", callback_data="behavior:journey"),
+                InlineKeyboardButton(text="🛣️ Путь пользователя", callback_data="behavior:journey"),
                 InlineKeyboardButton(text="⏰ Пик активности", callback_data="behavior:peak_hours"),
             ],
             [
                 InlineKeyboardButton(text="🎯 Вовлеченность", callback_data="behavior:engagement"),
-                InlineKeyboardButton(text="📉 Underutilized", callback_data="behavior:underutilized"),
+                InlineKeyboardButton(text="📉 Недоиспользуемые", callback_data="behavior:underutilized"),
             ],
             [
                 InlineKeyboardButton(text="« Назад", callback_data="admin_refresh"),
@@ -70,7 +70,7 @@ async def cmd_behavior(message: Message, db, admin_ids: set[int]):
 
     if frictions:
         top_friction = frictions[0]
-        summary += f"Самая критичная: <b>{top_friction.location}</b> (impact: {top_friction.impact_score:.0f}/100)\n"
+        summary += f"Самая критичная: <b>{top_friction.location}</b> (влияние: {top_friction.impact_score:.0f}/100)\n"
 
     summary += "\n<i>Выберите раздел для детального анализа:</i>"
 
@@ -102,13 +102,13 @@ async def handle_popular_features(callback: CallbackQuery, db, admin_ids: set[in
 
         output += "\n"
 
-    # Insights
+    # Выводы
     if top_features:
         total_uses = sum(f['uses'] for f in top_features)
         top_3_uses = sum(f['uses'] for f in top_features[:3])
         concentration = (top_3_uses / total_uses) * 100
 
-        output += "<b>💡 Инсайты:</b>\n"
+        output += "<b>💡 Выводы:</b>\n"
         output += f"• Топ-3 фичи составляют {concentration:.0f}% всего использования\n"
 
         if concentration > 80:
@@ -135,13 +135,13 @@ async def handle_friction_points(callback: CallbackQuery, db, admin_ids: set[int
 
         for friction in frictions[:3]:
             if friction.friction_type == 'error':
-                output += f"• {friction.location}: исправить баги, улучшить error handling\n"
+                output += f"• {friction.location}: исправить баги, улучшить обработку ошибок\n"
             elif friction.friction_type == 'abandon':
-                output += f"• {friction.location}: упростить UX, добавить подсказки\n"
+                output += f"• {friction.location}: упростить интерфейс, добавить подсказки\n"
             elif friction.friction_type == 'timeout':
                 output += f"• {friction.location}: оптимизировать производительность\n"
             elif friction.friction_type == 'confusion':
-                output += f"• {friction.location}: улучшить онбординг, добавить туториал\n"
+                output += f"• {friction.location}: улучшить вводное обучение, добавить понятное руководство\n"
 
     async def build_dashboard():
         return output, back_keyboard("behavior:menu")
@@ -165,7 +165,7 @@ async def handle_engagement(callback: CallbackQuery, db, admin_ids: set[int]):
         avg_satisfaction = sum(e.satisfaction_score for e in engagements) / len(engagements)
 
         output += "<b>📈 Общая вовлеченность:</b>\n"
-        output += f"• Средний repeat usage: {avg_repeat:.1f}%\n"
+        output += f"• Средняя доля повторных обращений: {avg_repeat:.1f}%\n"
         output += f"• Средняя удовлетворенность: {avg_satisfaction:.0f}/100\n\n"
 
         # Классификация фич
@@ -212,14 +212,14 @@ async def handle_underutilized(callback: CallbackQuery, db, admin_ids: set[int])
             output += "\n"
 
         output += "<b>💡 Возможные причины:</b>\n"
-        output += "• Пользователи не знают о фиче (плохая discovery)\n"
+        output += "• Пользователи не знают о фиче (плохая заметность)\n"
         output += "• Фича не нужна целевой аудитории\n"
-        output += "• Сложный UX или барьер входа\n"
+        output += "• Сложный интерфейс или барьер входа\n"
         output += "• Фича не отвечает ожиданиям\n\n"
 
         output += "<b>🔧 Что делать:</b>\n"
-        output += "1. Улучшить onboarding и tutorials\n"
-        output += "2. Добавить промо фичи в bot flow\n"
+        output += "1. Улучшить вводное обучение и подсказки\n"
+        output += "2. Добавить промо фичи в сценарии бота\n"
         output += "3. Провести опрос - нужна ли фича?\n"
         output += "4. Рассмотреть удаление если совсем не востребована\n"
 
@@ -267,7 +267,7 @@ async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
         output += "<b>💡 Рекомендации:</b>\n"
         output += f"• Планируйте обновления вне пика ({peak_hour:02d}:00)\n"
         output += f"• Делайте анонсы в пиковые часы\n"
-        output += f"• Усиливайте support в пиковое время\n"
+        output += f"• Усиливайте поддержку в пиковое время\n"
 
     async def build_dashboard():
         return output, back_keyboard("behavior:menu")
@@ -279,13 +279,13 @@ async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
 @behavior_router.callback_query(F.data == "behavior:feedback")
 @require_admin
 async def handle_feature_feedback(callback: CallbackQuery, db, admin_ids: set[int]):
-    """Feedback по отдельным фичам"""
+    """Отзывы по отдельным функциям"""
     tracker = UserBehaviorTracker(db)
 
-    # Получаем feedback по топ фичам
+    # Получаем отзывы по топ фичам
     top_features = await tracker.get_top_features(days=30, limit=5)
 
-    output = "<b>😊 FEEDBACK ПО ФИЧАМ</b>\n\n"
+    output = "<b>😊 ОТЗЫВЫ ПО ФИЧАМ</b>\n\n"
 
     for feat in top_features:
         feature_name = feat['feature']
@@ -296,7 +296,7 @@ async def handle_feature_feedback(callback: CallbackQuery, db, admin_ids: set[in
         output += f"<b>{feature_name}</b> {sentiment_emoji}\n"
         output += f"  👍 Положительных: {feedback.positive_signals}\n"
         output += f"  👎 Негативных: {feedback.negative_signals}\n"
-        output += f"  📊 Net sentiment: {feedback.net_sentiment:+.0f}\n"
+        output += f"  📊 Индекс настроения: {feedback.net_sentiment:+.0f}\n"
 
         if feedback.explicit_feedback:
             output += f"  💬 Комментариев: {len(feedback.explicit_feedback)}\n"
@@ -318,16 +318,16 @@ async def handle_feature_feedback(callback: CallbackQuery, db, admin_ids: set[in
 @require_admin
 async def handle_user_journey(callback: CallbackQuery, db, admin_ids: set[int]):
     """Анализ типичного пути пользователя"""
-    # Запрашиваем user_id для детального анализа
-    output = "<b>🛣️ АНАЛИЗ USER JOURNEY</b>\n\n"
+    # Запрашиваем ID пользователя для детального анализа
+    output = "<b>🛣️ АНАЛИЗ ПУТИ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
     output += "Для детального анализа используйте:\n"
-    output += "<code>/journey &lt;user_id&gt;</code>\n\n"
+    output += "<code>/journey &lt;ID пользователя&gt;</code>\n\n"
 
     output += "<b>📊 Типичные паттерны:</b>\n"
-    output += "• Успешный путь: регистрация → trial → первый вопрос → voice → payment\n"
-    output += "• Проблемный путь: регистрация → trial → ошибка → abandonment\n\n"
+    output += "• Успешный путь: регистрация → пробный период → первый вопрос → голосовой режим → оплата\n"
+    output += "• Проблемный путь: регистрация → пробный период → ошибка → отказ\n\n"
 
-    output += "<i>Используйте команду /journey с конкретным user_id для деталей</i>"
+    output += "<i>Используйте команду /journey с конкретным ID пользователя для деталей</i>"
 
     async def build_dashboard():
         return output, back_keyboard("behavior:menu")
@@ -347,7 +347,7 @@ async def cmd_user_journey(message: Message, db, admin_ids: set[int]):
     tracker = UserBehaviorTracker(db)
     journey = await tracker.get_user_journey(user_id)
 
-    output = f"<b>🛣️ USER JOURNEY #{user_id}</b>\n\n"
+    output = f"<b>🛣️ ПУТЬ ПОЛЬЗОВАТЕЛЯ #{user_id}</b>\n\n"
 
     if not journey.journey_steps:
         output += "Нет данных о активности этого пользователя"
@@ -356,10 +356,10 @@ async def cmd_user_journey(message: Message, db, admin_ids: set[int]):
         output += f"<b>Всего времени:</b> {journey.total_time_seconds // 60} минут\n"
 
         if journey.drop_off_point:
-            output += f"<b>Drop-off point:</b> ⚠️ {journey.drop_off_point}\n"
+            output += f"<b>Точка оттока:</b> ⚠️ {journey.drop_off_point}\n"
 
         if journey.friction_points:
-            output += f"<b>Friction points:</b> {', '.join(journey.friction_points)}\n"
+            output += f"<b>Точки трения:</b> {', '.join(journey.friction_points)}\n"
 
         output += f"\n<b>📍 Путь ({len(journey.journey_steps)} шагов):</b>\n"
 
