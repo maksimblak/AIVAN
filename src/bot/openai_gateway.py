@@ -7,6 +7,7 @@ from src.core.app_context import get_settings
 from src.core.settings import AppSettings
 
 import html
+from html.parser import HTMLParser
 import inspect
 import re
 from typing import Any, Awaitable, Callable
@@ -373,12 +374,259 @@ def _render_plain_text(text: str) -> str:
     return '<br>'.join(formatted)
 
 
+
+class _TelegramHTMLFormatter(HTMLParser):
+    """Convert model output into Telegram-compatible HTML."""
+
+    _TAG_SYNONYMS = {
+        "strong": "b",
+        "em": "i",
+        "ins": "u",
+        "del": "s",
+        "strike": "s",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.tag_stack: list[str | None] = []
+        self.list_stack: list[dict[str, Any]] = []
+        self.in_pre = 0
+        self.in_details = 0
+        self.in_summary = False
+        self.summary_buffer: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_lower = tag.lower()
+        tag_norm = self._TAG_SYNONYMS.get(tag_lower, tag_lower)
+        attrs_dict = {k.lower(): (v or "") for k, v in attrs}
+
+        if tag_norm == "br":
+            self.parts.append("<br>")
+            return
+
+        if tag_norm in {"p", "div"}:
+            self._ensure_breaks(2)
+            self.tag_stack.append(None)
+            return
+
+        if tag_norm in {"ul", "ol"}:
+            self._ensure_breaks(1)
+            self.list_stack.append({"type": tag_norm, "index": 1})
+            self.tag_stack.append(tag_norm)
+            return
+
+        if tag_norm == "li":
+            self._ensure_breaks(1)
+            bullet = "• "
+            if self.list_stack:
+                current = self.list_stack[-1]
+                if current["type"] == "ol":
+                    bullet = f"{current['index']}. "
+                    current["index"] += 1
+            self.parts.append(bullet)
+            self.tag_stack.append("li")
+            return
+
+        if tag_norm == "details":
+            self.in_details += 1
+            self.tag_stack.append("details")
+            return
+
+        if tag_norm == "summary":
+            if self.in_details:
+                self.in_summary = True
+                self.summary_buffer = []
+            self.tag_stack.append("summary")
+            return
+
+        if tag_norm == "span" and "class" in attrs_dict and "tg-spoiler" in attrs_dict["class"]:
+            self.parts.append("<tg-spoiler>")
+            self.tag_stack.append("tg-spoiler")
+            return
+
+        if tag_norm == "tg-spoiler":
+            self.parts.append("<tg-spoiler>")
+            self.tag_stack.append("tg-spoiler")
+            return
+
+        if tag_norm == "a":
+            href = attrs_dict.get("href", "")
+            if href and href.lower().startswith(("http://", "https://", "tg://user?id=")):
+                safe_href = html.escape(href, quote=True)
+                self.parts.append(f'<a href="{safe_href}">')
+                self.tag_stack.append("a")
+            else:
+                self.tag_stack.append(None)
+            return
+
+        if tag_norm == "pre":
+            self._ensure_breaks(1)
+            self.parts.append("<pre>")
+            self.tag_stack.append("pre")
+            self.in_pre += 1
+            return
+
+        if tag_norm == "code":
+            self.parts.append("<code>")
+            self.tag_stack.append("code")
+            return
+
+        if tag_norm == "blockquote":
+            self._ensure_breaks(1)
+            self.parts.append("<blockquote>")
+            self.tag_stack.append("blockquote")
+            return
+
+        if tag_norm in {"b", "i", "u", "s"}:
+            self.parts.append(f"<{tag_norm}>")
+            self.tag_stack.append(tag_norm)
+            return
+
+        self.tag_stack.append(None)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        tag_norm = self._TAG_SYNONYMS.get(tag_lower, tag_lower)
+
+        if tag_norm == "li":
+            if self._pop_expected("li"):
+                self._ensure_breaks(1)
+            return
+
+        if tag_norm in {"ul", "ol"}:
+            if self.list_stack and self.list_stack[-1]["type"] == tag_norm:
+                self.list_stack.pop()
+            self._pop_expected(tag_norm)
+            self._ensure_breaks(1)
+            return
+
+        if tag_norm == "details":
+            if self.in_details:
+                self.in_details -= 1
+            self._pop_expected("details")
+            return
+
+        if tag_norm == "summary":
+            self._flush_summary()
+            self._pop_expected("summary")
+            return
+
+        if tag_norm == "pre":
+            if self._pop_expected("pre"):
+                self.in_pre = max(0, self.in_pre - 1)
+                self.parts.append("</pre>")
+                self._ensure_breaks(1)
+            return
+
+        if tag_norm == "code":
+            if self._pop_expected("code"):
+                self.parts.append("</code>")
+            return
+
+        if tag_norm == "a":
+            if self._pop_expected("a"):
+                self.parts.append("</a>")
+            return
+
+        if tag_norm in {"tg-spoiler", "blockquote"}:
+            if self._pop_expected(tag_norm):
+                self.parts.append(f"</{tag_norm}>")
+                if tag_norm == "blockquote":
+                    self._ensure_breaks(1)
+            return
+
+        if tag_norm in {"b", "i", "u", "s"}:
+            if self._pop_expected(tag_norm):
+                self.parts.append(f"</{tag_norm}>")
+            return
+
+        self._pop_expected(tag_norm)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_lower = tag.lower()
+        if tag_lower == "br":
+            self.parts.append("<br>")
+            return
+        if tag_lower == "tg-spoiler":
+            self.parts.append("<tg-spoiler></tg-spoiler>")
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_data(self, data: str) -> None:
+        if not data:
+            return
+        if self.in_summary:
+            self.summary_buffer.append(data)
+            return
+        escaped = html.escape(data)
+        escaped = escaped.replace("\r\n", "\n").replace("\r", "\n")
+        if self.in_pre:
+            self.parts.append(escaped)
+        else:
+            self.parts.append(escaped.replace("\n", "<br>"))
+
+    def close(self) -> None:
+        self._flush_summary()
+        super().close()
+
+    def get_text(self) -> str:
+        result = "".join(self.parts)
+        result = re.sub(r"(?:<br>\s*){3,}", "<br><br>", result)
+        result = re.sub(r"^(?:<br>\s*)+", "", result)
+        result = re.sub(r"(?:<br>\s*)+$", "", result)
+        return result.strip()
+
+    def _ensure_breaks(self, amount: int) -> None:
+        if amount <= 0:
+            return
+        if not self.parts:
+            return
+        existing = 0
+        for part in reversed(self.parts):
+            if part != "<br>":
+                break
+            existing += 1
+        for _ in range(max(0, amount - existing)):
+            self.parts.append("<br>")
+
+    def _pop_expected(self, expected: str) -> bool:
+        while self.tag_stack:
+            current = self.tag_stack.pop()
+            if current is None:
+                continue
+            if current == expected:
+                return True
+        return False
+
+    def _flush_summary(self) -> None:
+        if not self.in_summary:
+            return
+        summary = "".join(self.summary_buffer).strip()
+        self.in_summary = False
+        self.summary_buffer = []
+        if not summary:
+            return
+        summary = html.escape(summary)
+        summary = summary.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+        summary = re.sub(r"\s+", " ", summary).strip()
+        if not summary:
+            return
+        self._ensure_breaks(1)
+        self.parts.append(f"<b>{summary}</b>")
+        self._ensure_breaks(1)
+
+
 def format_legal_response_text(raw: str) -> str:
-    """Return raw text without additional formatting."""
-    return (raw or "").strip()
-
-
-
+    """Convert raw response text to Telegram-compatible HTML."""
+    raw_text = (raw or '').strip()
+    if not raw_text:
+        return ''
+    formatter = _TelegramHTMLFormatter()
+    formatter.feed(raw_text)
+    formatter.close()
+    return formatter.get_text()
 
 
 
