@@ -491,33 +491,22 @@ class RetentionAnalytics:
             if dislikes > 2:
                 indicators.append('poor_experience')
 
-        # 5. Быстро бросил после покупки
+        # 5. Быстро бросил после покупки (объединенный запрос для атомарности)
         async with self.db.pool.acquire() as conn:
             cursor = await conn.execute("""
-                SELECT MIN(created_at) as first_payment
-                FROM payments
-                WHERE user_id = ? AND status = 'completed'
-            """, (user_id,))
-            first_payment_row = await cursor.fetchone()
+                SELECT
+                    (SELECT MIN(created_at) FROM payments WHERE user_id = ? AND status = 'completed') as first_payment,
+                    (SELECT MAX(created_at) FROM requests WHERE user_id = ?) as last_request
+            """, (user_id, user_id))
+            row = await cursor.fetchone()
             await cursor.close()
 
-            first_payment = first_payment_row[0] if first_payment_row else None
+            if row and row[0] is not None and row[1] is not None:
+                first_payment, last_request = row
+                days_after_payment = (last_request - first_payment) // 86400
 
-            if first_payment is not None:
-                cursor = await conn.execute("""
-                    SELECT MAX(created_at) as last_request
-                    FROM requests
-                    WHERE user_id = ?
-                """, (user_id,))
-                last_request_row = await cursor.fetchone()
-                await cursor.close()
-
-                last_request = last_request_row[0] if last_request_row else None
-                if last_request is not None:
-                    days_after_payment = (last_request - first_payment) // 86400
-
-                    if days_after_payment < 3:
-                        indicators.append('immediate_abandonment')
+                if days_after_payment < 3:
+                    indicators.append('immediate_abandonment')
 
         # 6. Вероятно цена слишком высокая
         if total_requests < 10:  # мало использовал перед окончанием
