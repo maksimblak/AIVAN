@@ -111,35 +111,40 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
 async def cmd_admin(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
     """Главная команда админ-панели"""
 
-    analytics = AdminAnalytics(db)
+    summary = await _build_admin_summary(db)
+    await message.answer(summary, parse_mode=ParseMode.HTML, reply_markup=create_main_menu())
 
-    # Получаем краткую сводку
-    segments = await analytics.get_user_segments()
-    conversion_metrics = await analytics.get_conversion_metrics()
 
-    summary = f"""
-<b>🎛 АДМИН-ПАНЕЛЬ</b>
+@admin_router.callback_query(F.data == "admin_menu:analytics")
+@require_admin
+async def handle_admin_menu_analytics(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+    """Показать раздел аналитики из главного меню."""
 
-<b>📊 Сводка по пользователям:</b>
+    summary = await _build_admin_summary(db)
+    await edit_or_answer(callback, summary, create_analytics_menu())
+    await callback.answer()
 
-⚡ Суперактивные: <b>{segments['power_users'].user_count}</b>
-⚠️ Группа риска: <b>{segments['at_risk'].user_count}</b>
-📉 Отток: <b>{segments['churned'].user_count}</b>
-💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
-🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
-🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>
-👑 VIP-пользователи: <b>{segments['vip'].user_count}</b>
 
-<b>💹 Конверсия Триал → Оплата:</b>
-• Всего триал-пользователей: {conversion_metrics.total_trial_users}
-• Перешли на оплату: {conversion_metrics.converted_to_paid}
-• Конверсия: <b>{conversion_metrics.conversion_rate}%</b>
-• Среднее время до покупки: {conversion_metrics.avg_time_to_conversion_days} дней
+@admin_router.callback_query(F.data == "admin_menu:refresh")
+@require_admin
+async def handle_admin_menu_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+    """Обновить данные на главном экране."""
 
-<i>Выберите раздел для детального анализа:</i>
-"""
+    summary = await _build_admin_summary(db)
 
-    await message.answer(summary, parse_mode=ParseMode.HTML, reply_markup=create_analytics_menu())
+    if callback.message:
+        await edit_or_answer(callback, summary, create_main_menu())
+    await callback.answer("✅ Обновлено")
+
+
+@admin_router.callback_query(F.data == "admin_menu:back")
+@require_admin
+async def handle_admin_menu_back(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+    """Вернуться в главное меню админ-панели."""
+
+    summary = await _build_admin_summary(db)
+    await edit_or_answer(callback, summary, create_main_menu())
+    await callback.answer()
 
 
 @admin_router.callback_query(F.data.startswith("admin_segment:"))
@@ -255,33 +260,9 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admi
 @admin_router.callback_query(F.data == "admin_refresh")
 @require_admin
 async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
-    """Обновление главного меню"""
+    """Обновление раздела аналитики"""
 
-    analytics = AdminAnalytics(db)
-    segments = await analytics.get_user_segments()
-    conversion_metrics = await analytics.get_conversion_metrics()
-
-    summary = f"""
-<b>🎛 АДМИН-ПАНЕЛЬ</b>
-
-<b>📊 Сводка по пользователям:</b>
-
-⚡ Суперактивные: <b>{segments['power_users'].user_count}</b>
-⚠️ Группа риска: <b>{segments['at_risk'].user_count}</b>
-📉 Отток: <b>{segments['churned'].user_count}</b>
-💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
-🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
-🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>
-👑 VIP-пользователи: <b>{segments['vip'].user_count}</b>
-
-<b>💹 Конверсия Триал → Оплата:</b>
-• Всего триал-пользователей: {conversion_metrics.total_trial_users}
-• Перешли на оплату: {conversion_metrics.converted_to_paid}
-• Конверсия: <b>{conversion_metrics.conversion_rate}%</b>
-• Среднее время до покупки: {conversion_metrics.avg_time_to_conversion_days} дней
-
-<i>Выберите раздел для детального анализа:</i>
-"""
+    summary = await _build_admin_summary(db)
 
     if callback.message:
         await edit_or_answer(callback, summary, create_analytics_menu())
