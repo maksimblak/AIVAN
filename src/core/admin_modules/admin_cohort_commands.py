@@ -1,5 +1,5 @@
 """
-Admin commands для Cohort Analysis
+Админ-команды для когортного анализа
 """
 
 from aiogram import Router, F
@@ -17,7 +17,7 @@ cohort_router = Router(name="cohort_admin")
 @cohort_router.message(Command("cohort"))
 @require_admin
 async def cmd_cohort(message: Message, db, admin_ids: list[int]):
-    """Главное меню cohort analysis"""
+    """Главное меню когортного анализа"""
     analytics = CohortAnalytics(db)
 
     # Получить сравнение когорт
@@ -29,10 +29,10 @@ async def cmd_cohort(message: Message, db, admin_ids: list[int]):
     text += f"🏆 <b>Лучшая когорта:</b> {comparison.best_cohort}\n"
     text += f"📉 <b>Худшая когорта:</b> {comparison.worst_cohort}\n\n"
 
-    text += f"📈 <b>Тренд retention:</b> {format_trend(comparison.retention_trend)}\n"
-    text += f"💰 <b>Тренд conversion:</b> {format_trend(comparison.conversion_trend)}\n\n"
+    text += f"📈 <b>Тренд удержания:</b> {format_trend(comparison.retention_trend)}\n"
+    text += f"💰 <b>Тренд конверсии:</b> {format_trend(comparison.conversion_trend)}\n\n"
 
-    text += "<b>🔍 Ключевые инсайты:</b>\n"
+    text += "<b>🔍 Ключевые выводы:</b>\n"
     for insight in comparison.key_insights[:5]:
         text += f"• {insight}\n"
 
@@ -59,7 +59,7 @@ async def cmd_cohort(message: Message, db, admin_ids: list[int]):
 @cohort_router.callback_query(F.data == "cohort:refresh")
 @require_admin
 async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Обновить cohort analysis"""
+    """Обновить данные когортного анализа"""
     await callback.answer("🔄 Обновляю...")
 
     # Повторно вызвать главное меню
@@ -69,10 +69,10 @@ async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int
     text = "📊 <b>Когортный анализ — динамика удержания</b>\n\n"
     text += f"🏆 <b>Лучшая когорта:</b> {comparison.best_cohort}\n"
     text += f"📉 <b>Худшая когорта:</b> {comparison.worst_cohort}\n\n"
-    text += f"📈 <b>Тренд retention:</b> {format_trend(comparison.retention_trend)}\n"
-    text += f"💰 <b>Тренд conversion:</b> {format_trend(comparison.conversion_trend)}\n\n"
+    text += f"📈 <b>Тренд удержания:</b> {format_trend(comparison.retention_trend)}\n"
+    text += f"💰 <b>Тренд конверсии:</b> {format_trend(comparison.conversion_trend)}\n\n"
 
-    text += "<b>🔍 Ключевые инсайты:</b>\n"
+    text += "<b>🔍 Ключевые выводы:</b>\n"
     for insight in comparison.key_insights[:5]:
         text += f"• {insight}\n"
 
@@ -131,13 +131,13 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
 
     text += f"👥 <b>Размер когорты:</b> {cohort.cohort_size} пользователей\n\n"
 
-    text += "<b>📈 Retention Rates:</b>\n"
+    text += "<b>📈 Показатели удержания:</b>\n"
     text += f"  День 1:  {cohort.day_1_retention:.1f}%\n"
     text += f"  День 7:  {cohort.day_7_retention:.1f}%\n"
     text += f"  День 30: {cohort.day_30_retention:.1f}%\n"
     text += f"  День 90: {cohort.day_90_retention:.1f}%\n\n"
 
-    text += "<b>💰 Revenue Metrics:</b>\n"
+    text += "<b>💰 Показатели выручки:</b>\n"
     text += f"  Платящих пользователей: {cohort.paid_users}\n"
     text += f"  Конверсия: {cohort.conversion_rate:.1f}%\n"
     text += f"  Совокупная выручка: {cohort.total_revenue:,}₽\n"
@@ -146,14 +146,14 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
     text += "<b>🎯 Вовлечённость:</b>\n"
     text += f"  Среднее число запросов на пользователя: {cohort.avg_requests_per_user:.1f}\n"
     text += f"  Средний жизненный цикл: {cohort.avg_lifetime_days:.1f} дней\n"
-    text += f"  Power-пользователей: {cohort.power_users_count}\n"
+    text += f"  Суперактивных пользователей: {cohort.power_users_count}\n"
     text += f"  Среднее число используемых функций: {cohort.avg_features_used:.1f}\n\n"
 
     text += "<b>🔥 Лучшие функции:</b>\n"
     for feature, adoption in cohort.top_features[:5]:
-        text += f"  • {feature}: {adoption:.1f}% adoption\n"
+        text += f"  • {feature}: {adoption:.1f}% пользователей\n"
 
-    text += f"\n<b>📉 Churn:</b>\n"
+    text += f"\n<b>📉 Отток:</b>\n"
     text += f"  Пользователей в оттоке: {cohort.churned_count}\n"
     text += f"  Доля оттока: {cohort.churn_rate:.1f}%\n"
     if cohort.avg_days_to_churn:
@@ -188,14 +188,14 @@ async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[i
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await edit_or_answer(callback, "🎯 <b>Выберите фичу для анализа adoption по когортам:</b>", keyboard)
+    await edit_or_answer(callback, "🎯 <b>Выберите фичу для анализа использования по когортам:</b>", keyboard)
     await callback.answer()
 
 
 @cohort_router.callback_query(F.data.startswith("cohort:feature:"))
 @require_admin
 async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Детали adoption фичи"""
+    """Детальный разбор использования фичи"""
     feature_name = callback.data.split(":")[-1]
 
     analytics = CohortAnalytics(db)
@@ -211,17 +211,17 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
     for cohort_month, days in sorted(adoption.avg_days_to_first_use.items(), reverse=True):
         text += f"  {cohort_month}: {days:.1f} дней\n"
 
-    text += f"\n<b>🔗 Влияние на Retention:</b>\n"
+    text += f"\n<b>🔗 Влияние на удержание:</b>\n"
     text += f"  С фичей: {adoption.users_with_feature_retention:.1f}%\n"
     text += f"  Без фичи: {adoption.users_without_feature_retention:.1f}%\n"
     text += f"  Прирост удержания: <b>{adoption.retention_lift:+.1f}%</b>\n\n"
 
     if adoption.retention_lift > 10:
-        text += "✅ <b>Эта фича значительно улучшает retention!</b>\n"
+        text += "✅ <b>Эта фича значительно улучшает удержание!</b>\n"
     elif adoption.retention_lift > 0:
-        text += "ℹ️ Фича положительно влияет на retention\n"
+        text += "ℹ️ Фича положительно влияет на удержание\n"
     else:
-        text += "⚠️ Фича не улучшает retention - возможно стоит переработать\n"
+        text += "⚠️ Фича не улучшает удержание — возможно стоит переработать\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад к фичам", callback_data="cohort:feature_adoption")],
@@ -240,7 +240,7 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
     comparison = await analytics.compare_cohorts(months_back=6)
 
     text = "📈 <b>Кривые удержания</b>\n\n"
-    text += "Сравнение retention по дням для всех когорт:\n\n"
+    text += "Сравнение удержания по дням для всех когорт:\n\n"
 
     for cohort in comparison.cohorts_data[:6]:
         text += f"<b>{cohort.cohort_month}</b>\n"
@@ -251,10 +251,10 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
         day_30_bar = "█" * int(cohort.day_30_retention / 10) + "░" * (10 - int(cohort.day_30_retention / 10))
         day_90_bar = "█" * int(cohort.day_90_retention / 10) + "░" * (10 - int(cohort.day_90_retention / 10))
 
-        text += f"  D1:  {day_1_bar} {cohort.day_1_retention:.0f}%\n"
-        text += f"  D7:  {day_7_bar} {cohort.day_7_retention:.0f}%\n"
-        text += f"  D30: {day_30_bar} {cohort.day_30_retention:.0f}%\n"
-        text += f"  D90: {day_90_bar} {cohort.day_90_retention:.0f}%\n\n"
+        text += f"  Д1:  {day_1_bar} {cohort.day_1_retention:.0f}%\n"
+        text += f"  Д7:  {day_7_bar} {cohort.day_7_retention:.0f}%\n"
+        text += f"  Д30: {day_30_bar} {cohort.day_30_retention:.0f}%\n"
+        text += f"  Д90: {day_90_bar} {cohort.day_90_retention:.0f}%\n\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="cohort:back")]
@@ -267,17 +267,17 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
 @cohort_router.callback_query(F.data == "cohort:back")
 @require_admin
 async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Вернуться в главное меню cohort"""
+    """Вернуться в главное меню когортного анализа"""
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 
     text = "📊 <b>Когортный анализ — динамика удержания</b>\n\n"
     text += f"🏆 <b>Лучшая когорта:</b> {comparison.best_cohort}\n"
     text += f"📉 <b>Худшая когорта:</b> {comparison.worst_cohort}\n\n"
-    text += f"📈 <b>Тренд retention:</b> {format_trend(comparison.retention_trend)}\n"
-    text += f"💰 <b>Тренд conversion:</b> {format_trend(comparison.conversion_trend)}\n\n"
+    text += f"📈 <b>Тренд удержания:</b> {format_trend(comparison.retention_trend)}\n"
+    text += f"💰 <b>Тренд конверсии:</b> {format_trend(comparison.conversion_trend)}\n\n"
 
-    text += "<b>🔍 Ключевые инсайты:</b>\n"
+    text += "<b>🔍 Ключевые выводы:</b>\n"
     for insight in comparison.key_insights[:5]:
         text += f"• {insight}\n"
 
