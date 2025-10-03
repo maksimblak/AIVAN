@@ -1199,8 +1199,7 @@ async def _send_crypto_invoice(message: Message, plan_info: SubscriptionPlanPric
     url = invoice.get("url") if isinstance(invoice, dict) else None
     if invoice and invoice.get("ok") and url:
         await message.answer(
-            f"{Emoji.DOWNLOAD} Оплата криптовалютой: перейдите по ссылке
-{url}",
+            f"{Emoji.DOWNLOAD} Оплата криптовалютой: перейдите по ссылке\n{url}",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -1269,8 +1268,7 @@ async def handle_select_plan_callback(callback: CallbackQuery):
         lines.append("")
         lines.append("Недоступно:")
         lines.extend(unavailable)
-    text = "
-".join(lines)
+    text = "\n".join(lines)
     try:
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     except TelegramBadRequest:
@@ -1400,12 +1398,6 @@ async def cmd_mystats(message: Message):
         plan_label = plan_info.plan.name if plan_info else (plan_id or '—')
         quota_balance_raw = stats.get('subscription_requests_balance')
         quota_balance = int(quota_balance_raw) if quota_balance_raw is not None else None
-        plan_line = f"• Тариф: {plan_label}\n" if plan_id or plan_info else ''
-        quota_line = (
-            f"• Остаток запросов: {max(0, quota_balance)}\n"
-            if quota_balance is not None and (plan_id or plan_info)
-            else ''
-        )
 
         # Форматируем даты
         def format_timestamp(ts):
@@ -1422,13 +1414,47 @@ async def cmd_mystats(message: Message):
             days_left = (until_dt - datetime.now()).days
             return f"✔ До {until_dt.strftime('%d.%m.%Y')} ({days_left} дн.)"
 
-        status_text = (
-            f"📊 <b>Моя статистика</b>\n\n"
-            f"👤 <b>Профиль</b>\n"
-            f"• ID: <code>{user_id}</code>\n"
-            f"• Статус: {'🛡️ Администратор' if stats.get('is_admin') else '👤 Пользователь'}\n"
-            f"• Регистрация: {format_timestamp(getattr(user, 'created_at', 0))}\n\н"
-            f"💰 <b>Баланс и доступ</b>\н"\н            f"• Пробные запросы: {stats.get('trial_remaining', 0)} из {TRIAL_REQUESTS}\н"\н            f"{plan_line}"\н            f"• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}\н"\н            f"{quota_line}"\н            f"📈 <b>Общая статистика</b>\н"\н            f"• Всего запросов: {stats.get('total_requests', 0)}\н"\н            f"• Успешных: {stats.get('successful_requests', 0)} ✔\н"\н            f"• Неудачных: {stats.get('failed_requests', 0)} ✖\н"\н            f"• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}\н\н"\н            f"📅 <b>За последние 30 дней</b>\н"\н            f"• Запросов: {stats.get('period_requests', 0)}\н"\н            f"• Успешных: {stats.get('period_successful', 0)}\н"\н            f"• Потрачено токенов: {stats.get('period_tokens', 0)}\н"\н            f"• Среднее время ответа: {stats.get('avg_response_time_ms', 0)} мс"\н        )\н\н        await message.answer(status_text, parse_mode=ParseMode.HTML)
+        status_lines = [
+            '📊 <b>Моя статистика</b>',
+            '',
+            '👤 <b>Профиль</b>',
+            f"• ID: <code>{user_id}</code>",
+            f"• Статус: {'🛡️ Администратор' if stats.get('is_admin') else '👤 Пользователь'}",
+            f"• Регистрация: {format_timestamp(getattr(user, 'created_at', 0))}",
+            '',
+            '💰 <b>Баланс и доступ</b>',
+            f"• Пробные запросы: {stats.get('trial_remaining', 0)} из {TRIAL_REQUESTS}",
+        ]
+        if plan_id or plan_info:
+            status_lines.append(f"• Тариф: {plan_label}")
+        status_lines.append(f"• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}")
+        if quota_balance is not None and (plan_id or plan_info):
+            status_lines.append(f"• Остаток запросов: {max(0, quota_balance)}")
+
+        status_lines.extend([
+            '',
+            '📈 <b>Общая статистика</b>',
+            f"• Всего запросов: {stats.get('total_requests', 0)}",
+            f"• Успешных: {stats.get('successful_requests', 0)} ✔",
+            f"• Неудачных: {stats.get('failed_requests', 0)} ✖",
+            f"• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}",
+            '',
+            '📅 <b>За последние 30 дней</b>',
+            f"• Запросов: {stats.get('period_requests', 0)}",
+            f"• Успешных: {stats.get('period_successful', 0)}",
+            f"• Потрачено токенов: {stats.get('period_tokens', 0)}",
+            f"• Среднее время ответа: {stats.get('avg_response_time_ms', 0)} мс",
+        ])
+
+        if stats.get('request_types'):
+            status_lines.extend(['', '📊 <b>Типы запросов (30 дней)</b>'])
+            for req_type, count in stats['request_types'].items():
+                emoji = '⚖️' if req_type == 'legal_question' else '🤔'
+                status_lines.append(f"• {emoji} {req_type}: {count}")
+
+        status_text = "\n".join(status_lines)
+
+        await message.answer(status_text, parse_mode=ParseMode.HTML)
 
     except Exception as e:
         logger.error(f"Error in cmd_mystats: {e}")
@@ -1926,15 +1952,15 @@ async def handle_my_stats_callback(callback: CallbackQuery):
 
 async def handle_subscription_status_callback(callback: CallbackQuery):
     """Обработчик кнопки 'Статус подписки'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
+    if not callback.from_user or callback.message is None:
+        await callback.answer('❌ Ошибка данных', show_alert=True)
         return
 
     try:
         await callback.answer()
 
         if db is None:
-            await callback.message.answer("Сервис временно недоступен")
+            await callback.message.answer('Сервис временно недоступен')
             return
 
         user_id = callback.from_user.id
@@ -1942,57 +1968,60 @@ async def handle_subscription_status_callback(callback: CallbackQuery):
             user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
         )
 
-        # Проверяем статус подписки
         has_subscription = await db.has_active_subscription(user_id)
+        plan_id = getattr(user, 'subscription_plan', None)
+        plan_info = _get_plan_pricing(plan_id) if plan_id else None
+        plan_label = plan_info.plan.name if plan_info else (plan_id or '—')
+        quota_balance_raw = getattr(user, 'subscription_requests_balance', None)
+        quota_balance = int(quota_balance_raw) if quota_balance_raw is not None else None
+
+        keyboard_buttons: list[list[InlineKeyboardButton]] = []
 
         if has_subscription and user.subscription_until:
             until_dt = datetime.fromtimestamp(user.subscription_until)
-            status_text = f"""💎 <b>Статус подписки</b>
-
-✅ <b>Подписка активна</b>
-📅 Действует до: {until_dt.strftime('%d.%m.%Y %H:%M')}
-
-🎯 <b>Преимущества</b>
-• Безлимитные запросы
-• Приоритетная обработка
-• Расширенные возможности"""
+            left_days = max(0, (until_dt - datetime.now()).days)
+            status_lines = [
+                f"{Emoji.DIAMOND} <b>Статус подписки</b>",
+                '',
+                '✅ <b>Подписка активна</b>',
+                f"• План: {plan_label}",
+                f"• Доступ до: {until_dt:%d.%m.%Y %H:%M} (≈{left_days} дн.)",
+            ]
+            if plan_info and quota_balance is not None:
+                status_lines.append(f"• Остаток запросов: {max(0, quota_balance)}")
+            elif plan_id and quota_balance is not None:
+                status_lines.append(f"• Остаток запросов: {max(0, quota_balance)}")
+            elif plan_id is None:
+                status_lines.append('• Лимит: без ограничений')
+            status_lines.append('')
+            status_lines.append('🛠 Пополнить пакет — команда /buy.')
+            status_text = "\n".join(status_lines)
+            keyboard_buttons.append([InlineKeyboardButton(text='🛒 Каталог тарифов', callback_data='buy_catalog')])
         else:
-            status_text = f"""💎 <b>Статус подписки</b>
+            trial_remaining = getattr(user, 'trial_remaining', 0)
+            status_lines = [
+                f"{Emoji.DIAMOND} <b>Статус подписки</b>",
+                '',
+                '❌ <b>Подписка не активна</b>',
+                f"🔓 Триал: {trial_remaining} запросов",
+                '',
+                '💡 Оформите подписку, чтобы получить дополнительные запросы, приоритет и поддержку.',
+            ]
+            status_text = "\n".join(status_lines)
+            keyboard_buttons.append([InlineKeyboardButton(text='💳 Оформить подписку', callback_data='get_subscription')])
 
-❌ <b>Подписка не активна</b>
-🔄 Триал: {user.trial_remaining} запросов
-
-💡 <b>Активируйте подписку для</b>
-• Безлимитных запросов
-• Приоритетной обработки
-• Расширенных возможностей
-
-💰 Стоимость: {SUB_PRICE_RUB} руб/месяц"""
-
-        # Создаем клавиатуру
-        keyboard_buttons = []
-
-        if not has_subscription:
-            keyboard_buttons.append([
-                InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")
-            ])
-
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")
-        ])
-
+        keyboard_buttons.append([InlineKeyboardButton(text='🔙 Назад к профилю', callback_data='my_profile')])
         subscription_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
         await callback.message.answer(
             status_text,
             parse_mode=ParseMode.HTML,
-            reply_markup=subscription_keyboard
+            reply_markup=subscription_keyboard,
         )
 
     except Exception as e:
         logger.error(f"Error in handle_subscription_status_callback: {e}")
-        await callback.answer("❌ Произошла ошибка")
-
+        await callback.answer('❌ Произошла ошибка', show_alert=True)
 
 async def handle_back_to_main_callback(callback: CallbackQuery):
     """Обработчик кнопки 'Назад' - возврат в главное меню"""
