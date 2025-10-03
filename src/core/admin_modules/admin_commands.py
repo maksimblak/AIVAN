@@ -29,6 +29,45 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def create_main_menu() -> InlineKeyboardMarkup:
+    """Главное меню админ-панели"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Аналитика", callback_data="admin_menu:analytics")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_menu:refresh")]
+        ]
+    )
+
+
+async def _build_admin_summary(db: DatabaseAdvanced) -> str:
+    analytics = AdminAnalytics(db)
+    segments = await analytics.get_user_segments()
+    conversion_metrics = await analytics.get_conversion_metrics()
+
+    return f"""
+<b>🎛 АДМИН-ПАНЕЛЬ</b>
+
+<b>📊 Сводка по пользователям:</b>
+
+⚡ Суперактивные: <b>{segments['power_users'].user_count}</b>
+⚠️ Группа риска: <b>{segments['at_risk'].user_count}</b>
+📉 Отток: <b>{segments['churned'].user_count}</b>
+💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
+🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
+🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>
+👑 VIP-пользователи: <b>{segments['vip'].user_count}</b>
+
+<b>📈 Конверсия Триал → Оплата:</b>
+• Всего триал-пользователей: {conversion_metrics.total_trial_users}
+• Перешли на оплату: {conversion_metrics.converted_to_paid}
+• Конверсия: <b>{conversion_metrics.conversion_rate}%</b>
+• Среднее время до покупки: {conversion_metrics.avg_time_to_conversion_days} дней
+
+<i>Выберите раздел для детального анализа:</i>
+"""
+
+
 # Создаем router для admin команд
 admin_router = Router()
 
@@ -59,6 +98,9 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh"),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Назад", callback_data="admin_menu:back"),
             ],
         ]
     )
