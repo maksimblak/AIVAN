@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from src.bot.ui_components import Emoji
 from src.core.admin_modules.admin_analytics import AdminAnalytics
-from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, require_admin
+from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, require_admin, set_admin_ids
 from src.core.admin_modules.admin_alerts_commands import alerts_router
 from src.core.admin_modules.admin_behavior_commands import behavior_router
 from src.core.admin_modules.admin_cohort_commands import cohort_router
@@ -488,6 +488,8 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     �������������:
         setup_admin_commands(dp, db, {123456, 789012})
     """
+    set_admin_ids(admin_ids)
+
     routers = [
         admin_router,
         alerts_router,

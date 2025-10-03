@@ -12,6 +12,9 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 
 logger = logging.getLogger(__name__)
 
+_GLOBAL_ADMIN_IDS: set[int] | None = None
+
+
 FEATURE_KEYS = [
     "legal_question",
     "document_upload",
@@ -42,9 +45,14 @@ def require_admin(func):
         bound = signature.bind_partial(*args, **kwargs)
         target = bound.arguments.get(target_name)
         admin_ids_arg = bound.arguments.get('admin_ids')
+        global _GLOBAL_ADMIN_IDS
 
         if target is None:
             raise RuntimeError("require_admin decorator requires a target argument (Message or CallbackQuery)")
+
+        if admin_ids_arg is None:
+            admin_ids_arg = _GLOBAL_ADMIN_IDS
+
         if admin_ids_arg is None:
             raise RuntimeError("require_admin decorator requires an 'admin_ids' argument")
 
@@ -166,3 +174,9 @@ def back_keyboard(callback_data: str = "admin_refresh") -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="« Назад", callback_data=callback_data)]]
     )
 
+
+
+
+def set_admin_ids(admin_ids: set[int]) -> None:
+    global _GLOBAL_ADMIN_IDS
+    _GLOBAL_ADMIN_IDS = set(admin_ids)

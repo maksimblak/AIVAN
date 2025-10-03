@@ -411,6 +411,78 @@ class DatabaseAdvanced:
                 """
             )
 
+            # NPS surveys table for PMF metrics
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS nps_surveys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    trigger_event TEXT,
+                    user_segment TEXT,
+                    score INTEGER,
+                    disappointment_level TEXT,
+                    feedback TEXT,
+                    created_at INTEGER NOT NULL,
+                    responded_at INTEGER,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+                """
+            )
+
+            # Behavior events table for cohort and retention analytics
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS behavior_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    feature TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    metadata TEXT,
+                    duration_ms INTEGER,
+                    success INTEGER DEFAULT 1,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+                """
+            )
+
+            # User journey events table for behavior tracking
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_journey_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_data TEXT,
+                    timestamp INTEGER NOT NULL,
+                    session_id TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+                """
+            )
+
+            # Create VIEW for backwards compatibility (payments -> transactions)
+            await conn.execute("DROP VIEW IF EXISTS payments")
+            await conn.execute(
+                """
+                CREATE VIEW payments AS
+                SELECT
+                    id,
+                    user_id,
+                    provider,
+                    currency,
+                    amount,
+                    amount_minor_units,
+                    payload,
+                    status,
+                    telegram_payment_charge_id,
+                    provider_payment_charge_id,
+                    created_at,
+                    updated_at
+                FROM transactions
+                """
+            )
+
             # Миграции для существующих БД - СНАЧАЛА!
             try:
                 # Добавляем новые поля в таблицу users, если их нет
@@ -452,13 +524,20 @@ class DatabaseAdvanced:
                 "CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_provider ON transactions(provider);",
                 "CREATE INDEX IF NOT EXISTS idx_users_created_month ON users(strftime('%Y-%m', created_at, 'unixepoch'));",
-                "CREATE INDEX IF NOT EXISTS idx_payments_created_month ON payments(strftime('%Y-%m', created_at, 'unixepoch'));",
+                "CREATE INDEX IF NOT EXISTS idx_transactions_created_month ON transactions(strftime('%Y-%m', created_at, 'unixepoch'));",
                 "CREATE INDEX IF NOT EXISTS idx_requests_user_created ON requests(user_id, created_at);",
                 "CREATE INDEX IF NOT EXISTS idx_requests_type ON requests(request_type);",
                 "CREATE INDEX IF NOT EXISTS idx_requests_success ON requests(success);",
                 "CREATE INDEX IF NOT EXISTS idx_ratings_request ON ratings(request_id);",
                 "CREATE INDEX IF NOT EXISTS idx_ratings_user ON ratings(user_id);",
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_ratings_user_request ON ratings(user_id, request_id);",
+                "CREATE INDEX IF NOT EXISTS idx_behavior_events_user ON behavior_events(user_id, timestamp);",
+                "CREATE INDEX IF NOT EXISTS idx_behavior_events_feature ON behavior_events(feature);",
+                "CREATE INDEX IF NOT EXISTS idx_behavior_events_timestamp ON behavior_events(timestamp);",
+                "CREATE INDEX IF NOT EXISTS idx_nps_surveys_user ON nps_surveys(user_id, created_at);",
+                "CREATE INDEX IF NOT EXISTS idx_nps_surveys_score ON nps_surveys(score);",
+                "CREATE INDEX IF NOT EXISTS idx_user_journey_events_user ON user_journey_events(user_id, timestamp);",
+                "CREATE INDEX IF NOT EXISTS idx_user_journey_events_session ON user_journey_events(session_id);",
             ]
 
             for index_sql in indexes:
