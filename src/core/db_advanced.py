@@ -507,10 +507,10 @@ class DatabaseAdvanced:
                     await conn.execute(
                         """
                         INSERT OR IGNORE INTO users
-                        (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                         total_requests, successful_requests, failed_requests, last_request_at,
-                         referred_by, referral_code, referrals_count, referral_bonus_days)
-                        VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0)
+                        (user_id, is_admin, trial_remaining, subscription_until, subscription_plan, subscription_requests_balance,
+                         subscription_last_purchase_at, created_at, updated_at, total_requests, successful_requests, failed_requests,
+                         last_request_at, referred_by, referral_code, referrals_count, referral_bonus_days)
+                        VALUES (?, ?, ?, 0, NULL, 0, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0)
                         """,
                         (user_id, 1 if is_admin else 0, default_trial, now, now),
                     )
@@ -519,9 +519,9 @@ class DatabaseAdvanced:
                     await conn.execute(
                         """
                         INSERT OR IGNORE INTO users
-                        (user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                         total_requests, successful_requests, failed_requests, last_request_at)
-                        VALUES (?, ?, ?, 0, ?, ?, 0, 0, 0, 0)
+                        (user_id, is_admin, trial_remaining, subscription_until, subscription_plan, subscription_requests_balance,
+                         subscription_last_purchase_at, created_at, updated_at, total_requests, successful_requests, failed_requests, last_request_at)
+                        VALUES (?, ?, ?, 0, NULL, 0, 0, ?, ?, 0, 0, 0, 0)
                         """,
                         (user_id, 1 if is_admin else 0, default_trial, now, now),
                     )
@@ -705,13 +705,13 @@ class DatabaseAdvanced:
                 new_until = base_time + max(0, duration_days) * 86400
                 new_balance = max(0, current_balance) + max(0, request_quota)
                 await conn.execute(
-                    """UPDATE users",
-                    "       SET subscription_until = ?,",
-                    "           subscription_plan = ?,",
-                    "           subscription_requests_balance = ?,",
-                    "           subscription_last_purchase_at = ?,",
-                    "           updated_at = ?",
-                    "       WHERE user_id = ?"""
+                    """UPDATE users SET
+                       subscription_until = ?,
+                       subscription_plan = ?,
+                       subscription_requests_balance = ?,
+                       subscription_last_purchase_at = ?,
+                       updated_at = ?
+                     WHERE user_id = ?""",
                     (new_until, plan_id, new_balance, now, now, user_id),
                 )
                 self.query_count += 2 if self.enable_metrics else 0
@@ -728,12 +728,12 @@ class DatabaseAdvanced:
             try:
                 now = int(time.time())
                 cursor = await conn.execute(
-                    """UPDATE users",
-                    "       SET subscription_requests_balance = subscription_requests_balance - ?,",
-                    "           updated_at = ?",
-                    "       WHERE user_id = ?",
-                    "         AND subscription_plan IS NOT NULL",
-                    "         AND subscription_requests_balance >= ?"""
+                    """UPDATE users SET
+                       subscription_requests_balance = subscription_requests_balance - ?,
+                       updated_at = ?
+                     WHERE user_id = ?
+                       AND subscription_plan IS NOT NULL
+                       AND subscription_requests_balance >= ?""",
                     (amount, now, user_id, amount),
                 )
                 affected = cursor.rowcount
@@ -905,7 +905,11 @@ class DatabaseAdvanced:
                            total_requests = total_requests + 1,
                            successful_requests = successful_requests + 1,
                            last_request_at = ?,
-                           updated_at = ?
+                           updated_at = ?,
+                           subscription_requests_balance = CASE
+                               WHEN subscription_plan IS NOT NULL AND subscription_requests_balance > 0 THEN subscription_requests_balance - 1
+                               ELSE subscription_requests_balance
+                           END
                            WHERE user_id = ?""",
                         (now, now, user_id),
                     )
@@ -937,7 +941,8 @@ class DatabaseAdvanced:
                 # Общая статистика пользователя
                 user_cursor = await conn.execute(
                     """SELECT total_requests, successful_requests, failed_requests, last_request_at,
-                       trial_remaining, subscription_until, is_admin 
+                       trial_remaining, subscription_until, is_admin,
+                       subscription_plan, subscription_requests_balance, subscription_last_purchase_at 
                        FROM users WHERE user_id = ?""",
                     (user_id,),
                 )
@@ -982,6 +987,9 @@ class DatabaseAdvanced:
                     "last_request_at": user_row[3],
                     "trial_remaining": user_row[4],
                     "subscription_until": user_row[5],
+                    "subscription_plan": user_row[7],
+                    "subscription_requests_balance": user_row[8],
+                    "subscription_last_purchase_at": user_row[9],
                     "is_admin": bool(user_row[6]),
                     "period_days": days,
                     "period_requests": period_row[0] if period_row else 0,

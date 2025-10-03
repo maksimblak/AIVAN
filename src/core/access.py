@@ -11,6 +11,8 @@ class AccessDecision:
     is_admin: bool = False
     has_subscription: bool = False
     subscription_until: int | None = None
+    subscription_plan: str | None = None
+    subscription_requests_remaining: int | None = None
     trial_used: int | None = None
     trial_remaining: int | None = None
 
@@ -36,13 +38,37 @@ class AccessService:
             return AccessDecision(allowed=True, is_admin=True)
 
         has_subscription = await self._db.has_active_subscription(user_id)
+        subscription_plan = getattr(user, "subscription_plan", None)
+        subscription_balance_raw = getattr(user, "subscription_requests_balance", None)
+        subscription_balance: int | None = None
+        if subscription_balance_raw is not None:
+            try:
+                subscription_balance = max(0, int(subscription_balance_raw))
+            except (TypeError, ValueError):
+                subscription_balance = None
+        subscription_until = int(user.subscription_until) if user.subscription_until else None
+
         if has_subscription:
+            if subscription_plan and subscription_balance is not None:
+                if subscription_balance <= 0:
+                    return AccessDecision(
+                        allowed=False,
+                        has_subscription=True,
+                        subscription_until=subscription_until,
+                        subscription_plan=subscription_plan,
+                        subscription_requests_remaining=0,
+                    )
+                return AccessDecision(
+                    allowed=True,
+                    has_subscription=True,
+                    subscription_until=subscription_until,
+                    subscription_plan=subscription_plan,
+                    subscription_requests_remaining=subscription_balance,
+                )
             return AccessDecision(
                 allowed=True,
                 has_subscription=True,
-                subscription_until=(
-                    int(user.subscription_until) if user.subscription_until else None
-                ),
+                subscription_until=subscription_until,
             )
 
         # Try to decrement trial
