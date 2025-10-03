@@ -77,6 +77,7 @@ from src.core.subscription_payments import (
     parse_subscription_payload,
     SubscriptionPayloadError,
 )
+from src.core.admin_modules.admin_commands import setup_admin_commands
 from src.core.session_store import SessionStore, UserSession
 from src.core.validation import InputValidator, ValidationSeverity
 from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
@@ -3398,6 +3399,8 @@ async def run_bot() -> None:
     db = ctx.db or container.get(DatabaseAdvanced)
     ctx.db = db
     await db.init()
+
+    setup_admin_commands(dp, db, ADMIN_IDS)
 
     cache_backend = await create_cache_backend(
         redis_url=cfg.redis_url,
