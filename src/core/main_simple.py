@@ -1040,19 +1040,37 @@ def _get_plan_pricing(plan_id: str | None) -> SubscriptionPlanPricing | None:
     return SUBSCRIPTION_PLAN_MAP.get(plan_id)
 
 
-_def_catalog_intro = "\n".join(
-    [
-        f"{Emoji.MAGIC} <b>Каталог подписок</b>",
-        "",
-        "Выберите тариф, чтобы посмотреть детали и оформить оплату.",
-    ]
-)
+_catalog_header_lines = [
+    f"{Emoji.MAGIC} <b>Каталог подписок</b>",
+    "",
+    "💡 Подберите тариф под свои задачи.",
+    "Нажмите кнопку ниже, чтобы открыть способы оплаты.",
+]
 
 
 def _plan_catalog_text() -> str:
     if not SUBSCRIPTION_PLANS:
         return f"{Emoji.WARNING} Подписки временно недоступны. Попробуйте позже."
-    return _def_catalog_intro
+
+    lines: list[str] = list(_catalog_header_lines)
+    for plan_info in SUBSCRIPTION_PLANS:
+        plan = plan_info.plan
+        stars_amount = _plan_stars_amount(plan_info)
+        lines.extend(
+            [
+                "",
+                f"{Emoji.DIAMOND} <b>{html_escape(plan.name)}</b>",
+                f"{Emoji.CLOCK} {plan.duration_days} дней • {Emoji.DOCUMENT} {plan.request_quota} запросов",
+            ]
+        )
+        if plan.description:
+            lines.append(f"<i>{html_escape(plan.description)}</i>")
+        price_line = f"💳 {_format_rub(plan.price_rub)} ₽"
+        if stars_amount > 0:
+            price_line += f" • {stars_amount} ⭐"
+        lines.append(price_line)
+
+    return "\n".join(lines)
 
 
 _def_no_plans_keyboard = InlineKeyboardMarkup(
@@ -1065,8 +1083,19 @@ def _build_plan_catalog_keyboard() -> InlineKeyboardMarkup:
         return _def_no_plans_keyboard
     rows: list[list[InlineKeyboardButton]] = []
     for plan_info in SUBSCRIPTION_PLANS:
-        label = f"{plan_info.plan.name} • {_format_rub(plan_info.plan.price_rub)} ₽"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"select_plan:{plan_info.plan.plan_id}")])
+        stars_amount = _plan_stars_amount(plan_info)
+        price_label = f"{_format_rub(plan_info.plan.price_rub)} ₽"
+        if stars_amount > 0:
+            price_label += f" / {stars_amount} ⭐"
+        label = f"{Emoji.DIAMOND} {plan_info.plan.name} • {price_label}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"select_plan:{plan_info.plan.plan_id}",
+                )
+            ]
+        )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1216,24 +1245,52 @@ def _plan_details_keyboard(plan_info: SubscriptionPlanPricing) -> tuple[InlineKe
 
     rub_label = f"💳 Карта • {_format_rub(plan_info.plan.price_rub)} ₽"
     if RUB_PROVIDER_TOKEN:
-        rows.append([InlineKeyboardButton(text=rub_label, callback_data=f"pay_plan:{plan_info.plan.plan_id}:rub")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=rub_label,
+                    callback_data=f"pay_plan:{plan_info.plan.plan_id}:rub",
+                )
+            ]
+        )
     else:
-        unavailable.append("• 💳 Карта — временно недоступно")
+        unavailable.append("💳 Оплата картой — временно недоступна")
 
     stars_amount = _plan_stars_amount(plan_info)
     stars_label = f"⭐ Telegram Stars • {stars_amount}"
     if stars_amount > 0 and STARS_PROVIDER_TOKEN:
-        rows.append([InlineKeyboardButton(text=stars_label, callback_data=f"pay_plan:{plan_info.plan.plan_id}:stars")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=stars_label,
+                    callback_data=f"pay_plan:{plan_info.plan.plan_id}:stars",
+                )
+            ]
+        )
     else:
-        unavailable.append("• ⭐ Telegram Stars — временно недоступно")
+        unavailable.append("⭐ Telegram Stars — временно недоступно")
 
     crypto_label = f"🪙 Криптовалюта • {_format_rub(plan_info.plan.price_rub)} ₽"
     if crypto_provider is not None:
-        rows.append([InlineKeyboardButton(text=crypto_label, callback_data=f"pay_plan:{plan_info.plan.plan_id}:crypto")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=crypto_label,
+                    callback_data=f"pay_plan:{plan_info.plan.plan_id}:crypto",
+                )
+            ]
+        )
     else:
-        unavailable.append("• 🪙 Криптовалюта — временно недоступно")
+        unavailable.append("🪙 Криптовалюта — временно недоступна")
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_catalog")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"{Emoji.BACK} Назад к тарифам",
+                callback_data="buy_catalog",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows), unavailable
 
 
@@ -1252,23 +1309,39 @@ async def handle_select_plan_callback(callback: CallbackQuery):
         await callback.answer("❌ Ошибка данных", show_alert=True)
         return
     await callback.answer()
+
+    plan = plan_info.plan
     stars_amount = _plan_stars_amount(plan_info)
-    lines = [
-        f"{Emoji.DIAMOND} <b>{plan_info.plan.name}</b>",
-        "",
-        f"• Срок: {plan_info.plan.duration_days} дней",
-        f"• Квота: {plan_info.plan.request_quota} запросов",
-        f"• Стоимость: {_format_rub(plan_info.plan.price_rub)} ₽",
-    ]
+    lines = [f"{Emoji.DIAMOND} <b>{html_escape(plan.name)}</b>"]
+    if plan.description:
+        lines.append(f"<i>{html_escape(plan.description)}</i>")
+
+    lines.extend(
+        [
+            "",
+            f"{Emoji.CALENDAR} Период доступа: {plan.duration_days} дней",
+            f"{Emoji.DOCUMENT} Лимит запросов: {plan.request_quota}",
+        ]
+    )
+
+    price_line = f"💳 {_format_rub(plan.price_rub)} ₽"
     if stars_amount > 0:
-        lines.append(f"• Telegram Stars: {stars_amount} ⭐")
-    lines.append("")
-    lines.append("Выберите способ оплаты ниже.")
+        price_line += f" • {stars_amount} ⭐"
+    lines.append(price_line)
+
+    lines.extend(
+        [
+            "",
+            f"{Emoji.MAGIC} Выберите удобный способ оплаты ниже.",
+        ]
+    )
+
     keyboard, unavailable = _plan_details_keyboard(plan_info)
     if unavailable:
         lines.append("")
-        lines.append("Недоступно:")
-        lines.extend(unavailable)
+        lines.append(f"{Emoji.WARNING} Временно недоступно:")
+        lines.extend(f"• {item}" for item in unavailable)
+
     text = "\n".join(lines)
     try:
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
