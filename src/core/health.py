@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
+from collections import deque
 from contextlib import suppress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -66,6 +68,8 @@ class HealthCheck(ABC):
         # Статистика
         self.total_checks = 0
         self.failed_checks = 0
+        self.degraded_checks = 0
+        self.unknown_checks = 0
         self.last_result: HealthCheckResult | None = None
 
     @abstractmethod
@@ -81,49 +85,55 @@ class HealthCheck(ABC):
         try:
             result = await asyncio.wait_for(self.check(), timeout=self.timeout)
             result.response_time = time.time() - start_time
-
-            if result.status != HealthStatus.HEALTHY:
-                self.failed_checks += 1
-
-            self.last_result = result
-            return result
-
-        except TimeoutError:
-            self.failed_checks += 1
+        except (asyncio.TimeoutError, TimeoutError):
             result = HealthCheckResult(
                 status=HealthStatus.UNHEALTHY,
                 message=f"Health check timeout after {self.timeout}s",
                 response_time=time.time() - start_time,
             )
-            self.last_result = result
-            return result
-
         except Exception as e:
-            self.failed_checks += 1
             result = HealthCheckResult(
                 status=HealthStatus.UNHEALTHY,
                 message=f"Health check failed: {str(e)}",
                 response_time=time.time() - start_time,
             )
-            self.last_result = result
-            return result
+
+        self._update_counters(result.status)
+        self.last_result = result
+        return result
+
+
+    def _update_counters(self, status: HealthStatus) -> None:
+        """Обновляет статистику по категориям статусов."""
+        if status == HealthStatus.HEALTHY:
+            return
+        if status == HealthStatus.DEGRADED:
+            self.degraded_checks += 1
+        elif status == HealthStatus.UNHEALTHY:
+            self.failed_checks += 1
+        elif status == HealthStatus.UNKNOWN:
+            self.unknown_checks += 1
 
     def get_stats(self) -> dict[str, Any]:
         """Статистика health check'а"""
-        success_rate = 0.0
-        if self.total_checks > 0:
-            success_rate = (self.total_checks - self.failed_checks) / self.total_checks
+        healthy_checks = max(
+            self.total_checks - self.failed_checks - self.degraded_checks - self.unknown_checks,
+            0,
+        )
+        success_rate = healthy_checks / self.total_checks if self.total_checks else 0.0
 
         return {
             "name": self.name,
             "critical": self.critical,
             "tags": self.tags,
             "total_checks": self.total_checks,
+            "healthy_checks": healthy_checks,
             "failed_checks": self.failed_checks,
+            "degraded_checks": self.degraded_checks,
+            "unknown_checks": self.unknown_checks,
             "success_rate": success_rate,
             "last_check": self.last_result.to_dict() if self.last_result else None,
         }
-
 
 # Конкретные реализации health check'ов
 
@@ -206,12 +216,12 @@ class OpenAIHealthCheck(HealthCheck):
             # Проверяем процент неудачных запросов
             if stats["total_requests"] > 0:
                 error_rate = stats["failed_requests"] / stats["total_requests"]
-                if error_rate > 0.1:  # Более 10% ошибок
-                    status = HealthStatus.DEGRADED
-                    message = f"High error rate: {error_rate:.2%}"
-                elif error_rate > 0.5:  # Более 50% ошибок
+                if error_rate > 0.5:  # Более 50% ошибок
                     status = HealthStatus.UNHEALTHY
                     message = f"Critical error rate: {error_rate:.2%}"
+                elif error_rate > 0.1:  # Более 10% ошибок
+                    status = HealthStatus.DEGRADED
+                    message = f"High error rate: {error_rate:.2%}"
 
             return HealthCheckResult(
                 status=status, message=message, details={**stats, "cache_status": cache_status}
@@ -324,7 +334,11 @@ class RateLimiterHealthCheck(HealthCheck):
             if hasattr(self.rate_limiter, "get_stats"):
                 stats_method = getattr(self.rate_limiter, "get_stats")
                 if callable(stats_method):
-                    stats = await stats_method()
+                    maybe_stats = stats_method()
+                    if inspect.isawaitable(maybe_stats):
+                        stats = await maybe_stats
+                    else:
+                        stats = maybe_stats
 
             if stats is None:
                 stats = {
@@ -359,19 +373,19 @@ class RateLimiterHealthCheck(HealthCheck):
 class SystemResourcesHealthCheck(HealthCheck):
     """Проверка системных ресурсов"""
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, history_size: int = 10, **kwargs):
         super().__init__("system_resources", **kwargs)
+        self._history_size = history_size
+        self._metrics_history: deque[dict[str, float]] = deque(maxlen=history_size)
 
     async def check(self) -> HealthCheckResult:
         try:
             import psutil
 
-            # Получаем информацию о системе
-            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_percent = await asyncio.to_thread(psutil.cpu_percent, interval=1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
 
-            # Определяем статус
             status = HealthStatus.HEALTHY
             issues = []
 
@@ -394,16 +408,45 @@ class SystemResourcesHealthCheck(HealthCheck):
             if issues:
                 message = f"Resource issues: {', '.join(issues)}"
 
+            snapshot = {
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory.percent,
+                "memory_available_gb": round(memory.available / (1024**3), 2),
+                "disk_percent": disk.percent,
+                "disk_free_gb": round(disk.free / (1024**3), 2),
+            }
+
+            self._metrics_history.append({"timestamp": time.time(), **snapshot})
+            history_samples = list(self._metrics_history)
+            history_summary: dict[str, dict[str, float]] = {}
+            if history_samples:
+                for metric in (
+                    "cpu_percent",
+                    "memory_percent",
+                    "memory_available_gb",
+                    "disk_percent",
+                    "disk_free_gb",
+                ):
+                    values = [entry[metric] for entry in history_samples]
+                    history_summary[metric] = {
+                        "min": round(min(values), 2),
+                        "max": round(max(values), 2),
+                        "avg": round(sum(values) / len(values), 2),
+                    }
+
+            details = {
+                **snapshot,
+                "history": {
+                    "window_size": self._history_size,
+                    "samples": history_samples,
+                    "summary": history_summary,
+                },
+            }
+
             return HealthCheckResult(
                 status=status,
                 message=message,
-                details={
-                    "cpu_percent": cpu_percent,
-                    "memory_percent": memory.percent,
-                    "memory_available_gb": round(memory.available / (1024**3), 2),
-                    "disk_percent": disk.percent,
-                    "disk_free_gb": round(disk.free / (1024**3), 2),
-                },
+                details=details,
             )
 
         except ImportError:
