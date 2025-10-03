@@ -6,6 +6,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+from src.core.admin_modules.admin_utils import require_admin
 from src.core.admin_modules.pmf_metrics import PMFMetrics
 
 
@@ -13,12 +14,9 @@ pmf_router = Router(name="pmf_admin")
 
 
 @pmf_router.message(Command("pmf"))
+@require_admin
 async def cmd_pmf(message: Message, db, admin_ids: list[int]):
     """Главное меню PMF metrics"""
-    if message.from_user.id not in admin_ids:
-        await message.answer("⛔️ Доступ запрещен")
-        return
-
     metrics = PMFMetrics(db)
 
     # Получить все метрики
@@ -105,12 +103,9 @@ def _format_trend(trend: str) -> str:
 
 
 @pmf_router.callback_query(F.data == "pmf:refresh")
+@require_admin
 async def handle_pmf_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
     """Обновить PMF dashboard"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     await callback.answer("🔄 Обновляю...")
 
     metrics = PMFMetrics(db)
@@ -152,12 +147,9 @@ async def handle_pmf_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
 
 
 @pmf_router.callback_query(F.data == "pmf:nps_details")
+@require_admin
 async def handle_nps_details(callback: CallbackQuery, db, admin_ids: list[int]):
     """Детальный NPS breakdown"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     metrics = PMFMetrics(db)
     nps = await metrics.get_nps(days=30)
 
@@ -202,12 +194,9 @@ async def handle_nps_details(callback: CallbackQuery, db, admin_ids: list[int]):
 
 
 @pmf_router.callback_query(F.data == "pmf:feature_pmf")
+@require_admin
 async def handle_feature_pmf(callback: CallbackQuery, db, admin_ids: list[int]):
     """Список фич для PMF анализа"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     features = [
         "legal_question",
         "document_upload",
@@ -238,12 +227,9 @@ async def handle_feature_pmf(callback: CallbackQuery, db, admin_ids: list[int]):
 
 
 @pmf_router.callback_query(F.data.startswith("pmf:feature_details:"))
+@require_admin
 async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[int]):
     """Детальный PMF для фичи"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     feature_name = callback.data.split(":")[-1]
 
     metrics = PMFMetrics(db)
@@ -302,12 +288,9 @@ def _pmf_rating_emoji(rating: str) -> str:
 
 
 @pmf_router.callback_query(F.data == "pmf:send_survey")
+@require_admin
 async def handle_send_survey(callback: CallbackQuery, db, admin_ids: list[int]):
     """Отправить NPS опрос"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     text = "📤 <b>Send NPS Survey</b>\n\n"
     text += "Выберите сегмент пользователей для отправки опроса:\n\n"
     text += "• Power Users - активные платящие пользователи\n"
@@ -328,12 +311,9 @@ async def handle_send_survey(callback: CallbackQuery, db, admin_ids: list[int]):
 
 
 @pmf_router.callback_query(F.data.startswith("pmf:survey:"))
+@require_admin
 async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int]):
     """Отправить опросы выбранному сегменту"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     segment = callback.data.split(":")[-1]
 
     await callback.answer("📤 Отправляю опросы...", show_alert=False)
@@ -404,12 +384,9 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
 
 
 @pmf_router.callback_query(F.data == "pmf:back")
+@require_admin
 async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int]):
     """Вернуться в главное меню PMF"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     metrics = PMFMetrics(db)
     nps = await metrics.get_nps(days=30)
     sean_ellis = await metrics.get_sean_ellis_score(days=30)

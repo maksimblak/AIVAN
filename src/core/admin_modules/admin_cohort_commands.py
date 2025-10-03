@@ -6,6 +6,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+from src.core.admin_modules.admin_utils import require_admin
 from src.core.admin_modules.cohort_analytics import CohortAnalytics
 from src.core.admin_modules.admin_formatters import format_trend
 
@@ -14,12 +15,9 @@ cohort_router = Router(name="cohort_admin")
 
 
 @cohort_router.message(Command("cohort"))
+@require_admin
 async def cmd_cohort(message: Message, db, admin_ids: list[int]):
     """Главное меню cohort analysis"""
-    if message.from_user.id not in admin_ids:
-        await message.answer("⛔️ Доступ запрещен")
-        return
-
     analytics = CohortAnalytics(db)
 
     # Получить сравнение когорт
@@ -59,12 +57,9 @@ async def cmd_cohort(message: Message, db, admin_ids: list[int]):
 
 
 @cohort_router.callback_query(F.data == "cohort:refresh")
+@require_admin
 async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
     """Обновить cohort analysis"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     await callback.answer("🔄 Обновляю...")
 
     # Повторно вызвать главное меню
@@ -99,12 +94,9 @@ async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int
 
 
 @cohort_router.callback_query(F.data == "cohort:select_month")
+@require_admin
 async def handle_select_month(callback: CallbackQuery, db, admin_ids: list[int]):
     """Выбрать месяц для детального просмотра"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 
@@ -131,12 +123,9 @@ async def handle_select_month(callback: CallbackQuery, db, admin_ids: list[int])
 
 
 @cohort_router.callback_query(F.data.startswith("cohort:details:"))
+@require_admin
 async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int]):
     """Детальный просмотр когорты"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     cohort_month = callback.data.split(":")[-1]
 
     analytics = CohortAnalytics(db)
@@ -184,12 +173,9 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
 
 
 @cohort_router.callback_query(F.data == "cohort:feature_adoption")
+@require_admin
 async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[int]):
     """Feature adoption по когортам"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     # Список популярных фич для анализа
     features = [
         "legal_question",
@@ -221,12 +207,9 @@ async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[i
 
 
 @cohort_router.callback_query(F.data.startswith("cohort:feature:"))
+@require_admin
 async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[int]):
     """Детали adoption фичи"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     feature_name = callback.data.split(":")[-1]
 
     analytics = CohortAnalytics(db)
@@ -264,12 +247,9 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
 
 
 @cohort_router.callback_query(F.data == "cohort:retention_curves")
+@require_admin
 async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[int]):
     """Retention curves визуализация"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 
@@ -299,12 +279,9 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
 
 
 @cohort_router.callback_query(F.data == "cohort:back")
+@require_admin
 async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int]):
     """Вернуться в главное меню cohort"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 

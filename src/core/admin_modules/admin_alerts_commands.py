@@ -7,6 +7,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+from src.core.admin_modules.admin_utils import require_admin
 from src.core.admin_modules.automated_alerts import AutomatedAlerts, AlertConfig
 
 
@@ -14,12 +15,9 @@ alerts_router = Router(name="alerts_admin")
 
 
 @alerts_router.message(Command("alerts"))
+@require_admin
 async def cmd_alerts(message: Message, db, bot, admin_ids: list[int]):
     """Проверить текущие alerts"""
-    if message.from_user.id not in admin_ids:
-        await message.answer("⛔️ Доступ запрещен")
-        return
-
     alert_system = AutomatedAlerts(db, bot, admin_ids)
 
     await message.answer("🔍 Проверяю все метрики...")
@@ -74,12 +72,9 @@ async def cmd_alerts(message: Message, db, bot, admin_ids: list[int]):
 
 
 @alerts_router.callback_query(F.data == "alerts:refresh")
+@require_admin
 async def handle_alerts_refresh(callback: CallbackQuery, db, bot, admin_ids: list[int]):
     """Обновить alerts"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     await callback.answer("🔍 Проверяю...")
 
     alert_system = AutomatedAlerts(db, bot, admin_ids)
@@ -129,12 +124,9 @@ async def handle_alerts_refresh(callback: CallbackQuery, db, bot, admin_ids: lis
 
 
 @alerts_router.callback_query(F.data == "alerts:by_category")
+@require_admin
 async def handle_alerts_by_category(callback: CallbackQuery, db, bot, admin_ids: list[int]):
     """Показать alerts по категориям"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     text = "📋 <b>Select Alert Category:</b>\n\n"
     text += "Choose category to view detailed alerts"
 
@@ -151,12 +143,9 @@ async def handle_alerts_by_category(callback: CallbackQuery, db, bot, admin_ids:
 
 
 @alerts_router.callback_query(F.data.startswith("alerts:cat:"))
+@require_admin
 async def handle_category_alerts(callback: CallbackQuery, db, bot, admin_ids: list[int]):
     """Показать alerts конкретной категории"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     category = callback.data.split(":")[-1]
 
     alert_system = AutomatedAlerts(db, bot, admin_ids)
@@ -206,12 +195,9 @@ async def handle_category_alerts(callback: CallbackQuery, db, bot, admin_ids: li
 
 
 @alerts_router.callback_query(F.data == "alerts:config")
+@require_admin
 async def handle_alerts_config(callback: CallbackQuery, db, admin_ids: list[int]):
     """Настройки alerts"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     config = AlertConfig()  # Default config
 
     text = "⚙️ <b>Alert Configuration</b>\n\n"
@@ -245,12 +231,9 @@ async def handle_alerts_config(callback: CallbackQuery, db, admin_ids: list[int]
 
 
 @alerts_router.callback_query(F.data == "alerts:back")
+@require_admin
 async def handle_back_to_alerts(callback: CallbackQuery, db, bot, admin_ids: list[int]):
     """Вернуться к главному меню alerts"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     alert_system = AutomatedAlerts(db, bot, admin_ids)
     alerts = await alert_system.check_all_alerts()
 
@@ -300,12 +283,9 @@ async def handle_back_to_alerts(callback: CallbackQuery, db, bot, admin_ids: lis
 
 
 @alerts_router.message(Command("digest"))
+@require_admin
 async def cmd_daily_digest(message: Message, db, bot, admin_ids: list[int]):
     """Отправить daily digest принудительно"""
-    if message.from_user.id not in admin_ids:
-        await message.answer("⛔️ Доступ запрещен")
-        return
-
     alert_system = AutomatedAlerts(db, bot, admin_ids)
 
     await message.answer("📊 Генерирую daily digest...")

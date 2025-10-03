@@ -337,12 +337,9 @@ async def handle_user_journey(callback: CallbackQuery, db, admin_ids: set[int]):
 
 
 @behavior_router.message(Command("journey"))
+@require_admin
 async def cmd_user_journey(message: Message, db, admin_ids: set[int]):
     """Детальный путь конкретного пользователя"""
-    if not message.from_user or message.from_user.id not in admin_ids:
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа")
-        return
-
     args = (message.text or "").split()
     if len(args) < 2:
         await message.answer(

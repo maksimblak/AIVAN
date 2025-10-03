@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from src.bot.ui_components import Emoji
 from src.core.admin_modules.retention_analytics import RetentionAnalytics
+from src.core.admin_modules.admin_utils import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,9 @@ def create_retention_menu() -> InlineKeyboardMarkup:
 
 
 @retention_router.message(Command("retention"))
+@require_admin
 async def cmd_retention(message: Message, db, admin_ids: set[int]):
     """Главная команда retention аналитики"""
-    if not message.from_user or message.from_user.id not in admin_ids:
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа")
-        return
-
     analytics = RetentionAnalytics(db)
 
     # Краткая сводка
@@ -75,12 +73,9 @@ async def cmd_retention(message: Message, db, admin_ids: set[int]):
 
 
 @retention_router.callback_query(F.data == "retention:retained")
+@require_admin
 async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]):
     """Детальный анализ retained users"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     analytics = RetentionAnalytics(db)
     retained = await analytics.get_retained_users(min_payments=2)
 
@@ -166,12 +161,9 @@ async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]
 
 
 @retention_router.callback_query(F.data == "retention:churned")
+@require_admin
 async def handle_churned_users(callback: CallbackQuery, db, admin_ids: set[int]):
     """Детальный анализ churned users"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     analytics = RetentionAnalytics(db)
     churned = await analytics.get_churned_users(days_since_expiry=90)
 
@@ -271,12 +263,9 @@ async def handle_churned_users(callback: CallbackQuery, db, admin_ids: set[int])
 
 
 @retention_router.callback_query(F.data == "retention:compare")
+@require_admin
 async def handle_compare_groups(callback: CallbackQuery, db, admin_ids: set[int]):
     """Сравнение retained vs churned"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     analytics = RetentionAnalytics(db)
     comparison = await analytics.compare_retained_vs_churned()
 
@@ -357,12 +346,9 @@ async def handle_compare_groups(callback: CallbackQuery, db, admin_ids: set[int]
 
 
 @retention_router.callback_query(F.data == "retention:deep_dive")
+@require_admin
 async def handle_deep_dive(callback: CallbackQuery, db, admin_ids: set[int]):
     """Запрос на глубокий анализ конкретного пользователя"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     output = "<b>🔍 DEEP DIVE ANALYSIS</b>\n\n"
     output += "Для детального анализа конкретного пользователя используйте:\n\n"
     output += "<code>/deepdive &lt;user_id&gt;</code>\n\n"
@@ -384,12 +370,9 @@ async def handle_deep_dive(callback: CallbackQuery, db, admin_ids: set[int]):
 
 
 @retention_router.message(Command("deepdive"))
+@require_admin
 async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
     """Детальный анализ конкретного пользователя"""
-    if not message.from_user or message.from_user.id not in admin_ids:
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа")
-        return
-
     args = (message.text or "").split()
     if len(args) < 2:
         await message.answer(
@@ -497,12 +480,9 @@ async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
 
 
 @retention_router.callback_query(F.data == "retention:menu")
+@require_admin
 async def back_to_retention_menu(callback: CallbackQuery, db, admin_ids: set[int]):
     """Возврат в меню retention"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     analytics = RetentionAnalytics(db)
     retained = await analytics.get_retained_users(min_payments=2)
     churned = await analytics.get_churned_users(days_since_expiry=30)
