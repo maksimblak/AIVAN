@@ -14,7 +14,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.bot.ui_components import Emoji
-from src.core.admin_modules.admin_utils import back_keyboard, render_dashboard, require_admin
+from src.core.admin_modules.admin_utils import back_keyboard, parse_user_id, render_dashboard, require_admin
 from src.core.user_behavior_tracker import UserBehaviorTracker
 
 logger = logging.getLogger(__name__)
@@ -340,18 +340,8 @@ async def handle_user_journey(callback: CallbackQuery, db, admin_ids: set[int]):
 @require_admin
 async def cmd_user_journey(message: Message, db, admin_ids: set[int]):
     """Детальный путь конкретного пользователя"""
-    args = (message.text or "").split()
-    if len(args) < 2:
-        await message.answer(
-            "Использование: /journey <user_id>\n"
-            "Пример: /journey 123456789"
-        )
-        return
-
-    try:
-        user_id = int(args[1])
-    except ValueError:
-        await message.answer(f"{Emoji.ERROR} Неверный формат user_id")
+    user_id = await parse_user_id(message, "journey")
+    if user_id is None:
         return
 
     tracker = UserBehaviorTracker(db)
