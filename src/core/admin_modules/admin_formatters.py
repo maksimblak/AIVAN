@@ -92,13 +92,13 @@ def quick_ratio_status(ratio: float) -> str:
         Status string with emoji
     """
     if ratio > 4:
-        return "🌟 Excellent"
+        return "🌟 Отлично"
     elif ratio > 2:
-        return "✅ Good"
+        return "✅ Хорошо"
     elif ratio > 1:
-        return "⚠️ OK"
+        return "⚠️ Нормально"
     else:
-        return "🔴 Poor"
+        return "🔴 Плохо"
 
 
 def ltv_cac_status(ratio: float) -> str:
@@ -130,9 +130,9 @@ def pmf_status(achieved: bool) -> str:
         Status string
     """
     if achieved:
-        return "✅ <b>PMF Achieved!</b>"
+        return "✅ <b>PMF достигнут!</b>"
     else:
-        return "⚠️ PMF not yet achieved"
+        return "⚠️ PMF пока не достигнут"
 
 
 def pmf_rating_emoji(rating: str) -> str:
