@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any
 
 from .exceptions import ErrorContext, ErrorHandler
+from src.core.db_advanced import TransactionStatus
 from src.documents.base import DocumentStorage
 
 logger = logging.getLogger(__name__)
@@ -256,17 +257,22 @@ class DatabaseCleanupTask(BackgroundTask):
             async with self.database.pool.acquire() as conn:
                 cutoff_timestamp = int(time.time() - (self.max_old_transactions_days * 86400))
 
+                statuses = (
+                    TransactionStatus.COMPLETED.value,
+                    TransactionStatus.FAILED.value,
+                )
+
                 cursor = await conn.execute(
-                    "SELECT COUNT(*) FROM transactions WHERE created_at < ? AND status IN ('success', 'failed')",
-                    (cutoff_timestamp,),
+                    "SELECT COUNT(*) FROM transactions WHERE created_at < ? AND status IN (?, ?)",
+                    (cutoff_timestamp, *statuses),
                 )
                 old_count = (await cursor.fetchone())[0]
                 await cursor.close()
 
                 if old_count > 0:
                     await conn.execute(
-                        "DELETE FROM transactions WHERE created_at < ? AND status IN ('success', 'failed')",
-                        (cutoff_timestamp,),
+                        "DELETE FROM transactions WHERE created_at < ? AND status IN (?, ?)",
+                        (cutoff_timestamp, *statuses),
                     )
                     results["transactions_deleted"] = old_count
                     logger.info(f"Deleted {old_count} old transactions")

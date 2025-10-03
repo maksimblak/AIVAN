@@ -20,7 +20,7 @@ from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
 
 if TYPE_CHECKING:
-    from src.core.db_advanced import DatabaseAdvanced
+    from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
 
 import re
 from html import escape as html_escape
@@ -58,7 +58,7 @@ from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, sanitize_telegram_html, render_legal_html
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
-from src.core.db_advanced import DatabaseAdvanced
+from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
 from src.core.exceptions import (
     ErrorContext,
     ErrorHandler,
@@ -2994,7 +2994,7 @@ async def on_successful_payment(message: Message):
                 amount=sp.total_amount,
                 amount_minor_units=sp.total_amount,
                 payload=sp.invoice_payload or "",
-                status="success",
+                status=TransactionStatus.COMPLETED.value,
                 telegram_payment_charge_id=sp.telegram_payment_charge_id,
                 provider_payment_charge_id=sp.provider_payment_charge_id,
             )

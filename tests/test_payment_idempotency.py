@@ -10,7 +10,7 @@ import tempfile
 
 # Импортируем advanced database
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
-from src.core.db_advanced import DatabaseAdvanced
+from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
 
 
 async def test_payment_idempotency():
@@ -45,7 +45,7 @@ async def test_payment_idempotency():
             "currency": "RUB",
             "amount": 300,
             "payload": "subscription_30_days",
-            "status": "pending",
+            "status": TransactionStatus.PENDING.value,
             "telegram_payment_charge_id": test_charge_id,
             "provider_payment_charge_id": "provider_123456",
         }

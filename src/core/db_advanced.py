@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import aiosqlite
@@ -55,6 +56,31 @@ class TransactionRecord:
     provider_payment_charge_id: str | None
     created_at: int
     updated_at: int
+
+
+class TransactionStatus(str, Enum):
+    # Normalized transaction statuses used across the system.
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    _ALIASES = {"success": COMPLETED}
+
+    @classmethod
+    def from_value(cls, value: "TransactionStatus | str") -> "TransactionStatus":
+        if isinstance(value, cls):
+            return value
+        normalized = str(value).strip().lower()
+        if not normalized:
+            raise ValueError("Transaction status cannot be empty")
+        if normalized in cls._ALIASES:
+            return cls._ALIASES[normalized]
+        try:
+            return cls(normalized)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported transaction status: {value!r}") from exc
 
 
 @dataclass
@@ -430,6 +456,11 @@ class DatabaseAdvanced:
                 except Exception as e:
                     logger.warning(f"Failed to create index: {index_sql} - {e}")
 
+            await conn.execute(
+                "UPDATE transactions SET status = ? WHERE status = ?",
+                (TransactionStatus.COMPLETED.value, "success"),
+            )
+
             await conn.commit()
 
         # Запускаем фоновую очистку
@@ -645,7 +676,7 @@ class DatabaseAdvanced:
         currency: str,
         amount: int,
         payload: str,
-        status: str,
+        status: TransactionStatus | str,
         telegram_payment_charge_id: str | None = None,
         provider_payment_charge_id: str | None = None,
         amount_minor_units: int | None = None,
@@ -672,6 +703,11 @@ class DatabaseAdvanced:
                     except Exception as e:
                         logger.warning(f"Error retrieving existing transaction ID: {e}")
 
+        try:
+            normalized_status = TransactionStatus.from_value(status)
+        except ValueError as exc:
+            raise DatabaseException(f"Unsupported transaction status: {status!r}") from exc
+
         async with self.pool.acquire() as conn:
             try:
                 now = int(time.time())
@@ -689,7 +725,7 @@ class DatabaseAdvanced:
                         amount,
                         amount_minor_units if amount_minor_units is not None else amount,
                         payload,
-                        status,
+                        normalized_status.value,
                         telegram_payment_charge_id,
                         provider_payment_charge_id,
                         now,
@@ -715,9 +751,7 @@ class DatabaseAdvanced:
                     logger.warning(
                         f"UNIQUE constraint failed for charge_id {telegram_payment_charge_id}, checking existing transaction"
                     )
-                    if await self.transaction_exists_by_telegram_charge_id(
-                        telegram_payment_charge_id
-                    ):
+                    if await self.transaction_exists_by_telegram_charge_id(telegram_payment_charge_id):
                         # Возвращаем ID существующей транзакции
                         cursor = await conn.execute(
                             "SELECT id FROM transactions WHERE telegram_payment_charge_id = ?",
@@ -733,6 +767,7 @@ class DatabaseAdvanced:
                             return row[0]
 
                 raise DatabaseException(f"Database error in record_transaction: {str(e)}")
+
 
     async def transaction_exists_by_telegram_charge_id(self, charge_id: str) -> bool:
         """Проверка существования транзакции по Telegram charge_id"""
@@ -1200,7 +1235,25 @@ class DatabaseAdvanced:
                 rows = await cursor.fetchall()
                 await cursor.close()
 
-                return [TransactionRecord(*row) for row in rows]
+                normalized_rows: list[TransactionRecord] = []
+                for row in rows:
+                    normalized_rows.append(
+                        TransactionRecord(
+                            id=row[0],
+                            user_id=row[1],
+                            provider=row[2],
+                            currency=row[3],
+                            amount=row[4],
+                            amount_minor_units=row[5],
+                            payload=row[6],
+                            status=TransactionStatus.from_value(row[7]).value,
+                            telegram_payment_charge_id=row[8],
+                            provider_payment_charge_id=row[9],
+                            created_at=row[10],
+                            updated_at=row[11],
+                        )
+                    )
+                return normalized_rows
             except Exception as e:
                 logger.error(f"Database error in get_user_transactions: {e}")
                 return []
