@@ -107,6 +107,7 @@ def _format_user_display(user: User | None) -> str:
 # Defaults keep module usable before runtime initialisation.
 WELCOME_MEDIA: WelcomeMedia | None = None
 BOT_TOKEN = ""
+BOT_USERNAME = ""
 USE_ANIMATION = True
 USE_STREAMING = True
 MAX_MESSAGE_LENGTH = 4000
@@ -333,6 +334,51 @@ def chunk_text(text: str, max_length: int | None = None) -> list[str]:
         chunks.append(current_chunk.strip())
 
     return chunks
+
+
+def _resolve_bot_username() -> str:
+    """Return cached bot username or fallback from settings."""
+    username = (BOT_USERNAME or '').strip()
+    if username.startswith('@'):
+        username = username[1:]
+    if username:
+        return username
+    try:
+        env_username = settings().get_str('TELEGRAM_BOT_USERNAME')
+    except Exception:
+        env_username = None
+    if env_username:
+        env_username = env_username.strip()
+        if env_username.startswith('https://t.me/'):
+            env_username = env_username[len('https://t.me/'):]
+        elif env_username.startswith('t.me/'):
+            env_username = env_username[len('t.me/'):]
+        if env_username.startswith('@'):
+            env_username = env_username[1:]
+        if env_username:
+            return env_username
+    return ''
+
+
+def _build_referral_link(referral_code: str | None) -> tuple[str | None, str | None]:
+    """Compose deep link for referral code; returns (link, code)."""
+    if not referral_code or referral_code == 'SYSTEM_ERROR':
+        return None, None
+    safe_code = html_escape(referral_code)
+    username = _resolve_bot_username()
+    if username:
+        return f'https://t.me/{username}?start=ref_{safe_code}', referral_code
+    try:
+        fallback_base = settings().get_str('TELEGRAM_REFERRAL_BASE_URL')
+    except Exception:
+        fallback_base = None
+    if fallback_base:
+        base = fallback_base.strip().rstrip('/')
+        if base:
+            if not base.startswith('http'):
+                base = f"https://{base.lstrip('/')}"
+            return f"{base}?start=ref_{safe_code}", referral_code
+    return None, referral_code
 
 
 # Удалено: используется md_links_to_anchors из ui_components
@@ -1041,10 +1087,14 @@ def _get_plan_pricing(plan_id: str | None) -> SubscriptionPlanPricing | None:
 
 
 _catalog_header_lines = [
-    f"{Emoji.MAGIC} <b>Каталог подписок</b>",
+    "✨ <b>Каталог подписок AIVAN</b>",
+    "━━━━━━━━━━━━━━━━━━━━",
     "",
-    "💡 Подберите тариф под свои задачи.",
-    "Нажмите кнопку ниже, чтобы открыть способы оплаты.",
+    "💡 <b>Выберите идеальный тариф для себя</b>",
+    "🎯 Доступ ко всем функциям AI-юриста",
+    "⚡ Мгновенные ответы на юридические вопросы",
+    "📄 Анализ и составление документов",
+    "",
 ]
 
 
@@ -1053,23 +1103,38 @@ def _plan_catalog_text() -> str:
         return f"{Emoji.WARNING} Подписки временно недоступны. Попробуйте позже."
 
     lines: list[str] = list(_catalog_header_lines)
-    for plan_info in SUBSCRIPTION_PLANS:
+
+    for idx, plan_info in enumerate(SUBSCRIPTION_PLANS, 1):
         plan = plan_info.plan
         stars_amount = _plan_stars_amount(plan_info)
-        lines.extend(
-            [
-                "",
-                f"{Emoji.DIAMOND} <b>{html_escape(plan.name)}</b>",
-                f"{Emoji.CLOCK} {plan.duration_days} дней • {Emoji.DOCUMENT} {plan.request_quota} запросов",
-            ]
-        )
+
+        # Рамка для плана
+        lines.append("╔═══════════════════════╗")
+
+        # Название тарифа с emoji
+        plan_emoji = "🌟" if idx == 1 else "💎" if idx == 2 else "⭐"
+        lines.append(f"║ {plan_emoji} <b>{html_escape(plan.name).upper()}</b>")
+        lines.append("╠═══════════════════════╣")
+
+        # Основная информация
+        lines.append(f"║ ⏰ <b>Срок:</b> {plan.duration_days} дней")
+        lines.append(f"║ 📊 <b>Запросов:</b> {plan.request_quota}")
+
+        # Описание если есть
         if plan.description:
-            lines.append(f"<i>{html_escape(plan.description)}</i>")
-        price_line = f"💳 {_format_rub(plan.price_rub)} ₽"
+            lines.append(f"║ 💬 {html_escape(plan.description)}")
+
+        # Цена
+        price_line = f"║ 💰 <b>Цена:</b> {_format_rub(plan.price_rub)} ₽"
         if stars_amount > 0:
-            price_line += f" • {stars_amount} ⭐"
+            price_line += f" / {stars_amount} ⭐"
         lines.append(price_line)
 
+        # Нижняя граница
+        lines.append("╚═══════════════════════╝")
+        lines.append("")
+
+    lines.append("👇 <b>Выберите тариф для оплаты</b>")
     return "\n".join(lines)
 
 
@@ -1081,13 +1146,23 @@ _def_no_plans_keyboard = InlineKeyboardMarkup(
 def _build_plan_catalog_keyboard() -> InlineKeyboardMarkup:
     if not SUBSCRIPTION_PLANS:
         return _def_no_plans_keyboard
+
     rows: list[list[InlineKeyboardButton]] = []
-    for plan_info in SUBSCRIPTION_PLANS:
+
+    for idx, plan_info in enumerate(SUBSCRIPTION_PLANS, 1):
         stars_amount = _plan_stars_amount(plan_info)
+
+        # Emoji для каждого плана
+        plan_emoji = "🌟" if idx == 1 else "💎" if idx == 2 else "⭐"
+
+        # Формируем красивую метку
         price_label = f"{_format_rub(plan_info.plan.price_rub)} ₽"
         if stars_amount > 0:
-            price_label += f" / {stars_amount} ⭐"
-        label = f"{Emoji.DIAMOND} {plan_info.plan.name} • {price_label}"
+            price_label += f" • {stars_amount} ⭐"
+
+        # Название + цена в одной строке
+        label = f"{plan_emoji} {plan_info.plan.name} — {price_label}"
+
         rows.append(
             [
                 InlineKeyboardButton(
@@ -1096,7 +1171,13 @@ def _build_plan_catalog_keyboard() -> InlineKeyboardMarkup:
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
+
+    # Разделитель
+    rows.append([InlineKeyboardButton(text="━━━━━━━━━━━━━━━", callback_data="ignore")])
+
+    # Кнопка назад
+    rows.append([InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_main")])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1115,6 +1196,11 @@ async def _send_plan_catalog(message: Message, *, edit: bool = False) -> None:
 
 async def cmd_buy(message: Message):
     await _send_plan_catalog(message, edit=False)
+
+
+async def handle_ignore_callback(callback: CallbackQuery):
+    """Обработчик для декоративных кнопок-разделителей"""
+    await callback.answer()
 
 
 async def handle_buy_catalog_callback(callback: CallbackQuery):
@@ -3429,6 +3515,12 @@ async def run_bot() -> None:
         session = AiohttpSession(proxy=proxy_url)
 
     bot = Bot(cfg.telegram_bot_token, session=session)
+    global BOT_USERNAME
+    try:
+        bot_info = await bot.get_me()
+        BOT_USERNAME = (bot_info.username or '').strip()
+    except Exception as exc:
+        logger.warning('Could not fetch bot username: %s', exc)
     dp = Dispatcher()
     register_progressbar(dp)
 
@@ -3672,6 +3764,7 @@ async def run_bot() -> None:
     dp.message.register(cmd_ratings_stats, Command("ratings"))
     dp.message.register(cmd_error_stats, Command("errors"))
 
+    dp.callback_query.register(handle_ignore_callback, F.data == "ignore")
     dp.callback_query.register(handle_rating_callback, F.data.startswith("rate_"))
     dp.callback_query.register(
         handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_"))
