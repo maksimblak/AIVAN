@@ -2,8 +2,10 @@
 Shared utilities для admin commands
 """
 
+import inspect
+
 from functools import wraps
-from typing import Callable, Tuple, Any
+from typing import Any, Callable
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 
@@ -14,21 +16,47 @@ def require_admin(func):
     Использование:
         @require_admin
         async def cmd_example(message: Message, db, admin_ids: list[int]):
-            # Не нужна проверка - decorator делает это
             ...
     """
+    signature = inspect.signature(func)
+    try:
+        target_param = next(iter(signature.parameters.values()))
+    except StopIteration as exc:
+        raise RuntimeError("require_admin expects a handler with at least one positional argument") from exc
+
+    target_name = target_param.name
+
     @wraps(func)
-    async def wrapper(target, db, admin_ids: list[int], *args, **kwargs):
-        user_id = target.from_user.id
+    async def wrapper(*args, **kwargs):
+        bound = signature.bind_partial(*args, **kwargs)
+        target = bound.arguments.get(target_name)
+        admin_ids_arg = bound.arguments.get('admin_ids')
 
-        if user_id not in admin_ids:
+        if target is None:
+            raise RuntimeError("require_admin decorator requires a target argument (Message or CallbackQuery)")
+        if admin_ids_arg is None:
+            raise RuntimeError("require_admin decorator requires an 'admin_ids' argument")
+
+        user = getattr(target, 'from_user', None)
+        user_id = getattr(user, 'id', None)
+
+        if user_id is None:
             if isinstance(target, CallbackQuery):
-                await target.answer("⛔️ Доступ запрещен", show_alert=True)
+                await target.answer("⚠️ Доступ запрещен", show_alert=True)
             else:
-                await target.answer("⛔️ Доступ запрещен")
-            return
+                await target.answer("⚠️ Доступ запрещен")
+            return None
 
-        return await func(target, db, admin_ids, *args, **kwargs)
+        container = admin_ids_arg if hasattr(admin_ids_arg, '__contains__') else set(admin_ids_arg)
+
+        if user_id not in container:
+            if isinstance(target, CallbackQuery):
+                await target.answer("⚠️ Доступ запрещен", show_alert=True)
+            else:
+                await target.answer("⚠️ Доступ запрещен")
+            return None
+
+        return await func(*args, **kwargs)
 
     return wrapper
 
