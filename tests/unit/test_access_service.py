@@ -67,6 +67,29 @@ class TestAccessService:
         assert decision.subscription_until == 9999999999
 
     @pytest.mark.asyncio
+    async def test_subscriber_without_quota_blocked(self, access_service, mock_db):
+        user_id = 321
+        user_record = UserRecord(
+            user_id=user_id,
+            is_admin=0,
+            trial_remaining=5,
+            subscription_until=9999999999,
+            created_at=1234567890,
+            updated_at=1234567890,
+            subscription_plan='base_1m',
+            subscription_requests_balance=0,
+        )
+        mock_db.ensure_user.return_value = user_record
+        mock_db.has_active_subscription.return_value = True
+
+        decision = await access_service.check_and_consume(user_id)
+
+        assert decision.allowed is False
+        assert decision.has_subscription is True
+        assert decision.subscription_plan == 'base_1m'
+        assert decision.subscription_requests_remaining == 0
+
+    @pytest.mark.asyncio
     async def test_trial_user_with_remaining_trials(self, access_service, mock_db):
         # Arrange
         user_id = 789
