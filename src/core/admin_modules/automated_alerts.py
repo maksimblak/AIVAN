@@ -449,36 +449,36 @@ class AutomatedAlerts:
             comparison = await self.cohort_analytics.compare_cohorts(months_back=3)
 
             # Формирование digest
-            text = "☀️ <b>Daily Metrics Digest</b>\n"
+            text = "☀️ <b>Ежедневный отчет по метрикам</b>\n"
             text += f"📅 {datetime.now().strftime('%Y-%m-%d')}\n\n"
 
             # Revenue
-            text += "<b>💰 Revenue</b>\n"
+            text += "<b>💰 Выручка</b>\n"
             text += f"  MRR: {mrr.total_mrr:,}₽ ({mrr.mrr_growth_rate:+.1f}%)\n"
-            text += f"  Customers: {mrr.total_paying_customers}\n"
-            text += f"  Churn: {mrr.customer_churn_rate:.1f}%\n\n"
+            text += f"  Клиентов: {mrr.total_paying_customers}\n"
+            text += f"  Отток: {mrr.customer_churn_rate:.1f}%\n\n"
 
             # PMF
             text += "<b>📊 Product-Market Fit</b>\n"
             text += f"  NPS: {nps.nps_score:+.0f}\n"
             text += f"  DAU: {usage.dau} | WAU: {usage.wau} | MAU: {usage.mau}\n"
-            text += f"  Stickiness (DAU/MAU): {usage.dau_mau_ratio:.1f}%\n\n"
+            text += f"  Вовлеченность (DAU/MAU): {usage.dau_mau_ratio:.1f}%\n\n"
 
             # Retention
             if comparison.cohorts_data:
                 latest = comparison.cohorts_data[0]
-                text += "<b>🎯 Retention</b>\n"
-                text += f"  Latest Cohort ({latest.cohort_month})\n"
-                text += f"  Day 30: {latest.day_30_retention:.1f}%\n"
-                text += f"  Conversion: {latest.conversion_rate:.1f}%\n\n"
+                text += "<b>🎯 Удержание</b>\n"
+                text += f"  Последняя когорта ({latest.cohort_month})\n"
+                text += f"  День 30: {latest.day_30_retention:.1f}%\n"
+                text += f"  Конверсия: {latest.conversion_rate:.1f}%\n\n"
 
             # Alerts
             alerts = await self.check_all_alerts()
             critical_count = len(group_alerts_by_severity(alerts).get("critical", []))
 
             if critical_count > 0:
-                text += f"🚨 <b>{critical_count} Critical Alerts</b>\n"
-                text += "Use /alerts to view details\n"
+                text += f"🚨 <b>{critical_count} критических алертов</b>\n"
+                text += "Используйте /alerts для просмотра деталей\n"
 
             # Send to admins
             for admin_id in self.admin_chat_ids:
