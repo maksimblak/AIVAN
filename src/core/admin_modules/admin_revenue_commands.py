@@ -22,41 +22,41 @@ async def _build_revenue_dashboard(db) -> tuple[str, InlineKeyboardMarkup]:
     unit_econ = await analytics.get_unit_economics()
 
     lines = [
-        "💰 <b>Revenue Analytics Dashboard</b>",
+        "💰 <b>Дашборд выручки</b>",
         "",
         f"<b>📊 MRR ({mrr.month}):</b> {mrr.total_mrr:,}₽",
-        f"  Growth: {mrr.mrr_growth_rate:+.1f}% {growth_emoji(mrr.mrr_growth_rate)}",
-        f"  Net New MRR: {mrr.net_new_mrr:+,}₽",
+        f"  Рост: {mrr.mrr_growth_rate:+.1f}% {growth_emoji(mrr.mrr_growth_rate)}",
+        f"  Чистый новый MRR: {mrr.net_new_mrr:+,}₽",
         "",
-        "<b>🔍 MRR Breakdown:</b>",
-        f"  New: +{mrr.new_mrr:,}₽ ({mrr.new_customers} customers)",
-        f"  Expansion: +{mrr.expansion_mrr:,}₽",
-        f"  Churn: -{mrr.churn_mrr:,}₽ ({mrr.churned_customers} lost)",
-        f"  Contraction: -{mrr.contraction_mrr:,}₽",
+        "<b>🔍 Структура MRR:</b>",
+        f"  Новые: +{mrr.new_mrr:,}₽ ({mrr.new_customers} клиентов)",
+        f"  Расширение: +{mrr.expansion_mrr:,}₽",
+        f"  Отток: -{mrr.churn_mrr:,}₽ ({mrr.churned_customers} потеряно)",
+        f"  Сокращение: -{mrr.contraction_mrr:,}₽",
         "",
         f"<b>📈 ARR:</b> {arr_metrics.arr:,}₽",
-        f"  Projected ARR (12mo): {arr_metrics.projected_arr:,}₽",
+        f"  Прогнозный ARR (12 мес): {arr_metrics.projected_arr:,}₽",
         f"  Quick Ratio: {arr_metrics.quick_ratio:.2f} {quick_ratio_status(arr_metrics.quick_ratio)}",
         "",
-        f"<b>👥 Customers:</b> {mrr.total_paying_customers}",
+        f"<b>👥 Клиенты:</b> {mrr.total_paying_customers}",
         f"  ARPU: {mrr.arpu:,.0f}₽",
-        f"  Churn Rate: {mrr.customer_churn_rate:.1f}%",
+        f"  Отток клиентов: {mrr.customer_churn_rate:.1f}%",
         "",
-        "<b>💎 Unit Economics:</b>",
+        "<b>💎 Юнит-экономика:</b>",
         f"  LTV: {unit_econ.ltv:,.0f}₽",
         f"  CAC: {unit_econ.cac:,.0f}₽",
         f"  LTV/CAC: {unit_econ.ltv_cac_ratio:.2f}x {ltv_cac_status(unit_econ.ltv_cac_ratio)}",
-        f"  Payback: {unit_econ.payback_period:.1f} months",
-        f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%",
+        f"  Окупаемость: {unit_econ.payback_period:.1f} мес.",
+        f"  Валовая маржа: {unit_econ.gross_margin*100:.0f}%",
     ]
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📊 MRR History", callback_data="revenue:mrr_history")],
-            [InlineKeyboardButton(text="🔮 Revenue Forecast", callback_data="revenue:forecast")],
-            [InlineKeyboardButton(text="🛤️ Runway Calculator", callback_data="revenue:runway")],
-            [InlineKeyboardButton(text="📈 Unit Economics", callback_data="revenue:unit_econ")],
-            [InlineKeyboardButton(text="🔄 Refresh", callback_data="revenue:refresh")],
+            [InlineKeyboardButton(text="📊 История MRR", callback_data="revenue:mrr_history")],
+            [InlineKeyboardButton(text="🔮 Прогноз выручки", callback_data="revenue:forecast")],
+            [InlineKeyboardButton(text="🛤️ Калькулятор runway", callback_data="revenue:runway")],
+            [InlineKeyboardButton(text="📈 Юнит-экономика", callback_data="revenue:unit_econ")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="revenue:refresh")],
         ]
     )
 
@@ -95,17 +95,17 @@ async def handle_mrr_history(callback: CallbackQuery, db, admin_ids: list[int]):
     analytics = RevenueAnalytics(db)
     history = await analytics.get_mrr_history(months=12)
 
-    lines = ["📊 <b>MRR History (12 months)</b>", ""]
+    lines = ["📊 <b>История MRR (12 месяцев)</b>", ""]
 
     for entry in history:
         lines.append(f"<b>{entry.month}</b>")
         lines.append(f"  MRR: {entry.total_mrr:,}₽ ({entry.mrr_growth_rate:+.1f}%)")
-        lines.append(f"  New: +{entry.new_mrr:,} | Exp: +{entry.expansion_mrr:,}")
-        lines.append(f"  Churn: -{entry.churn_mrr:,} | Customers: {entry.total_paying_customers}")
+        lines.append(f"  Новые: +{entry.new_mrr:,} | Расширение: +{entry.expansion_mrr:,}")
+        lines.append(f"  Отток: -{entry.churn_mrr:,} | Клиенты: {entry.total_paying_customers}")
         lines.append("")
 
     if history:
-        lines.append("<b>📈 MRR Trend:</b>")
+        lines.append("<b>📈 Тренд MRR:</b>")
         max_mrr = max(entry.total_mrr for entry in history)
         scale = max_mrr or 1
         for entry in history[-6:]:
@@ -133,26 +133,26 @@ async def handle_revenue_forecast(callback: CallbackQuery, db, admin_ids: list[i
 
     baseline = forecasts[0]
     lines = [
-        "🔮 <b>Revenue Forecast (6 months)</b>",
+        "🔮 <b>Прогноз выручки (6 месяцев)</b>",
         "",
-        "<b>Assumptions:</b>",
-        f"  Growth Rate: {baseline.assumed_growth_rate*100:+.1f}%/month",
-        f"  Churn Rate: {baseline.assumed_churn_rate*100:.1f}%/month",
+        "<b>Предпосылки:</b>",
+        f"  Темп роста: {baseline.assumed_growth_rate*100:+.1f}%/month",
+        f"  Отток: {baseline.assumed_churn_rate*100:.1f}%/month",
         "",
-        "<b>📊 Projections:</b>",
+        "<b>📊 Прогнозные значения:</b>",
     ]
 
     for fc in forecasts[:6]:
-        lines.append(f"<b>{fc.month}</b> (confidence: {fc.confidence*100:.0f}%)")
-        lines.append(f"  Conservative: {fc.mrr_forecast_low:,}₽")
-        lines.append(f"  Expected: {fc.mrr_forecast_mid:,}₽")
-        lines.append(f"  Optimistic: {fc.mrr_forecast_high:,}₽")
+        lines.append(f"<b>{fc.month}</b> (уверенность: {fc.confidence*100:.0f}%)")
+        lines.append(f"  Консервативный: {fc.mrr_forecast_low:,}₽")
+        lines.append(f"  Базовый: {fc.mrr_forecast_mid:,}₽")
+        lines.append(f"  Оптимистичный: {fc.mrr_forecast_high:,}₽")
         lines.append("")
 
     recent = forecasts[:6]
     if recent:
         max_mrr = max((f.mrr_forecast_high for f in recent), default=0) or 1
-        lines.append("<b>📈 Expected Trajectory:</b>")
+        lines.append("<b>📈 Ожидаемая динамика:</b>")
         for fc in recent:
             ratio = fc.mrr_forecast_mid / max_mrr if max_mrr else 0
             bar_length = max(0, min(20, int(round(ratio * 20))))
@@ -215,31 +215,31 @@ async def cmd_runway(message: Message, db, admin_ids: list[int]):
     runway = await analytics.calculate_runway(current_cash, monthly_burn)
 
     lines = [
-        "🛤️ <b>Runway Analysis</b>",
+        "🛤️ <b>Анализ runway</b>",
         "",
-        f"<b>💰 Current Cash:</b> {current_cash:,}₽",
-        f"<b>🔥 Monthly Burn:</b> {monthly_burn:,}₽",
+        f"<b>💰 Текущий кеш:</b> {current_cash:,}₽",
+        f"<b>🔥 Месячный расход:</b> {monthly_burn:,}₽",
         "",
-        f"<b>⏱ Runway:</b> {runway['runway_months']} months",
-        f"<b>📅 Cash out date:</b> {runway['runway_end_date']}",
+        f"<b>⏱ Runway:</b> {runway['runway_months']} мес.",
+        f"<b>📅 Дата окончания средств:</b> {runway['runway_end_date']}",
         "",
-        f"<b>💎 Current MRR:</b> {runway['current_mrr']:,}₽",
-        f"<b>🎯 Breakeven MRR:</b> {runway['breakeven_mrr']:,}₽",
-        f"<b>📈 MRR Growth:</b> {runway['mrr_growth_rate']:+.1f}%/month",
+        f"<b>💎 Текущий MRR:</b> {runway['current_mrr']:,}₽",
+        f"<b>🎯 MRR точки безубыточности:</b> {runway['breakeven_mrr']:,}₽",
+        f"<b>📈 Рост MRR:</b> {runway['mrr_growth_rate']:+.1f}%/мес",
         "",
     ]
 
     if runway.get('months_to_breakeven'):
-        lines.append(f"<b>⏳ Months to Breakeven:</b> {runway['months_to_breakeven']}")
+        lines.append(f"<b>⏳ Месяцев до безубыточности:</b> {runway['months_to_breakeven']}")
         lines.append("")
         if runway['months_to_breakeven'] < runway['runway_months']:
-            lines.append("✅ <b>You'll reach breakeven before running out of cash!</b>")
+            lines.append("✅ <b>Достигнете безубыточности раньше, чем закончится кеш!</b>")
         else:
-            lines.append("🔴 <b>Warning: You'll run out of cash before breakeven</b>")
+            lines.append("🔴 <b>Внимание: средства закончатся до безубыточности</b>")
             deficit = runway['months_to_breakeven'] - runway['runway_months']
-            lines.append(f"Need {deficit} more months of runway")
+            lines.append(f"Нужно ещё {deficit} мес. runway")
     else:
-        lines.append("⚠️ At current growth rate, won't reach breakeven")
+        lines.append("⚠️ При текущем темпе роста до безубыточности не дойдём")
 
     joiner = chr(10)
     await message.answer(joiner.join(lines), parse_mode="HTML")
@@ -253,39 +253,39 @@ async def handle_unit_economics(callback: CallbackQuery, db, admin_ids: list[int
     unit_econ = await analytics.get_unit_economics()
 
     lines = [
-        "💎 <b>Unit Economics Deep Dive</b>",
+        "💎 <b>Глубокий анализ юнит-экономики</b>",
         "",
-        "<b>💰 Customer Lifetime Value (LTV):</b>",
+        "<b>💰 Пожизненная ценность клиента (LTV):</b>",
         f"  {unit_econ.ltv:,.0f}₽",
         "",
-        "<b>📊 Calculation:</b>",
-        f"  Monthly Churn: {unit_econ.monthly_churn*100:.2f}%",
-        f"  Avg Lifetime: {unit_econ.avg_customer_lifetime_months:.1f} months",
-        f"  ARPU: {unit_econ.ltv / unit_econ.avg_customer_lifetime_months:,.0f}₽/month",
-        "  LTV = ARPU × Lifetime",
+        "<b>📊 Расчёт:</b>",
+        f"  Месячный отток: {unit_econ.monthly_churn*100:.2f}%",
+        f"  Средний срок жизни: {unit_econ.avg_customer_lifetime_months:.1f} мес.",
+        f"  ARPU: {unit_econ.ltv / unit_econ.avg_customer_lifetime_months:,.0f}₽/мес",
+        "  LTV = ARPU × Срок жизни",
         "",
-        "<b>💸 Customer Acquisition Cost (CAC):</b>",
+        "<b>💸 Стоимость привлечения клиента (CAC):</b>",
         f"  {unit_econ.cac:,.0f}₽",
-        "  <i>Note: Estimated based on LTV (30% ratio)</i>",
+        "  <i>Примечание: оценка по LTV (доля 30%)</i>",
         "",
-        "<b>🎯 Key Metrics:</b>",
-        f"  LTV/CAC Ratio: {unit_econ.ltv_cac_ratio:.2f}x {ltv_cac_status(unit_econ.ltv_cac_ratio)}",
-        f"  Payback Period: {unit_econ.payback_period:.1f} months",
-        f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%",
+        "<b>🎯 Ключевые показатели:</b>",
+        f"  Соотношение LTV/CAC: {unit_econ.ltv_cac_ratio:.2f}x {ltv_cac_status(unit_econ.ltv_cac_ratio)}",
+        f"  Срок окупаемости: {unit_econ.payback_period:.1f} мес.",
+        f"  Валовая маржа: {unit_econ.gross_margin*100:.0f}%",
         "",
-        "<b>💡 Benchmarks:</b>",
-        "  LTV/CAC > 3 = ✅ Excellent",
-        "  Payback < 12 months = ✅ Good",
-        "  Gross Margin > 70% = ✅ Healthy",
+        "<b>💡 Бенчмарки:</b>",
+        "  LTV/CAC > 3 = ✅ Отлично",
+        "  Окупаемость < 12 мес. = ✅ Хорошо",
+        "  Валовая маржа > 70% = ✅ Хорошо",
         "",
     ]
 
     if unit_econ.ltv_cac_ratio < 3:
-        lines.append("⚠️ <b>Action:</b> Improve retention or reduce CAC")
+        lines.append("⚠️ <b>Действие:</b> улучшить удержание или снизить CAC")
     elif unit_econ.payback_period > 12:
-        lines.append("⚠️ <b>Action:</b> Increase ARPU or reduce CAC")
+        lines.append("⚠️ <b>Действие:</b> увеличить ARPU или снизить CAC")
     else:
-        lines.append("✅ <b>Unit economics look healthy!</b>")
+        lines.append("✅ <b>Юнит-экономика в порядке!</b>")
 
     joiner = chr(10)
     text = joiner.join(lines)
