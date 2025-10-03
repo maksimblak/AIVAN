@@ -375,6 +375,7 @@ def _render_plain_text(text: str) -> str:
 
 
 
+
 class _TelegramHTMLFormatter(HTMLParser):
     """Convert model output into Telegram-compatible HTML."""
 
@@ -385,6 +386,8 @@ class _TelegramHTMLFormatter(HTMLParser):
         "del": "s",
         "strike": "s",
     }
+    _BULLET_SYMBOL = "▫ "
+    _INDENT_UNIT = "&nbsp;&nbsp;"
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -418,11 +421,12 @@ class _TelegramHTMLFormatter(HTMLParser):
 
         if tag_norm == "li":
             self._ensure_breaks(1)
-            bullet = "• "
+            indent = self._INDENT_UNIT * max(len(self.list_stack) - 1, 0)
+            bullet = indent + self._BULLET_SYMBOL
             if self.list_stack:
                 current = self.list_stack[-1]
                 if current["type"] == "ol":
-                    bullet = f"{current['index']}. "
+                    bullet = f"{indent}<b>{current['index']}.</b> "
                     current["index"] += 1
             self.parts.append(bullet)
             self.tag_stack.append("li")

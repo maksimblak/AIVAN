@@ -38,7 +38,7 @@ def test_formatter_produces_telegram_safe_html():
 
     expected = (
         "<b>Plan</b><br><br>First paragraph<br>"
-        "\u2022 Alpha<br>\u2022 Beta<br><br>"
+        "\u25ab Alpha<br>\u25ab Beta<br><br>"
         "Afterbad<a href=\"https://valid\">ok</a><tg-spoiler>secret"
     )
 
@@ -56,3 +56,12 @@ def test_formatter_escapes_unsupported_tags():
 
     assert formatted == "alert(&#x27;x&#x27;)<b>ok</b>"
     assert "<script" not in formatted
+
+
+def test_formatter_numbers_ordered_lists():
+    raw = "<ol><li>One</li><li>Two</li></ol>"
+    formatted = format_legal_response_text(raw)
+
+    assert formatted == "<b>1.</b> One<br><b>2.</b> Two"
+    stripped = _strip_allowed_tags(formatted)
+    assert "<" not in stripped and ">" not in stripped
