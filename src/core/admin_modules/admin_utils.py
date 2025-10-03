@@ -4,7 +4,7 @@ Shared utilities для admin commands
 
 from functools import wraps
 from typing import Callable, Tuple, Any
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def require_admin(func):
@@ -86,3 +86,11 @@ def handle_errors(error_message: str = "Ошибка выполнения"):
                 return None
         return wrapper
     return decorator
+
+
+def back_keyboard(callback_data: str = "admin_refresh") -> InlineKeyboardMarkup:
+    """Стандартная клавиатура с кнопкой возврата."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="« Назад", callback_data=callback_data)]]
+    )
+

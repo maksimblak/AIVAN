@@ -14,6 +14,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.bot.ui_components import Emoji
+from src.core.admin_modules.admin_utils import back_keyboard, render_dashboard, require_admin
 from src.core.user_behavior_tracker import UserBehaviorTracker
 
 logger = logging.getLogger(__name__)
@@ -49,12 +50,9 @@ def create_behavior_menu() -> InlineKeyboardMarkup:
 
 
 @behavior_router.message(Command("behavior"))
+@require_admin
 async def cmd_behavior(message: Message, db, admin_ids: set[int]):
     """Главная команда поведенческой аналитики"""
-    if not message.from_user or message.from_user.id not in admin_ids:
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа")
-        return
-
     tracker = UserBehaviorTracker(db)
 
     # Краткая сводка
@@ -76,16 +74,16 @@ async def cmd_behavior(message: Message, db, admin_ids: set[int]):
 
     summary += "\n<i>Выберите раздел для детального анализа:</i>"
 
-    await message.answer(summary, parse_mode=ParseMode.HTML, reply_markup=create_behavior_menu())
+    async def build_dashboard():
+        return summary, create_behavior_menu()
+
+    await render_dashboard(build_dashboard, message)
 
 
 @behavior_router.callback_query(F.data == "behavior:popular")
+@require_admin
 async def handle_popular_features(callback: CallbackQuery, db, admin_ids: set[int]):
     """Популярные фичи с детальной статистикой"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
     top_features = await tracker.get_top_features(days=30, limit=10)
 
@@ -116,24 +114,17 @@ async def handle_popular_features(callback: CallbackQuery, db, admin_ids: set[in
         if concentration > 80:
             output += "⚠️ Высокая концентрация - пользователи игнорируют другие фичи\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
 @behavior_router.callback_query(F.data == "behavior:friction")
+@require_admin
 async def handle_friction_points(callback: CallbackQuery, db, admin_ids: set[int]):
     """Точки трения где пользователи застревают"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
     frictions = await tracker.identify_friction_points(days=14)
 
@@ -152,24 +143,17 @@ async def handle_friction_points(callback: CallbackQuery, db, admin_ids: set[int
             elif friction.friction_type == 'confusion':
                 output += f"• {friction.location}: улучшить онбординг, добавить туториал\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
 @behavior_router.callback_query(F.data == "behavior:engagement")
+@require_admin
 async def handle_engagement(callback: CallbackQuery, db, admin_ids: set[int]):
     """Детальные метрики вовлеченности"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
     engagements = await tracker.get_feature_engagement(days=30)
 
@@ -193,24 +177,17 @@ async def handle_engagement(callback: CallbackQuery, db, admin_ids: set[int]):
         if declining:
             output += f"📉 Падающие фичи: {', '.join(e.feature_name for e in declining)}\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
 @behavior_router.callback_query(F.data == "behavior:underutilized")
+@require_admin
 async def handle_underutilized(callback: CallbackQuery, db, admin_ids: set[int]):
     """Фичи которые не используются"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
     underutilized = await tracker.get_underutilized_features(days=30)
 
@@ -246,24 +223,17 @@ async def handle_underutilized(callback: CallbackQuery, db, admin_ids: set[int])
         output += "3. Провести опрос - нужна ли фича?\n"
         output += "4. Рассмотреть удаление если совсем не востребована\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
 @behavior_router.callback_query(F.data == "behavior:peak_hours")
+@require_admin
 async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
     """Пиковые часы активности"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
     hourly_stats = await tracker.get_usage_by_hour(days=7)
 
@@ -299,24 +269,17 @@ async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
         output += f"• Делайте анонсы в пиковые часы\n"
         output += f"• Усиливайте support в пиковое время\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
 @behavior_router.callback_query(F.data == "behavior:feedback")
+@require_admin
 async def handle_feature_feedback(callback: CallbackQuery, db, admin_ids: set[int]):
     """Feedback по отдельным фичам"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
 
     # Получаем feedback по топ фичам
@@ -344,24 +307,17 @@ async def handle_feature_feedback(callback: CallbackQuery, db, admin_ids: set[in
 
         output += "\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
 @behavior_router.callback_query(F.data == "behavior:journey")
+@require_admin
 async def handle_user_journey(callback: CallbackQuery, db, admin_ids: set[int]):
     """Анализ типичного пути пользователя"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     # Запрашиваем user_id для детального анализа
     output = "<b>🛣️ АНАЛИЗ USER JOURNEY</b>\n\n"
     output += "Для детального анализа используйте:\n"
@@ -373,14 +329,10 @@ async def handle_user_journey(callback: CallbackQuery, db, admin_ids: set[int]):
 
     output += "<i>Используйте команду /journey с конкретным user_id для деталей</i>"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="behavior:menu")]
-        ]
-    )
+    async def build_dashboard():
+        return output, back_keyboard("behavior:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
 
 
@@ -435,12 +387,9 @@ async def cmd_user_journey(message: Message, db, admin_ids: set[int]):
 
 
 @behavior_router.callback_query(F.data == "behavior:menu")
+@require_admin
 async def back_to_behavior_menu(callback: CallbackQuery, db, admin_ids: set[int]):
     """Возврат в главное меню поведенческой аналитики"""
-    if not callback.from_user or callback.from_user.id not in admin_ids:
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
-
     tracker = UserBehaviorTracker(db)
     top_features = await tracker.get_top_features(days=7, limit=5)
     frictions = await tracker.identify_friction_points(days=7)
@@ -456,6 +405,8 @@ async def back_to_behavior_menu(callback: CallbackQuery, db, admin_ids: set[int]
 
     summary += "\n<i>Выберите раздел для детального анализа:</i>"
 
-    if callback.message:
-        await callback.message.edit_text(summary, parse_mode=ParseMode.HTML, reply_markup=create_behavior_menu())
+    async def build_dashboard():
+        return summary, create_behavior_menu()
+
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()
