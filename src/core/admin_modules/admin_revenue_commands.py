@@ -2,201 +2,128 @@
 Admin commands для Revenue Analytics
 """
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from src.core.admin_modules.admin_formatters import growth_emoji, ltv_cac_status, quick_ratio_status
+from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, render_dashboard, require_admin
 from src.core.admin_modules.revenue_analytics import RevenueAnalytics
 
 
 revenue_router = Router(name="revenue_admin")
 
 
-@revenue_router.message(Command("revenue"))
-async def cmd_revenue(message: Message, db, admin_ids: list[int]):
-    """Главное меню revenue analytics"""
-    if message.from_user.id not in admin_ids:
-        await message.answer("⛔️ Доступ запрещен")
-        return
-
+async def _build_revenue_dashboard(db) -> tuple[str, InlineKeyboardMarkup]:
     analytics = RevenueAnalytics(db)
 
-    # Текущий месяц MRR
     mrr = await analytics.get_mrr_breakdown()
     arr_metrics = await analytics.get_arr_metrics()
     unit_econ = await analytics.get_unit_economics()
 
-    text = "💰 <b>Revenue Analytics Dashboard</b>\n\n"
+    lines = [
+        "💰 <b>Revenue Analytics Dashboard</b>",
+        "",
+        f"<b>📊 MRR ({mrr.month}):</b> {mrr.total_mrr:,}₽",
+        f"  Growth: {mrr.mrr_growth_rate:+.1f}% {growth_emoji(mrr.mrr_growth_rate)}",
+        f"  Net New MRR: {mrr.net_new_mrr:+,}₽",
+        "",
+        "<b>🔍 MRR Breakdown:</b>",
+        f"  New: +{mrr.new_mrr:,}₽ ({mrr.new_customers} customers)",
+        f"  Expansion: +{mrr.expansion_mrr:,}₽",
+        f"  Churn: -{mrr.churn_mrr:,}₽ ({mrr.churned_customers} lost)",
+        f"  Contraction: -{mrr.contraction_mrr:,}₽",
+        "",
+        f"<b>📈 ARR:</b> {arr_metrics.arr:,}₽",
+        f"  Projected ARR (12mo): {arr_metrics.projected_arr:,}₽",
+        f"  Quick Ratio: {arr_metrics.quick_ratio:.2f} {quick_ratio_status(arr_metrics.quick_ratio)}",
+        "",
+        f"<b>👥 Customers:</b> {mrr.total_paying_customers}",
+        f"  ARPU: {mrr.arpu:,.0f}₽",
+        f"  Churn Rate: {mrr.customer_churn_rate:.1f}%",
+        "",
+        "<b>💎 Unit Economics:</b>",
+        f"  LTV: {unit_econ.ltv:,.0f}₽",
+        f"  CAC: {unit_econ.cac:,.0f}₽",
+        f"  LTV/CAC: {unit_econ.ltv_cac_ratio:.2f}x {ltv_cac_status(unit_econ.ltv_cac_ratio)}",
+        f"  Payback: {unit_econ.payback_period:.1f} months",
+        f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%",
+    ]
 
-    # MRR Overview
-    text += f"<b>📊 MRR ({mrr.month}):</b> {mrr.total_mrr:,}₽\n"
-    text += f"  Growth: {mrr.mrr_growth_rate:+.1f}% {_growth_emoji(mrr.mrr_growth_rate)}\n"
-    text += f"  Net New MRR: {mrr.net_new_mrr:+,}₽\n\n"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 MRR History", callback_data="revenue:mrr_history")],
+            [InlineKeyboardButton(text="🔮 Revenue Forecast", callback_data="revenue:forecast")],
+            [InlineKeyboardButton(text="🛤️ Runway Calculator", callback_data="revenue:runway")],
+            [InlineKeyboardButton(text="📈 Unit Economics", callback_data="revenue:unit_econ")],
+            [InlineKeyboardButton(text="🔄 Refresh", callback_data="revenue:refresh")],
+        ]
+    )
 
-    # MRR Breakdown
-    text += "<b>🔍 MRR Breakdown:</b>\n"
-    text += f"  New: +{mrr.new_mrr:,}₽ ({mrr.new_customers} customers)\n"
-    text += f"  Expansion: +{mrr.expansion_mrr:,}₽\n"
-    text += f"  Churn: -{mrr.churn_mrr:,}₽ ({mrr.churned_customers} lost)\n"
-    text += f"  Contraction: -{mrr.contraction_mrr:,}₽\n\n"
-
-    # ARR
-    text += f"<b>📈 ARR:</b> {arr_metrics.arr:,}₽\n"
-    text += f"  Projected ARR (12mo): {arr_metrics.projected_arr:,}₽\n"
-    text += f"  Quick Ratio: {arr_metrics.quick_ratio:.2f} {_quick_ratio_status(arr_metrics.quick_ratio)}\n\n"
-
-    # Customers
-    text += f"<b>👥 Customers:</b> {mrr.total_paying_customers}\n"
-    text += f"  ARPU: {mrr.arpu:,.0f}₽\n"
-    text += f"  Churn Rate: {mrr.customer_churn_rate:.1f}%\n\n"
-
-    # Unit Economics
-    text += "<b>💎 Unit Economics:</b>\n"
-    text += f"  LTV: {unit_econ.ltv:,.0f}₽\n"
-    text += f"  CAC: {unit_econ.cac:,.0f}₽\n"
-    text += f"  LTV/CAC: {unit_econ.ltv_cac_ratio:.2f}x {_ltv_cac_status(unit_econ.ltv_cac_ratio)}\n"
-    text += f"  Payback: {unit_econ.payback_period:.1f} months\n"
-    text += f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%\n"
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 MRR History", callback_data="revenue:mrr_history")],
-        [InlineKeyboardButton(text="🔮 Revenue Forecast", callback_data="revenue:forecast")],
-        [InlineKeyboardButton(text="🛤️ Runway Calculator", callback_data="revenue:runway")],
-        [InlineKeyboardButton(text="📈 Unit Economics", callback_data="revenue:unit_econ")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data="revenue:refresh")]
-    ])
-
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-
-
-def _growth_emoji(rate: float) -> str:
-    """Emoji для growth rate"""
-    if rate > 10:
-        return "🚀"
-    elif rate > 0:
-        return "✅"
-    elif rate > -10:
-        return "⚠️"
-    else:
-        return "🔴"
+    joiner = chr(10)
+    text = joiner.join(lines)
+    return text, keyboard
 
 
-def _quick_ratio_status(ratio: float) -> str:
-    """Статус Quick Ratio"""
-    if ratio > 4:
-        return "🌟 Excellent"
-    elif ratio > 2:
-        return "✅ Good"
-    elif ratio > 1:
-        return "⚠️ OK"
-    else:
-        return "🔴 Poor"
+@revenue_router.message(Command("revenue"))
+@require_admin
+async def cmd_revenue(message: Message, db, admin_ids: list[int]):
+    """Главное меню revenue analytics"""
 
+    async def build_dashboard():
+        return await _build_revenue_dashboard(db)
 
-def _ltv_cac_status(ratio: float) -> str:
-    """Статус LTV/CAC"""
-    if ratio > 3:
-        return "✅"
-    elif ratio > 1:
-        return "⚠️"
-    else:
-        return "🔴"
+    await render_dashboard(build_dashboard, message)
 
 
 @revenue_router.callback_query(F.data == "revenue:refresh")
+@require_admin
 async def handle_revenue_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
     """Обновить revenue dashboard"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     await callback.answer("🔄 Обновляю...")
 
-    analytics = RevenueAnalytics(db)
-    mrr = await analytics.get_mrr_breakdown()
-    arr_metrics = await analytics.get_arr_metrics()
-    unit_econ = await analytics.get_unit_economics()
+    async def build_dashboard():
+        return await _build_revenue_dashboard(db)
 
-    text = "💰 <b>Revenue Analytics Dashboard</b>\n\n"
-    text += f"<b>📊 MRR ({mrr.month}):</b> {mrr.total_mrr:,}₽\n"
-    text += f"  Growth: {mrr.mrr_growth_rate:+.1f}% {_growth_emoji(mrr.mrr_growth_rate)}\n"
-    text += f"  Net New MRR: {mrr.net_new_mrr:+,}₽\n\n"
-
-    text += "<b>🔍 MRR Breakdown:</b>\n"
-    text += f"  New: +{mrr.new_mrr:,}₽ ({mrr.new_customers} customers)\n"
-    text += f"  Expansion: +{mrr.expansion_mrr:,}₽\n"
-    text += f"  Churn: -{mrr.churn_mrr:,}₽ ({mrr.churned_customers} lost)\n"
-    text += f"  Contraction: -{mrr.contraction_mrr:,}₽\n\n"
-
-    text += f"<b>📈 ARR:</b> {arr_metrics.arr:,}₽\n"
-    text += f"  Projected ARR (12mo): {arr_metrics.projected_arr:,}₽\n"
-    text += f"  Quick Ratio: {arr_metrics.quick_ratio:.2f} {_quick_ratio_status(arr_metrics.quick_ratio)}\n\n"
-
-    text += f"<b>👥 Customers:</b> {mrr.total_paying_customers}\n"
-    text += f"  ARPU: {mrr.arpu:,.0f}₽\n"
-    text += f"  Churn Rate: {mrr.customer_churn_rate:.1f}%\n\n"
-
-    text += "<b>💎 Unit Economics:</b>\n"
-    text += f"  LTV: {unit_econ.ltv:,.0f}₽\n"
-    text += f"  CAC: {unit_econ.cac:,.0f}₽\n"
-    text += f"  LTV/CAC: {unit_econ.ltv_cac_ratio:.2f}x {_ltv_cac_status(unit_econ.ltv_cac_ratio)}\n"
-    text += f"  Payback: {unit_econ.payback_period:.1f} months\n"
-    text += f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%\n"
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 MRR History", callback_data="revenue:mrr_history")],
-        [InlineKeyboardButton(text="🔮 Revenue Forecast", callback_data="revenue:forecast")],
-        [InlineKeyboardButton(text="🛤️ Runway Calculator", callback_data="revenue:runway")],
-        [InlineKeyboardButton(text="📈 Unit Economics", callback_data="revenue:unit_econ")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data="revenue:refresh")]
-    ])
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await render_dashboard(build_dashboard, callback)
 
 
 @revenue_router.callback_query(F.data == "revenue:mrr_history")
+@require_admin
 async def handle_mrr_history(callback: CallbackQuery, db, admin_ids: list[int]):
     """MRR History за последние месяцы"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     analytics = RevenueAnalytics(db)
     history = await analytics.get_mrr_history(months=12)
 
-    text = "📊 <b>MRR History (12 months)</b>\n\n"
+    lines = ["📊 <b>MRR History (12 months)</b>", ""]
 
-    for mrr in history:
-        text += f"<b>{mrr.month}</b>\n"
-        text += f"  MRR: {mrr.total_mrr:,}₽ ({mrr.mrr_growth_rate:+.1f}%)\n"
-        text += f"  New: +{mrr.new_mrr:,} | Exp: +{mrr.expansion_mrr:,}\n"
-        text += f"  Churn: -{mrr.churn_mrr:,} | Customers: {mrr.total_paying_customers}\n\n"
+    for entry in history:
+        lines.append(f"<b>{entry.month}</b>")
+        lines.append(f"  MRR: {entry.total_mrr:,}₽ ({entry.mrr_growth_rate:+.1f}%)")
+        lines.append(f"  New: +{entry.new_mrr:,} | Exp: +{entry.expansion_mrr:,}")
+        lines.append(f"  Churn: -{entry.churn_mrr:,} | Customers: {entry.total_paying_customers}")
+        lines.append("")
 
-    # ASCII chart
     if history:
-        text += "<b>📈 MRR Trend:</b>\n"
-        max_mrr = max(m.total_mrr for m in history) if history else 1
-
-        for mrr in history[-6:]:  # Последние 6 месяцев
-            bar_length = int((mrr.total_mrr / max_mrr) * 20)
+        lines.append("<b>📈 MRR Trend:</b>")
+        max_mrr = max(entry.total_mrr for entry in history)
+        scale = max_mrr or 1
+        for entry in history[-6:]:
+            ratio = entry.total_mrr / scale if scale else 0
+            bar_length = max(0, min(20, int(round(ratio * 20))))
             bar = "█" * bar_length + "░" * (20 - bar_length)
-            text += f"{mrr.month}: {bar} {mrr.total_mrr:,}₽\n"
+            lines.append(f"{entry.month}: {bar} {entry.total_mrr:,}₽")
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back", callback_data="revenue:back")]
-    ])
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    joiner = chr(10)
+    text = joiner.join(lines).rstrip()
+    await edit_or_answer(callback, text, back_keyboard("revenue:back"))
     await callback.answer()
 
 
 @revenue_router.callback_query(F.data == "revenue:forecast")
+@require_admin
 async def handle_revenue_forecast(callback: CallbackQuery, db, admin_ids: list[int]):
     """Revenue forecast"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     analytics = RevenueAnalytics(db)
     forecasts = await analytics.get_revenue_forecast(months_ahead=6)
 
@@ -204,80 +131,77 @@ async def handle_revenue_forecast(callback: CallbackQuery, db, admin_ids: list[i
         await callback.answer("❌ Недостаточно данных для прогноза", show_alert=True)
         return
 
-    text = "🔮 <b>Revenue Forecast (6 months)</b>\n\n"
-
-    text += f"<b>Assumptions:</b>\n"
-    text += f"  Growth Rate: {forecasts[0].assumed_growth_rate*100:+.1f}%/month\n"
-    text += f"  Churn Rate: {forecasts[0].assumed_churn_rate*100:.1f}%/month\n\n"
-
-    text += "<b>📊 Projections:</b>\n\n"
-
-    for fc in forecasts[:6]:
-        text += f"<b>{fc.month}</b> (confidence: {fc.confidence*100:.0f}%)\n"
-        text += f"  Conservative: {fc.mrr_forecast_low:,}₽\n"
-        text += f"  Expected: {fc.mrr_forecast_mid:,}₽\n"
-        text += f"  Optimistic: {fc.mrr_forecast_high:,}₽\n\n"
-
-    # Визуализация expected forecast
-    max_mrr = max(f.mrr_forecast_high for f in forecasts[:6])
-    text += "<b>📈 Expected Trajectory:</b>\n"
+    baseline = forecasts[0]
+    lines = [
+        "🔮 <b>Revenue Forecast (6 months)</b>",
+        "",
+        "<b>Assumptions:</b>",
+        f"  Growth Rate: {baseline.assumed_growth_rate*100:+.1f}%/month",
+        f"  Churn Rate: {baseline.assumed_churn_rate*100:.1f}%/month",
+        "",
+        "<b>📊 Projections:</b>",
+    ]
 
     for fc in forecasts[:6]:
-        bar_length = int((fc.mrr_forecast_mid / max_mrr) * 20)
-        bar = "█" * bar_length + "░" * (20 - bar_length)
-        text += f"{fc.month}: {bar}\n"
+        lines.append(f"<b>{fc.month}</b> (confidence: {fc.confidence*100:.0f}%)")
+        lines.append(f"  Conservative: {fc.mrr_forecast_low:,}₽")
+        lines.append(f"  Expected: {fc.mrr_forecast_mid:,}₽")
+        lines.append(f"  Optimistic: {fc.mrr_forecast_high:,}₽")
+        lines.append("")
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back", callback_data="revenue:back")]
-    ])
+    recent = forecasts[:6]
+    if recent:
+        max_mrr = max((f.mrr_forecast_high for f in recent), default=0) or 1
+        lines.append("<b>📈 Expected Trajectory:</b>")
+        for fc in recent:
+            ratio = fc.mrr_forecast_mid / max_mrr if max_mrr else 0
+            bar_length = max(0, min(20, int(round(ratio * 20))))
+            bar = "█" * bar_length + "░" * (20 - bar_length)
+            lines.append(f"{fc.month}: {bar} {fc.mrr_forecast_mid:,}₽")
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    joiner = chr(10)
+    text = joiner.join(lines).rstrip()
+    await edit_or_answer(callback, text, back_keyboard("revenue:back"))
     await callback.answer()
 
 
 @revenue_router.callback_query(F.data == "revenue:runway")
+@require_admin
 async def handle_runway_calculator(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Runway calculator"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
+    """Инструкция по расчету runway"""
+    lines = [
+        "🛤️ <b>Runway Calculator</b>",
+        "",
+        "Для расчета runway введите команду:",
+        "",
+        "<code>/runway [cash] [monthly_burn]</code>",
+        "",
+        "<b>Пример:</b>",
+        "<code>/runway 500000 -50000</code>",
+        "",
+        "Где:",
+        "• cash - текущий баланс в рублях",
+        "• monthly_burn - ежемесячный расход (negative)",
+    ]
 
-    text = "🛤️ <b>Runway Calculator</b>\n\n"
-
-    text += "Для расчета runway введите команду:\n\n"
-    text += "<code>/runway [cash] [monthly_burn]</code>\n\n"
-
-    text += "<b>Пример:</b>\n"
-    text += "<code>/runway 500000 -50000</code>\n\n"
-
-    text += "Где:\n"
-    text += "• cash - текущий баланс в рублях\n"
-    text += "• monthly_burn - ежемесячный расход (negative)\n"
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back", callback_data="revenue:back")]
-    ])
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    joiner = chr(10)
+    text = joiner.join(lines)
+    await edit_or_answer(callback, text, back_keyboard("revenue:back"))
     await callback.answer()
 
 
 @revenue_router.message(Command("runway"))
+@require_admin
 async def cmd_runway(message: Message, db, admin_ids: list[int]):
-    """Runway calculation"""
-    if message.from_user.id not in admin_ids:
-        await message.answer("⛔️ Доступ запрещен")
-        return
-
-    args = message.text.split()[1:]
+    """Рассчет runway по введенным параметрам"""
+    args = (message.text or "").split()[1:]
 
     if len(args) < 2:
-        await message.answer(
-            "❌ Неверный формат\n\n"
-            "Используйте: <code>/runway [cash] [monthly_burn]</code>\n"
-            "Пример: <code>/runway 500000 -50000</code>",
-            parse_mode="HTML"
-        )
+        error_text = """❌ Неверный формат
+
+Используйте: <code>/runway [cash] [monthly_burn]</code>
+Пример: <code>/runway 500000 -50000</code>"""
+        await message.answer(error_text, parse_mode="HTML")
         return
 
     try:
@@ -290,128 +214,92 @@ async def cmd_runway(message: Message, db, admin_ids: list[int]):
     analytics = RevenueAnalytics(db)
     runway = await analytics.calculate_runway(current_cash, monthly_burn)
 
-    text = "🛤️ <b>Runway Analysis</b>\n\n"
+    lines = [
+        "🛤️ <b>Runway Analysis</b>",
+        "",
+        f"<b>💰 Current Cash:</b> {current_cash:,}₽",
+        f"<b>🔥 Monthly Burn:</b> {monthly_burn:,}₽",
+        "",
+        f"<b>⏱ Runway:</b> {runway['runway_months']} months",
+        f"<b>📅 Cash out date:</b> {runway['runway_end_date']}",
+        "",
+        f"<b>💎 Current MRR:</b> {runway['current_mrr']:,}₽",
+        f"<b>🎯 Breakeven MRR:</b> {runway['breakeven_mrr']:,}₽",
+        f"<b>📈 MRR Growth:</b> {runway['mrr_growth_rate']:+.1f}%/month",
+        "",
+    ]
 
-    text += f"<b>💰 Current Cash:</b> {current_cash:,}₽\n"
-    text += f"<b>🔥 Monthly Burn:</b> {monthly_burn:,}₽\n\n"
-
-    text += f"<b>⏱ Runway:</b> {runway['runway_months']} months\n"
-    text += f"<b>📅 Cash out date:</b> {runway['runway_end_date']}\n\n"
-
-    text += f"<b>💎 Current MRR:</b> {runway['current_mrr']:,}₽\n"
-    text += f"<b>🎯 Breakeven MRR:</b> {runway['breakeven_mrr']:,}₽\n"
-    text += f"<b>📈 MRR Growth:</b> {runway['mrr_growth_rate']:+.1f}%/month\n\n"
-
-    if runway['months_to_breakeven']:
-        text += f"<b>⏳ Months to Breakeven:</b> {runway['months_to_breakeven']}\n\n"
-
+    if runway.get('months_to_breakeven'):
+        lines.append(f"<b>⏳ Months to Breakeven:</b> {runway['months_to_breakeven']}")
+        lines.append("")
         if runway['months_to_breakeven'] < runway['runway_months']:
-            text += "✅ <b>You'll reach breakeven before running out of cash!</b>\n"
+            lines.append("✅ <b>You'll reach breakeven before running out of cash!</b>")
         else:
-            text += "🔴 <b>Warning: You'll run out of cash before breakeven</b>\n"
-            text += f"Need {runway['months_to_breakeven'] - runway['runway_months']} more months of runway\n"
+            lines.append("🔴 <b>Warning: You'll run out of cash before breakeven</b>")
+            deficit = runway['months_to_breakeven'] - runway['runway_months']
+            lines.append(f"Need {deficit} more months of runway")
     else:
-        text += "⚠️ At current growth rate, won't reach breakeven\n"
+        lines.append("⚠️ At current growth rate, won't reach breakeven")
 
-    await message.answer(text, parse_mode="HTML")
+    joiner = chr(10)
+    await message.answer(joiner.join(lines), parse_mode="HTML")
 
 
 @revenue_router.callback_query(F.data == "revenue:unit_econ")
+@require_admin
 async def handle_unit_economics(callback: CallbackQuery, db, admin_ids: list[int]):
     """Детальный Unit Economics"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
-
     analytics = RevenueAnalytics(db)
     unit_econ = await analytics.get_unit_economics()
 
-    text = "💎 <b>Unit Economics Deep Dive</b>\n\n"
+    lines = [
+        "💎 <b>Unit Economics Deep Dive</b>",
+        "",
+        "<b>💰 Customer Lifetime Value (LTV):</b>",
+        f"  {unit_econ.ltv:,.0f}₽",
+        "",
+        "<b>📊 Calculation:</b>",
+        f"  Monthly Churn: {unit_econ.monthly_churn*100:.2f}%",
+        f"  Avg Lifetime: {unit_econ.avg_customer_lifetime_months:.1f} months",
+        f"  ARPU: {unit_econ.ltv / unit_econ.avg_customer_lifetime_months:,.0f}₽/month",
+        "  LTV = ARPU × Lifetime",
+        "",
+        "<b>💸 Customer Acquisition Cost (CAC):</b>",
+        f"  {unit_econ.cac:,.0f}₽",
+        "  <i>Note: Estimated based on LTV (30% ratio)</i>",
+        "",
+        "<b>🎯 Key Metrics:</b>",
+        f"  LTV/CAC Ratio: {unit_econ.ltv_cac_ratio:.2f}x {ltv_cac_status(unit_econ.ltv_cac_ratio)}",
+        f"  Payback Period: {unit_econ.payback_period:.1f} months",
+        f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%",
+        "",
+        "<b>💡 Benchmarks:</b>",
+        "  LTV/CAC > 3 = ✅ Excellent",
+        "  Payback < 12 months = ✅ Good",
+        "  Gross Margin > 70% = ✅ Healthy",
+        "",
+    ]
 
-    text += "<b>💰 Customer Lifetime Value (LTV):</b>\n"
-    text += f"  {unit_econ.ltv:,.0f}₽\n\n"
-
-    text += "<b>📊 Calculation:</b>\n"
-    text += f"  Monthly Churn: {unit_econ.monthly_churn*100:.2f}%\n"
-    text += f"  Avg Lifetime: {unit_econ.avg_customer_lifetime_months:.1f} months\n"
-    text += f"  ARPU: {unit_econ.ltv / unit_econ.avg_customer_lifetime_months:,.0f}₽/month\n"
-    text += f"  LTV = ARPU × Lifetime\n\n"
-
-    text += "<b>💸 Customer Acquisition Cost (CAC):</b>\n"
-    text += f"  {unit_econ.cac:,.0f}₽\n"
-    text += f"  <i>Note: Estimated based on LTV (30% ratio)</i>\n\n"
-
-    text += "<b>🎯 Key Metrics:</b>\n"
-    text += f"  LTV/CAC Ratio: {unit_econ.ltv_cac_ratio:.2f}x {_ltv_cac_status(unit_econ.ltv_cac_ratio)}\n"
-    text += f"  Payback Period: {unit_econ.payback_period:.1f} months\n"
-    text += f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%\n\n"
-
-    text += "<b>💡 Benchmarks:</b>\n"
-    text += "  LTV/CAC > 3 = ✅ Excellent\n"
-    text += "  Payback < 12 months = ✅ Good\n"
-    text += "  Gross Margin > 70% = ✅ Healthy\n\n"
-
-    # Recommendations
     if unit_econ.ltv_cac_ratio < 3:
-        text += "⚠️ <b>Action:</b> Improve retention or reduce CAC\n"
+        lines.append("⚠️ <b>Action:</b> Improve retention or reduce CAC")
     elif unit_econ.payback_period > 12:
-        text += "⚠️ <b>Action:</b> Increase ARPU or reduce CAC\n"
+        lines.append("⚠️ <b>Action:</b> Increase ARPU or reduce CAC")
     else:
-        text += "✅ <b>Unit economics look healthy!</b>\n"
+        lines.append("✅ <b>Unit economics look healthy!</b>")
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back", callback_data="revenue:back")]
-    ])
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    joiner = chr(10)
+    text = joiner.join(lines)
+    await edit_or_answer(callback, text, back_keyboard("revenue:back"))
     await callback.answer()
 
 
 @revenue_router.callback_query(F.data == "revenue:back")
+@require_admin
 async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int]):
     """Вернуться в главное меню revenue"""
-    if callback.from_user.id not in admin_ids:
-        await callback.answer("⛔️ Доступ запрещен", show_alert=True)
-        return
 
-    analytics = RevenueAnalytics(db)
-    mrr = await analytics.get_mrr_breakdown()
-    arr_metrics = await analytics.get_arr_metrics()
-    unit_econ = await analytics.get_unit_economics()
+    async def build_dashboard():
+        return await _build_revenue_dashboard(db)
 
-    text = "💰 <b>Revenue Analytics Dashboard</b>\n\n"
-    text += f"<b>📊 MRR ({mrr.month}):</b> {mrr.total_mrr:,}₽\n"
-    text += f"  Growth: {mrr.mrr_growth_rate:+.1f}% {_growth_emoji(mrr.mrr_growth_rate)}\n"
-    text += f"  Net New MRR: {mrr.net_new_mrr:+,}₽\n\n"
-
-    text += "<b>🔍 MRR Breakdown:</b>\n"
-    text += f"  New: +{mrr.new_mrr:,}₽ ({mrr.new_customers} customers)\n"
-    text += f"  Expansion: +{mrr.expansion_mrr:,}₽\n"
-    text += f"  Churn: -{mrr.churn_mrr:,}₽ ({mrr.churned_customers} lost)\n"
-    text += f"  Contraction: -{mrr.contraction_mrr:,}₽\n\n"
-
-    text += f"<b>📈 ARR:</b> {arr_metrics.arr:,}₽\n"
-    text += f"  Projected ARR (12mo): {arr_metrics.projected_arr:,}₽\n"
-    text += f"  Quick Ratio: {arr_metrics.quick_ratio:.2f} {_quick_ratio_status(arr_metrics.quick_ratio)}\n\n"
-
-    text += f"<b>👥 Customers:</b> {mrr.total_paying_customers}\n"
-    text += f"  ARPU: {mrr.arpu:,.0f}₽\n"
-    text += f"  Churn Rate: {mrr.customer_churn_rate:.1f}%\n\n"
-
-    text += "<b>💎 Unit Economics:</b>\n"
-    text += f"  LTV: {unit_econ.ltv:,.0f}₽\n"
-    text += f"  CAC: {unit_econ.cac:,.0f}₽\n"
-    text += f"  LTV/CAC: {unit_econ.ltv_cac_ratio:.2f}x {_ltv_cac_status(unit_econ.ltv_cac_ratio)}\n"
-    text += f"  Payback: {unit_econ.payback_period:.1f} months\n"
-    text += f"  Gross Margin: {unit_econ.gross_margin*100:.0f}%\n"
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 MRR History", callback_data="revenue:mrr_history")],
-        [InlineKeyboardButton(text="🔮 Revenue Forecast", callback_data="revenue:forecast")],
-        [InlineKeyboardButton(text="🛤️ Runway Calculator", callback_data="revenue:runway")],
-        [InlineKeyboardButton(text="📈 Unit Economics", callback_data="revenue:unit_econ")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data="revenue:refresh")]
-    ])
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await render_dashboard(build_dashboard, callback)
     await callback.answer()

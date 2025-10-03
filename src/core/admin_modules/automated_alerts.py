@@ -10,9 +10,10 @@
 """
 
 import asyncio
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 import json
 
 from src.core.admin_modules.cohort_analytics import CohortAnalytics
@@ -33,6 +34,19 @@ class Alert:
     threshold: Any
     action_required: str  # Что нужно сделать
     timestamp: int
+
+
+def group_alerts_by_severity(alerts: Iterable["Alert"]) -> dict[str, list["Alert"]]:
+    """Group alerts by severity for UI presentation."""
+    groups: dict[str, list[Alert]] = defaultdict(list)
+    for alert in alerts:
+        groups[alert.severity].append(alert)
+    for severity in ("critical", "warning", "info"):
+        groups.setdefault(severity, [])
+    return groups
+
+
+
 
 
 @dataclass
@@ -319,10 +333,10 @@ class AutomatedAlerts:
         if not alerts:
             return
 
-        # Group alerts by severity
-        critical = [a for a in alerts if a.severity == "critical"]
-        warnings = [a for a in alerts if a.severity == "warning"]
-        info = [a for a in alerts if a.severity == "info"]
+        grouped = group_alerts_by_severity(alerts)
+        critical = grouped.get("critical", [])
+        warnings = grouped.get("warning", [])
+        info = grouped.get("info", [])
 
         # Send to all admins
         for admin_id in self.admin_chat_ids:
@@ -422,7 +436,7 @@ class AutomatedAlerts:
 
             # Alerts
             alerts = await self.check_all_alerts()
-            critical_count = len([a for a in alerts if a.severity == "critical"])
+            critical_count = len(group_alerts_by_severity(alerts).get("critical", []))
 
             if critical_count > 0:
                 text += f"🚨 <b>{critical_count} Critical Alerts</b>\n"

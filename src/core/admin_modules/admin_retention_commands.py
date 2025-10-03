@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from src.bot.ui_components import Emoji
 from src.core.admin_modules.retention_analytics import RetentionAnalytics
-from src.core.admin_modules.admin_utils import require_admin
+from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, parse_user_id, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -149,14 +149,9 @@ async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]
     else:
         output += "📊 Умеренная активность - дополнительный инструмент\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="retention:menu")]
-        ]
-    )
+    keyboard = back_keyboard("retention:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -251,14 +246,9 @@ async def handle_churned_users(callback: CallbackQuery, db, admin_ids: set[int])
         output += f"   • Win-back: {user.winback_probability:.0f}%\n"
         output += f"   • Действие: <i>{user.recommended_action}</i>\n\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="retention:menu")]
-        ]
-    )
+    keyboard = back_keyboard("retention:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -334,14 +324,9 @@ async def handle_compare_groups(callback: CallbackQuery, db, admin_ids: set[int]
             output += f"4️⃣ {weekday_pct:.0f}% RETAINED - B2B пользователи\n"
             output += "   → Фокус на профессиональное использование\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="retention:menu")]
-        ]
-    )
+    keyboard = back_keyboard("retention:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -358,14 +343,9 @@ async def handle_deep_dive(callback: CallbackQuery, db, admin_ids: set[int]):
     output += "• Churn indicators (если применимо)\n"
     output += "• Персональные рекомендации\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад", callback_data="retention:menu")]
-        ]
-    )
+    keyboard = back_keyboard("retention:menu")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -373,19 +353,10 @@ async def handle_deep_dive(callback: CallbackQuery, db, admin_ids: set[int]):
 @require_admin
 async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
     """Детальный анализ конкретного пользователя"""
-    args = (message.text or "").split()
-    if len(args) < 2:
-        await message.answer(
-            "Использование: /deepdive <user_id>\n"
-            "Пример: /deepdive 123456789"
-        )
+    user_id = await parse_user_id(message, "deepdive")
+    if user_id is None:
         return
 
-    try:
-        user_id = int(args[1])
-    except ValueError:
-        await message.answer(f"{Emoji.ERROR} Неверный формат user_id")
-        return
 
     analytics = RetentionAnalytics(db)
 
@@ -504,5 +475,5 @@ async def back_to_retention_menu(callback: CallbackQuery, db, admin_ids: set[int
     summary += "\n<i>Выберите раздел для детального анализа:</i>"
 
     if callback.message:
-        await callback.message.edit_text(summary, parse_mode=ParseMode.HTML, reply_markup=create_retention_menu())
+        await edit_or_answer(callback, summary, create_retention_menu())
     await callback.answer()

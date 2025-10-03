@@ -9,6 +9,14 @@ from typing import Any, Callable
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 
+FEATURE_KEYS = [
+    "legal_question",
+    "document_upload",
+    "voice_message",
+    "document_summary",
+    "contract_analysis",
+]
+
 def require_admin(func):
     """
     Decorator для проверки admin доступа
@@ -88,10 +96,43 @@ async def render_dashboard(
     """
     text, keyboard = await dashboard_builder(**kwargs)
 
+    await edit_or_answer(target, text, keyboard)
+
+
+
+async def edit_or_answer(
+    target: Message | CallbackQuery,
+    text: str,
+    keyboard: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = "HTML"
+) -> None:
+    """Send a response or edit the original message depending on the target."""
     if isinstance(target, Message):
-        await target.answer(text, parse_mode="HTML", reply_markup=keyboard)
-    else:  # CallbackQuery
-        await target.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        kwargs: dict[str, Any] = {"reply_markup": keyboard}
+        if parse_mode:
+            kwargs["parse_mode"] = parse_mode
+        await target.answer(text, **kwargs)
+    else:
+        if target.message:
+            kwargs = {"reply_markup": keyboard}
+            if parse_mode:
+                kwargs["parse_mode"] = parse_mode
+            await target.message.edit_text(text, **kwargs)
+        else:
+            await target.answer(text, show_alert=True)
+
+
+async def parse_user_id(message: Message, command_name: str) -> int | None:
+    """Extract user id argument from command message; report errors to the user."""
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(f"Usage: /{command_name} <user_id>")
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        await message.answer("Invalid user_id format")
+        return None
 
 
 def handle_errors(error_message: str = "Ошибка выполнения"):

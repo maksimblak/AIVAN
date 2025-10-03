@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from src.core.admin_modules.admin_utils import require_admin
+from src.core.admin_modules.admin_utils import FEATURE_KEYS, edit_or_answer, require_admin
 from src.core.admin_modules.cohort_analytics import CohortAnalytics
 from src.core.admin_modules.admin_formatters import format_trend
 
@@ -90,7 +90,7 @@ async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
 
 
 @cohort_router.callback_query(F.data == "cohort:select_month")
@@ -114,11 +114,7 @@ async def handle_select_month(callback: CallbackQuery, db, admin_ids: list[int])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await callback.message.edit_text(
-        "📅 <b>Выберите когорту для детального анализа:</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    await edit_or_answer(callback, "📅 <b>Выберите когорту для детального анализа:</b>", keyboard)
     await callback.answer()
 
 
@@ -168,7 +164,7 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="cohort:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
 
 
@@ -177,13 +173,7 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
 async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[int]):
     """Feature adoption по когортам"""
     # Список популярных фич для анализа
-    features = [
-        "legal_question",
-        "document_upload",
-        "voice_message",
-        "document_summary",
-        "contract_analysis"
-    ]
+    features = FEATURE_KEYS
 
     buttons = []
     for feature in features:
@@ -198,11 +188,7 @@ async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[i
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await callback.message.edit_text(
-        "🎯 <b>Выберите фичу для анализа adoption по когортам:</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    await edit_or_answer(callback, "🎯 <b>Выберите фичу для анализа adoption по когортам:</b>", keyboard)
     await callback.answer()
 
 
@@ -242,7 +228,7 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="cohort:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
 
 
@@ -274,7 +260,7 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
         [InlineKeyboardButton(text="◀️ Назад", callback_data="cohort:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
 
 
@@ -309,5 +295,5 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()

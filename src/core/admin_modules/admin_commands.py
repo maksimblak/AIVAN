@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from src.bot.ui_components import Emoji
 from src.core.admin_modules.admin_analytics import AdminAnalytics
+from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer
 from src.core.safe_telegram import send_html_text
 
 if TYPE_CHECKING:
@@ -125,14 +126,9 @@ async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced, adm
     output = analytics.format_segment_summary(segment, max_users=10)
 
     # Добавляем кнопку возврата
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад в меню", callback_data="admin_refresh")]
-        ]
-    )
+    keyboard = back_keyboard("admin_refresh")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -177,14 +173,9 @@ async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced,
     if not any([conversion.conversion_rate < 10, churn.retention_rate < 50, conversion.avg_time_to_conversion_days > 7]):
         output += "✅ Показатели в норме!\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад в меню", callback_data="admin_refresh")]
-        ]
-    )
+    keyboard = back_keyboard("admin_refresh")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -219,14 +210,9 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admi
         output += f"  • Запросы: {requests_change:+.1f}%\n"
         output += f"  • Активные пользователи: {users_change:+.1f}%\n"
 
-    back_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="« Назад в меню", callback_data="admin_refresh")]
-        ]
-    )
+    keyboard = back_keyboard("admin_refresh")
 
-    if callback.message:
-        await callback.message.edit_text(output, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    await edit_or_answer(callback, output, keyboard)
     await callback.answer()
 
 
@@ -264,9 +250,7 @@ async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_id
 """
 
     if callback.message:
-        await callback.message.edit_text(
-            summary, parse_mode=ParseMode.HTML, reply_markup=create_analytics_menu()
-        )
+        await edit_or_answer(callback, summary, create_analytics_menu())
     await callback.answer("✅ Обновлено")
 
 

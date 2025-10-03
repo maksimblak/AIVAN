@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from src.core.admin_modules.admin_utils import require_admin
+from src.core.admin_modules.admin_utils import FEATURE_KEYS, edit_or_answer, require_admin
 from src.core.admin_modules.pmf_metrics import PMFMetrics
 
 
@@ -143,7 +143,7 @@ async def handle_pmf_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
         [InlineKeyboardButton(text="🔄 Refresh", callback_data="pmf:refresh")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
 
 
 @pmf_router.callback_query(F.data == "pmf:nps_details")
@@ -189,7 +189,7 @@ async def handle_nps_details(callback: CallbackQuery, db, admin_ids: list[int]):
         [InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
 
 
@@ -197,13 +197,7 @@ async def handle_nps_details(callback: CallbackQuery, db, admin_ids: list[int]):
 @require_admin
 async def handle_feature_pmf(callback: CallbackQuery, db, admin_ids: list[int]):
     """Список фич для PMF анализа"""
-    features = [
-        "legal_question",
-        "document_upload",
-        "voice_message",
-        "document_summary",
-        "contract_analysis"
-    ]
+    features = FEATURE_KEYS
 
     buttons = []
     for feature in features:
@@ -218,11 +212,7 @@ async def handle_feature_pmf(callback: CallbackQuery, db, admin_ids: list[int]):
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await callback.message.edit_text(
-        "🎯 <b>Select feature for PMF analysis:</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    await edit_or_answer(callback, "🎯 <b>Select feature for PMF analysis:</b>", keyboard)
     await callback.answer()
 
 
@@ -272,7 +262,7 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
         [InlineKeyboardButton(text="🏠 Main menu", callback_data="pmf:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
 
 
@@ -306,7 +296,7 @@ async def handle_send_survey(callback: CallbackQuery, db, admin_ids: list[int]):
         [InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
 
 
@@ -355,7 +345,7 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
                   ) >= 1
             """)
         else:
-            await callback.message.edit_text("❌ Unknown segment")
+            await edit_or_answer(callback, "❌ Unknown segment", parse_mode=None)
             return
 
         rows = await cursor.fetchall()
@@ -380,7 +370,7 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
         [InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
 
 
 @pmf_router.callback_query(F.data == "pmf:back")
@@ -422,5 +412,5 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
         [InlineKeyboardButton(text="🔄 Refresh", callback_data="pmf:refresh")]
     ])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_or_answer(callback, text, keyboard)
     await callback.answer()
