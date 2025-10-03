@@ -1,5 +1,5 @@
 """
-Admin commands для PMF/NPS metrics
+Админ-команды для метрик PMF/NPS
 """
 
 from aiogram import Router, F
@@ -16,7 +16,7 @@ pmf_router = Router(name="pmf_admin")
 @pmf_router.message(Command("pmf"))
 @require_admin
 async def cmd_pmf(message: Message, db, admin_ids: list[int]):
-    """Главное меню PMF metrics"""
+    """Главное меню метрик PMF"""
     metrics = PMFMetrics(db)
 
     # Получить все метрики
@@ -24,38 +24,38 @@ async def cmd_pmf(message: Message, db, admin_ids: list[int]):
     sean_ellis = await metrics.get_sean_ellis_score(days=30)
     usage = await metrics.get_usage_intensity()
 
-    text = "📊 <b>Product-Market Fit Dashboard</b>\n\n"
+    text = "📊 <b>Дашборд Product-Market Fit</b>\n\n"
 
     # NPS Section
-    text += "<b>🎯 Net Promoter Score (NPS)</b>\n"
-    text += f"  Score: <b>{nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n"
-    text += f"  Promoters: {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
-    text += f"  Passives: {nps.passives}\n"
-    text += f"  Detractors: {nps.detractors} ({nps.detractor_rate:.1f}%)\n"
-    text += f"  Avg Score: {nps.average_score:.1f}/10\n"
-    text += f"  Response Rate: {nps.response_rate:.1f}%\n"
-    text += f"  Trend: {_format_trend(nps.trend)}\n\n"
+    text += "<b>🎯 Индекс лояльности (NPS)</b>\n"
+    text += f"  Индекс: <b>{nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n"
+    text += f"  Промоутеры: {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
+    text += f"  Нейтралы: {nps.passives}\n"
+    text += f"  Критики: {nps.detractors} ({nps.detractor_rate:.1f}%)\n"
+    text += f"  Средний балл: {nps.average_score:.1f}/10\n"
+    text += f"  Доля ответов: {nps.response_rate:.1f}%\n"
+    text += f"  Тренд: {_format_trend(nps.trend)}\n\n"
 
     # Sean Ellis Test
-    text += "<b>💎 Sean Ellis Test (PMF)</b>\n"
-    text += f"  Very Disappointed: <b>{sean_ellis.pmf_score:.1f}%</b>\n"
-    text += f"  PMF Status: {_pmf_status(sean_ellis.pmf_achieved)}\n"
-    text += f"  Responses: {sean_ellis.total_responses}\n\n"
+    text += "<b>💎 Тест Шона Эллиса (PMF)</b>\n"
+    text += f"  Очень расстроены: <b>{sean_ellis.pmf_score:.1f}%</b>\n"
+    text += f"  Статус PMF: {_pmf_status(sean_ellis.pmf_achieved)}\n"
+    text += f"  Ответов: {sean_ellis.total_responses}\n\n"
 
     # Usage Intensity
-    text += "<b>📈 Usage Intensity</b>\n"
-    text += f"  DAU: {usage.dau}\n"
-    text += f"  WAU: {usage.wau}\n"
-    text += f"  MAU: {usage.mau}\n"
+    text += "<b>📈 Интенсивность использования</b>\n"
+    text += f"  DAU (день): {usage.dau}\n"
+    text += f"  WAU (неделя): {usage.wau}\n"
+    text += f"  MAU (месяц): {usage.mau}\n"
     text += f"  DAU/MAU: {usage.dau_mau_ratio:.1f}% {_stickiness_emoji(usage.dau_mau_ratio)}\n"
-    text += f"  Power Users: {usage.power_user_percentage:.1f}%\n"
-    text += f"  L28 Retention: {usage.l28_retention:.1f}%\n"
+    text += f"  Суперактивные: {usage.power_user_percentage:.1f}%\n"
+    text += f"  Удержание L28: {usage.l28_retention:.1f}%\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 NPS Details", callback_data="pmf:nps_details")],
-        [InlineKeyboardButton(text="🎯 Feature PMF", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="📤 Send NPS Survey", callback_data="pmf:send_survey")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data="pmf:refresh")]
+        [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
+        [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
+        [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")]
     ])
 
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
@@ -76,9 +76,9 @@ def _nps_emoji(nps: float) -> str:
 def _pmf_status(achieved: bool) -> str:
     """Статус PMF"""
     if achieved:
-        return "✅ <b>PMF Achieved!</b>"
+        return "✅ <b>PMF достигнут!</b>"
     else:
-        return "⚠️ PMF not yet achieved"
+        return "⚠️ PMF пока не достигнут"
 
 
 def _stickiness_emoji(ratio: float) -> str:
@@ -105,7 +105,7 @@ def _format_trend(trend: str) -> str:
 @pmf_router.callback_query(F.data == "pmf:refresh")
 @require_admin
 async def handle_pmf_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Обновить PMF dashboard"""
+    """Обновить дашборд PMF"""
     await callback.answer("🔄 Обновляю...")
 
     metrics = PMFMetrics(db)
@@ -113,34 +113,34 @@ async def handle_pmf_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
     sean_ellis = await metrics.get_sean_ellis_score(days=30)
     usage = await metrics.get_usage_intensity()
 
-    text = "📊 <b>Product-Market Fit Dashboard</b>\n\n"
-    text += "<b>🎯 Net Promoter Score (NPS)</b>\n"
-    text += f"  Score: <b>{nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n"
-    text += f"  Promoters: {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
-    text += f"  Passives: {nps.passives}\n"
-    text += f"  Detractors: {nps.detractors} ({nps.detractor_rate:.1f}%)\n"
-    text += f"  Avg Score: {nps.average_score:.1f}/10\n"
-    text += f"  Response Rate: {nps.response_rate:.1f}%\n"
-    text += f"  Trend: {_format_trend(nps.trend)}\n\n"
+    text = "📊 <b>Дашборд Product-Market Fit</b>\n\n"
+    text += "<b>🎯 Индекс лояльности (NPS)</b>\n"
+    text += f"  Индекс: <b>{nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n"
+    text += f"  Промоутеры: {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
+    text += f"  Нейтралы: {nps.passives}\n"
+    text += f"  Критики: {nps.detractors} ({nps.detractor_rate:.1f}%)\n"
+    text += f"  Средний балл: {nps.average_score:.1f}/10\n"
+    text += f"  Доля ответов: {nps.response_rate:.1f}%\n"
+    text += f"  Тренд: {_format_trend(nps.trend)}\n\n"
 
-    text += "<b>💎 Sean Ellis Test (PMF)</b>\n"
-    text += f"  Very Disappointed: <b>{sean_ellis.pmf_score:.1f}%</b>\n"
-    text += f"  PMF Status: {_pmf_status(sean_ellis.pmf_achieved)}\n"
-    text += f"  Responses: {sean_ellis.total_responses}\n\n"
+    text += "<b>💎 Тест Шона Эллиса (PMF)</b>\n"
+    text += f"  Очень расстроены: <b>{sean_ellis.pmf_score:.1f}%</b>\n"
+    text += f"  Статус PMF: {_pmf_status(sean_ellis.pmf_achieved)}\n"
+    text += f"  Ответов: {sean_ellis.total_responses}\n\n"
 
-    text += "<b>📈 Usage Intensity</b>\n"
-    text += f"  DAU: {usage.dau}\n"
-    text += f"  WAU: {usage.wau}\n"
-    text += f"  MAU: {usage.mau}\n"
+    text += "<b>📈 Интенсивность использования</b>\n"
+    text += f"  DAU (день): {usage.dau}\n"
+    text += f"  WAU (неделя): {usage.wau}\n"
+    text += f"  MAU (месяц): {usage.mau}\n"
     text += f"  DAU/MAU: {usage.dau_mau_ratio:.1f}% {_stickiness_emoji(usage.dau_mau_ratio)}\n"
-    text += f"  Power Users: {usage.power_user_percentage:.1f}%\n"
-    text += f"  L28 Retention: {usage.l28_retention:.1f}%\n"
+    text += f"  Суперактивные: {usage.power_user_percentage:.1f}%\n"
+    text += f"  Удержание L28: {usage.l28_retention:.1f}%\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 NPS Details", callback_data="pmf:nps_details")],
-        [InlineKeyboardButton(text="🎯 Feature PMF", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="📤 Send NPS Survey", callback_data="pmf:send_survey")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data="pmf:refresh")]
+        [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
+        [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
+        [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")]
     ])
 
     await edit_or_answer(callback, text, keyboard)
@@ -153,40 +153,40 @@ async def handle_nps_details(callback: CallbackQuery, db, admin_ids: list[int]):
     metrics = PMFMetrics(db)
     nps = await metrics.get_nps(days=30)
 
-    text = "🎯 <b>NPS Detailed Breakdown</b>\n\n"
+    text = "🎯 <b>Детальный разбор NPS</b>\n\n"
 
-    text += f"<b>Overall NPS: {nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n\n"
+    text += f"<b>Итоговый NPS: {nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n\n"
 
-    text += "<b>📊 Distribution:</b>\n"
-    text += f"  Promoters (9-10): {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
-    text += f"  Passives (7-8): {nps.passives}\n"
-    text += f"  Detractors (0-6): {nps.detractors} ({nps.detractor_rate:.1f}%)\n\n"
+    text += "<b>📊 Распределение:</b>\n"
+    text += f"  Промоутеры (9-10): {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
+    text += f"  Нейтралы (7-8): {nps.passives}\n"
+    text += f"  Критики (0-6): {nps.detractors} ({nps.detractor_rate:.1f}%)\n\n"
 
-    text += f"<b>📈 Average Score:</b> {nps.average_score:.1f}/10\n\n"
+    text += f"<b>📈 Средний балл:</b> {nps.average_score:.1f}/10\n\n"
 
     if nps.previous_nps is not None:
         change = nps.nps_score - nps.previous_nps
-        text += f"<b>📊 Previous Period:</b> {nps.previous_nps:+.0f}\n"
-        text += f"<b>Change:</b> {change:+.1f} {_format_trend(nps.trend)}\n\n"
+        text += f"<b>📊 Прошлый период:</b> {nps.previous_nps:+.0f}\n"
+        text += f"<b>Изменение:</b> {change:+.1f} {_format_trend(nps.trend)}\n\n"
 
     if nps.nps_by_segment:
-        text += "<b>🎯 NPS by Segment:</b>\n"
+        text += "<b>🎯 NPS по сегментам:</b>\n"
         for segment, score in sorted(nps.nps_by_segment.items(), key=lambda x: x[1], reverse=True):
             text += f"  • {segment}: {score:+.0f}\n"
 
-    text += f"\n<b>Response Rate:</b> {nps.response_rate:.1f}%\n"
+    text += f"\n<b>Доля ответов:</b> {nps.response_rate:.1f}%\n"
 
     # Recommendations
-    text += "\n<b>💡 Recommendations:</b>\n"
+    text += "\n<b>💡 Рекомендации:</b>\n"
     if nps.nps_score < 0:
-        text += "  🔴 Критично: фокус на fixing detractor issues\n"
+        text += "  🔴 Критично: сосредоточьтесь на устранении проблем критиков\n"
     elif nps.nps_score < 30:
-        text += "  ⚠️ Улучшать: survey detractors для выявления проблем\n"
+        text += "  ⚠️ Улучшить: опросите критиков, чтобы выяснить причины\n"
     else:
-        text += "  ✅ Хорошо: leverage promoters для referrals\n"
+        text += "  ✅ Хорошо: используйте промоутеров для рекомендаций\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]
     ])
 
     await edit_or_answer(callback, text, keyboard)
@@ -208,11 +208,11 @@ async def handle_feature_pmf(callback: CallbackQuery, db, admin_ids: list[int]):
             )
         ])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await edit_or_answer(callback, "🎯 <b>Select feature for PMF analysis:</b>", keyboard)
+    await edit_or_answer(callback, "🎯 <b>Выберите функцию для анализа PMF:</b>", keyboard)
     await callback.answer()
 
 
@@ -225,41 +225,41 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
     metrics = PMFMetrics(db)
     pmf = await metrics.get_feature_pmf(feature_name, days=30)
 
-    text = f"🎯 <b>Feature PMF: {feature_name.replace('_', ' ').title()}</b>\n\n"
+    text = f"🎯 <b>PMF функции: {feature_name.replace('_', ' ').title()}</b>\n\n"
 
-    text += f"<b>PMF Score: {pmf.pmf_score:.0f}/100</b> {_pmf_rating_emoji(pmf.pmf_rating)}\n"
-    text += f"<b>Rating:</b> {pmf.pmf_rating.upper()}\n\n"
+    text += f"<b>Оценка PMF: {pmf.pmf_score:.0f}/100</b> {_pmf_rating_emoji(pmf.pmf_rating)}\n"
+    text += f"<b>Категория:</b> {pmf.pmf_rating.upper()}\n\n"
 
-    text += "<b>📊 Usage Metrics:</b>\n"
-    text += f"  Total users: {pmf.total_users}\n"
-    text += f"  Active users: {pmf.active_users}\n"
-    text += f"  Usage frequency: {pmf.usage_frequency:.1f} uses/week\n\n"
+    text += "<b>📊 Метрики использования:</b>\n"
+    text += f"  Всего пользователей: {pmf.total_users}\n"
+    text += f"  Активных пользователей: {pmf.active_users}\n"
+    text += f"  Частота использования: {pmf.usage_frequency:.1f} раз в неделю\n\n"
 
-    text += f"<b>😊 Satisfaction:</b> {pmf.satisfaction_score:.0f}/100\n\n"
+    text += f"<b>😊 Удовлетворённость:</b> {pmf.satisfaction_score:.0f}/100\n\n"
 
-    text += f"<b>💡 Insight:</b>\n{pmf.key_insight}\n\n"
+    text += f"<b>💡 Вывод:</b>\n{pmf.key_insight}\n\n"
 
     # Action items based on PMF rating
-    text += "<b>🎯 Next Steps:</b>\n"
+    text += "<b>🎯 Следующие шаги:</b>\n"
     if pmf.pmf_rating == "strong":
-        text += "  • Invest more resources\n"
-        text += "  • Add premium features\n"
-        text += "  • Use as primary selling point\n"
+        text += "  • Расширить инвестиции\n"
+        text += "  • Добавить премиальные возможности\n"
+        text += "  • Использовать как основной аргумент продаж\n"
     elif pmf.pmf_rating == "moderate":
-        text += "  • Improve UX\n"
-        text += "  • Survey users for feedback\n"
-        text += "  • A/B test improvements\n"
+        text += "  • Улучшить UX\n"
+        text += "  • Проводить опрос пользователей\n"
+        text += "  • Провести A/B‑тест улучшений\n"
     elif pmf.pmf_rating == "weak":
-        text += "  • Major redesign needed\n"
-        text += "  • Consider pivot\n"
-        text += "  • Deep user interviews\n"
+        text += "  • Нужен серьёзный редизайн\n"
+        text += "  • Подумать о смене фокуса\n"
+        text += "  • Провести глубинные интервью\n"
     else:  # kill
-        text += "  • Consider removing feature\n"
-        text += "  • Free up resources for better features\n"
+        text += "  • Рассмотреть отключение функции\n"
+        text += "  • Освободить ресурсы для более перспективных функций\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back to features", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="🏠 Main menu", callback_data="pmf:back")]
+        [InlineKeyboardButton(text="◀️ Назад к списку функций", callback_data="pmf:feature_pmf")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="pmf:back")]
     ])
 
     await edit_or_answer(callback, text, keyboard)
@@ -281,19 +281,19 @@ def _pmf_rating_emoji(rating: str) -> str:
 @require_admin
 async def handle_send_survey(callback: CallbackQuery, db, admin_ids: list[int]):
     """Отправить NPS опрос"""
-    text = "📤 <b>Send NPS Survey</b>\n\n"
+    text = "📤 <b>Отправить NPS-опрос</b>\n\n"
     text += "Выберите сегмент пользователей для отправки опроса:\n\n"
-    text += "• Power Users - активные платящие пользователи\n"
-    text += "• Trial Converters - недавно оплатили\n"
-    text += "• At Risk - могут уйти\n"
-    text += "• All Paid Users - все платящие\n"
+    text += "• Суперактивные — активные платящие пользователи\n"
+    text += "• Конвертировавшиеся из триала — недавно оплатили\n"
+    text += "• Группа риска — могут уйти\n"
+    text += "• Все платящие — все пользователи с оплатой\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌟 Power Users", callback_data="pmf:survey:power_users")],
-        [InlineKeyboardButton(text="💎 Trial Converters", callback_data="pmf:survey:trial_converters")],
-        [InlineKeyboardButton(text="⚠️ At Risk", callback_data="pmf:survey:at_risk")],
-        [InlineKeyboardButton(text="💰 All Paid", callback_data="pmf:survey:all_paid")],
-        [InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")]
+        [InlineKeyboardButton(text="🌟 Суперактивные", callback_data="pmf:survey:power_users")],
+        [InlineKeyboardButton(text="💎 Конвертировавшиеся из триала", callback_data="pmf:survey:trial_converters")],
+        [InlineKeyboardButton(text="⚠️ Группа риска", callback_data="pmf:survey:at_risk")],
+        [InlineKeyboardButton(text="💰 Все платящие", callback_data="pmf:survey:all_paid")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]
     ])
 
     await edit_or_answer(callback, text, keyboard)
@@ -345,7 +345,7 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
                   ) >= 1
             """)
         else:
-            await edit_or_answer(callback, "❌ Unknown segment", parse_mode=None)
+            await edit_or_answer(callback, "❌ Неизвестный сегмент", parse_mode=None)
             return
 
         rows = await cursor.fetchall()
@@ -361,13 +361,13 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
         if success:
             sent_count += 1
 
-    text = f"✅ <b>NPS Surveys Sent</b>\n\n"
-    text += f"Segment: {segment}\n"
-    text += f"Sent to: {sent_count} users\n\n"
+    text = f"✅ <b>NPS-опросы отправлены</b>\n\n"
+    text += f"Сегмент: {segment}\n"
+    text += f"Отправлено: {sent_count} пользователям\n\n"
     text += "Пользователи получат опрос при следующем взаимодействии с ботом."
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back", callback_data="pmf:back")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]
     ])
 
     await edit_or_answer(callback, text, keyboard)
@@ -382,34 +382,34 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
     sean_ellis = await metrics.get_sean_ellis_score(days=30)
     usage = await metrics.get_usage_intensity()
 
-    text = "📊 <b>Product-Market Fit Dashboard</b>\n\n"
-    text += "<b>🎯 Net Promoter Score (NPS)</b>\n"
-    text += f"  Score: <b>{nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n"
-    text += f"  Promoters: {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
-    text += f"  Passives: {nps.passives}\n"
-    text += f"  Detractors: {nps.detractors} ({nps.detractor_rate:.1f}%)\n"
-    text += f"  Avg Score: {nps.average_score:.1f}/10\n"
-    text += f"  Response Rate: {nps.response_rate:.1f}%\n"
-    text += f"  Trend: {_format_trend(nps.trend)}\n\n"
+    text = "📊 <b>Дашборд Product-Market Fit</b>\n\n"
+    text += "<b>🎯 Индекс лояльности (NPS)</b>\n"
+    text += f"  Индекс: <b>{nps.nps_score:+.0f}</b> {_nps_emoji(nps.nps_score)}\n"
+    text += f"  Промоутеры: {nps.promoters} ({nps.promoter_rate:.1f}%)\n"
+    text += f"  Нейтралы: {nps.passives}\n"
+    text += f"  Критики: {nps.detractors} ({nps.detractor_rate:.1f}%)\n"
+    text += f"  Средний балл: {nps.average_score:.1f}/10\n"
+    text += f"  Доля ответов: {nps.response_rate:.1f}%\n"
+    text += f"  Тренд: {_format_trend(nps.trend)}\n\n"
 
-    text += "<b>💎 Sean Ellis Test (PMF)</b>\n"
-    text += f"  Very Disappointed: <b>{sean_ellis.pmf_score:.1f}%</b>\n"
-    text += f"  PMF Status: {_pmf_status(sean_ellis.pmf_achieved)}\n"
-    text += f"  Responses: {sean_ellis.total_responses}\n\n"
+    text += "<b>💎 Тест Шона Эллиса (PMF)</b>\n"
+    text += f"  Очень расстроены: <b>{sean_ellis.pmf_score:.1f}%</b>\n"
+    text += f"  Статус PMF: {_pmf_status(sean_ellis.pmf_achieved)}\n"
+    text += f"  Ответов: {sean_ellis.total_responses}\n\n"
 
-    text += "<b>📈 Usage Intensity</b>\n"
-    text += f"  DAU: {usage.dau}\n"
-    text += f"  WAU: {usage.wau}\n"
-    text += f"  MAU: {usage.mau}\n"
+    text += "<b>📈 Интенсивность использования</b>\n"
+    text += f"  DAU (день): {usage.dau}\n"
+    text += f"  WAU (неделя): {usage.wau}\n"
+    text += f"  MAU (месяц): {usage.mau}\n"
     text += f"  DAU/MAU: {usage.dau_mau_ratio:.1f}% {_stickiness_emoji(usage.dau_mau_ratio)}\n"
-    text += f"  Power Users: {usage.power_user_percentage:.1f}%\n"
-    text += f"  L28 Retention: {usage.l28_retention:.1f}%\n"
+    text += f"  Суперактивные: {usage.power_user_percentage:.1f}%\n"
+    text += f"  Удержание L28: {usage.l28_retention:.1f}%\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 NPS Details", callback_data="pmf:nps_details")],
-        [InlineKeyboardButton(text="🎯 Feature PMF", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="📤 Send NPS Survey", callback_data="pmf:send_survey")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data="pmf:refresh")]
+        [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
+        [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
+        [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")]
     ])
 
     await edit_or_answer(callback, text, keyboard)

@@ -1,5 +1,5 @@
 """
-Admin команды для управления и аналитики бота
+Админ-команды для управления и аналитики бота
 """
 
 from __future__ import annotations
@@ -37,23 +37,23 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⚡ Power Users", callback_data="admin_segment:power_users"),
-                InlineKeyboardButton(text="⚠️ At Risk", callback_data="admin_segment:at_risk"),
+                InlineKeyboardButton(text="⚡ Суперактивные", callback_data="admin_segment:power_users"),
+                InlineKeyboardButton(text="⚠️ Группа риска", callback_data="admin_segment:at_risk"),
             ],
             [
-                InlineKeyboardButton(text="📉 Churned", callback_data="admin_segment:churned"),
-                InlineKeyboardButton(text="💰 Converters", callback_data="admin_segment:trial_converters"),
+                InlineKeyboardButton(text="📉 Отток", callback_data="admin_segment:churned"),
+                InlineKeyboardButton(text="💰 Переходы в оплату", callback_data="admin_segment:trial_converters"),
             ],
             [
-                InlineKeyboardButton(text="🚫 Freeloaders", callback_data="admin_segment:freeloaders"),
-                InlineKeyboardButton(text="🆕 New Users", callback_data="admin_segment:new_users"),
+                InlineKeyboardButton(text="🚫 Только бесплатные", callback_data="admin_segment:freeloaders"),
+                InlineKeyboardButton(text="🆕 Новые пользователи", callback_data="admin_segment:new_users"),
             ],
             [
                 InlineKeyboardButton(text="👑 VIP", callback_data="admin_segment:vip"),
             ],
             [
-                InlineKeyboardButton(text="📊 Conversion Stats", callback_data="admin_stats:conversion"),
-                InlineKeyboardButton(text="📈 Daily Stats", callback_data="admin_stats:daily"),
+                InlineKeyboardButton(text="📊 Аналитика конверсии", callback_data="admin_stats:conversion"),
+                InlineKeyboardButton(text="📈 Ежедневная статистика", callback_data="admin_stats:daily"),
             ],
             [
                 InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh"),
@@ -76,21 +76,21 @@ async def cmd_admin(message: Message, db: DatabaseAdvanced, admin_ids: set[int])
     conversion_metrics = await analytics.get_conversion_metrics()
 
     summary = f"""
-<b>🎛 ADMIN ПАНЕЛЬ</b>
+<b>🎛 АДМИН-ПАНЕЛЬ</b>
 
 <b>📊 Сводка по пользователям:</b>
 
-⚡ Power Users: <b>{segments['power_users'].user_count}</b>
-⚠️ At Risk: <b>{segments['at_risk'].user_count}</b>
-📉 Churned: <b>{segments['churned'].user_count}</b>
-💰 Trial Converters: <b>{segments['trial_converters'].user_count}</b>
-🚫 Freeloaders: <b>{segments['freeloaders'].user_count}</b>
-🆕 New Users (7d): <b>{segments['new_users'].user_count}</b>
-👑 VIP Users: <b>{segments['vip'].user_count}</b>
+⚡ Суперактивные: <b>{segments['power_users'].user_count}</b>
+⚠️ Группа риска: <b>{segments['at_risk'].user_count}</b>
+📉 Отток: <b>{segments['churned'].user_count}</b>
+💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
+🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
+🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>
+👑 VIP-пользователи: <b>{segments['vip'].user_count}</b>
 
-<b>💹 Конверсия Trial → Paid:</b>
-• Всего trial: {conversion_metrics.total_trial_users}
-• Конвертировались: {conversion_metrics.converted_to_paid}
+<b>💹 Конверсия Триал → Оплата:</b>
+• Всего триал-пользователей: {conversion_metrics.total_trial_users}
+• Перешли на оплату: {conversion_metrics.converted_to_paid}
 • Конверсия: <b>{conversion_metrics.conversion_rate}%</b>
 • Среднее время до покупки: {conversion_metrics.avg_time_to_conversion_days} дней
 
@@ -146,29 +146,29 @@ async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced,
     output = f"""
 <b>💹 ДЕТАЛЬНАЯ СТАТИСТИКА КОНВЕРСИИ</b>
 
-<b>📊 Trial → Paid:</b>
-• Всего использовали trial: {conversion.total_trial_users}
-• Конвертировались в paid: {conversion.converted_to_paid}
+<b>📊 Триал → Оплата:</b>
+• Всего пользователей на триале: {conversion.total_trial_users}
+• Перешли на оплату: {conversion.converted_to_paid}
 • Конверсия: <b>{conversion.conversion_rate}%</b>
-• Среднее кол-во запросов до покупки: {conversion.avg_trial_requests_before_conversion}
+• Среднее число запросов до покупки: {conversion.avg_trial_requests_before_conversion}
 • Среднее время до конверсии: {conversion.avg_time_to_conversion_days} дней
 
-<b>📉 Churn (за 30 дней):</b>
+<b>📉 Отток (30 дней):</b>
 • Истекло подписок: {churn.total_expired}
 • Продлили: {churn.renewed_count}
-• Ушли (churn): {churn.churned_count}
-• Retention rate: <b>{churn.retention_rate}%</b>
+• Ушли (отток): {churn.churned_count}
+• Уровень удержания: <b>{churn.retention_rate}%</b>
 
 <b>💡 Рекомендации:</b>
 """
 
     # Добавляем рекомендации на основе данных
     if conversion.conversion_rate < 10:
-        output += "⚠️ Низкая конверсия trial - пересмотреть лимиты trial и онбординг\n"
+        output += "⚠️ Низкая конверсия триала — пересмотреть лимиты и онбординг\n"
     if churn.retention_rate < 50:
-        output += "⚠️ Высокий churn - улучшить retention стратегию\n"
+        output += "⚠️ Высокий отток — пересмотреть стратегию удержания\n"
     if conversion.avg_time_to_conversion_days > 7:
-        output += "⚠️ Долгая конверсия - добавить incentives для быстрой покупки\n"
+        output += "⚠️ Долгая конверсия — добавить стимулирующие акции для быстрой покупки\n"
 
     if not any([conversion.conversion_rate < 10, churn.retention_rate < 50, conversion.avg_time_to_conversion_days > 7]):
         output += "✅ Показатели в норме!\n"
@@ -196,7 +196,7 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admi
         output += f"  • Запросов: {day['requests']}\n"
         output += f"  • Активных пользователей: {day['active_users']}\n"
         output += f"  • Токенов: {day['total_tokens']:,}\n"
-        output += f"  • Среднее время ответа: {day['avg_response_time_ms']}ms\n\n"
+        output += f"  • Среднее время ответа: {day['avg_response_time_ms']} мс\n\n"
 
     if daily_stats:
         # Добавляем тренды
@@ -228,21 +228,21 @@ async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_id
     conversion_metrics = await analytics.get_conversion_metrics()
 
     summary = f"""
-<b>🎛 ADMIN ПАНЕЛЬ</b>
+<b>🎛 АДМИН-ПАНЕЛЬ</b>
 
 <b>📊 Сводка по пользователям:</b>
 
-⚡ Power Users: <b>{segments['power_users'].user_count}</b>
-⚠️ At Risk: <b>{segments['at_risk'].user_count}</b>
-📉 Churned: <b>{segments['churned'].user_count}</b>
-💰 Trial Converters: <b>{segments['trial_converters'].user_count}</b>
-🚫 Freeloaders: <b>{segments['freeloaders'].user_count}</b>
-🆕 New Users (7d): <b>{segments['new_users'].user_count}</b>
-👑 VIP Users: <b>{segments['vip'].user_count}</b>
+⚡ Суперактивные: <b>{segments['power_users'].user_count}</b>
+⚠️ Группа риска: <b>{segments['at_risk'].user_count}</b>
+📉 Отток: <b>{segments['churned'].user_count}</b>
+💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
+🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
+🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>
+👑 VIP-пользователи: <b>{segments['vip'].user_count}</b>
 
-<b>💹 Конверсия Trial → Paid:</b>
-• Всего trial: {conversion_metrics.total_trial_users}
-• Конвертировались: {conversion_metrics.converted_to_paid}
+<b>💹 Конверсия Триал → Оплата:</b>
+• Всего триал-пользователей: {conversion_metrics.total_trial_users}
+• Перешли на оплату: {conversion_metrics.converted_to_paid}
 • Конверсия: <b>{conversion_metrics.conversion_rate}%</b>
 • Среднее время до покупки: {conversion_metrics.avg_time_to_conversion_days} дней
 
@@ -278,20 +278,20 @@ async def cmd_export_users(message: Message, db: DatabaseAdvanced, admin_ids: se
     segment = segments[segment_id]
 
     # Формируем CSV
-    csv_lines = ["user_id,total_requests,last_active,additional_info"]
+    csv_lines = ["user_id,всего_запросов,последняя_активность,доп_инфо"]
 
     for user in segment.users:
-        user_id = user.get('user_id', 'N/A')
+        user_id = user.get('user_id', 'н/д')
         total_requests = user.get('total_requests', 0)
-        last_active = user.get('last_active', user.get('registered_at', 'N/A'))
+        last_active = user.get('last_active', user.get('registered_at', 'н/д'))
 
         # Дополнительная информация зависит от сегмента
         if segment_id == 'power_users':
-            additional = f"{user.get('avg_requests_per_day', 0)} req/day"
+            additional = f"{user.get('avg_requests_per_day', 0)} запр./день"
         elif segment_id == 'at_risk':
-            additional = f"expires in {user.get('days_until_expiry', 0)} days"
+            additional = f"истекает через {user.get('days_until_expiry', 0)} дн."
         elif segment_id == 'churned':
-            additional = f"LTV: {user.get('ltv', 0)} RUB"
+            additional = f"LTV: {user.get('ltv', 0)} ₽"
         else:
             additional = ""
 
@@ -318,7 +318,7 @@ async def cmd_export_users(message: Message, db: DatabaseAdvanced, admin_ids: se
 async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
     """
     Отправка сообщения группе пользователей
-    Использование: /broadcast <segment> <message>
+    Использование: /broadcast <segment> <сообщение>
     """
     if not message.from_user or not is_admin(message.from_user.id, admin_ids):
         await message.answer(f"{Emoji.ERROR} У вас нет доступа к админ-панели")
@@ -329,7 +329,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
     if len(args) < 3:
         await message.answer(
             f"{Emoji.INFO} <b>Использование:</b>\n"
-            f"/broadcast &lt;segment&gt; &lt;message&gt;\n\n"
+            f"/broadcast &lt;segment&gt; &lt;сообщение&gt;\n\n"
             f"<b>Доступные сегменты:</b>\n"
             f"• power_users\n"
             f"• at_risk\n"
@@ -395,7 +395,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
 
 def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     """
-    Регистрация admin команд в dispatcher
+    Регистрация админ-команд в dispatcher
 
     Использование:
         setup_admin_commands(dp, db, {123456, 789012})
@@ -414,4 +414,4 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
 
     dp.include_router(admin_router)
 
-    logger.info(f"✅ Admin commands registered for {len(admin_ids)} admins")
+    logger.info(f"✅ Админ-команды зарегистрированы для {len(admin_ids)} админов")
