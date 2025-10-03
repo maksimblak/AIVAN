@@ -40,6 +40,9 @@ class UserRecord:
     referral_code: str | None = None
     referrals_count: int = 0
     referral_bonus_days: int = 0
+    subscription_plan: str | None = None
+    subscription_requests_balance: int = 0
+    subscription_last_purchase_at: int = 0
 
 
 @dataclass
@@ -342,6 +345,9 @@ class DatabaseAdvanced:
                     is_admin INTEGER NOT NULL DEFAULT 0,
                     trial_remaining INTEGER NOT NULL DEFAULT 10,
                     subscription_until INTEGER NOT NULL DEFAULT 0,
+                    subscription_plan TEXT,
+                    subscription_requests_balance INTEGER NOT NULL DEFAULT 0,
+                    subscription_last_purchase_at INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     total_requests INTEGER NOT NULL DEFAULT 0,
@@ -417,6 +423,9 @@ class DatabaseAdvanced:
                     "ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;",
                     "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN subscription_plan TEXT;",
+                    "ALTER TABLE users ADD COLUMN subscription_requests_balance INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE users ADD COLUMN subscription_last_purchase_at INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE ratings ADD COLUMN username TEXT;",
                     "ALTER TABLE ratings ADD COLUMN answer_text TEXT;",
                 ]
@@ -530,7 +539,8 @@ class DatabaseAdvanced:
                     cursor = await conn.execute(
                         """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
                            total_requests, successful_requests, failed_requests, last_request_at,
-                           referred_by, referral_code, referrals_count, referral_bonus_days
+                           referred_by, referral_code, referrals_count, referral_bonus_days, subscription_plan,
+                           subscription_requests_balance, subscription_last_purchase_at
                            FROM users WHERE user_id = ?""",
                         (user_id,),
                     )
@@ -548,7 +558,7 @@ class DatabaseAdvanced:
                     await cursor.close()
                     if row:
                         # Дополняем данные значениями по умолчанию для новых полей
-                        row = row + (None, None, 0, 0)
+                        row = row + (None, None, 0, 0, None, 0, 0)
 
                 if row:
                     self.query_count += 1 if self.enable_metrics else 0
@@ -569,7 +579,8 @@ class DatabaseAdvanced:
                     cursor = await conn.execute(
                         """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
                            total_requests, successful_requests, failed_requests, last_request_at,
-                           referred_by, referral_code, referrals_count, referral_bonus_days
+                           referred_by, referral_code, referrals_count, referral_bonus_days, subscription_plan,
+                           subscription_requests_balance, subscription_last_purchase_at
                            FROM users WHERE user_id = ?""",
                         (user_id,),
                     )
@@ -587,7 +598,7 @@ class DatabaseAdvanced:
                     await cursor.close()
                     if row:
                         # Дополняем данные значениями по умолчанию для новых полей
-                        row = row + (None, None, 0, 0)
+                        row = row + (None, None, 0, 0, None, 0, 0)
 
                 self.query_count += 1 if self.enable_metrics else 0
                 return UserRecord(*row) if row else None
@@ -667,6 +678,71 @@ class DatabaseAdvanced:
             except Exception as e:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in extend_subscription_days: {str(e)}")
+
+    async def apply_subscription_purchase(
+        self,
+        user_id: int,
+        *,
+        plan_id: str,
+        duration_days: int,
+        request_quota: int,
+    ) -> tuple[int, int]:
+        """Extend subscription and replenish quota for a specific plan."""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                cursor = await conn.execute(
+                    "SELECT subscription_until, subscription_requests_balance FROM users WHERE user_id = ?",
+                    (user_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if not row:
+                    raise DatabaseException(f"User {user_id} not found")
+                current_until = int(row[0]) if row[0] else 0
+                current_balance = int(row[1]) if row[1] is not None else 0
+                base_time = max(current_until, now)
+                new_until = base_time + max(0, duration_days) * 86400
+                new_balance = max(0, current_balance) + max(0, request_quota)
+                await conn.execute(
+                    """UPDATE users",
+                    "       SET subscription_until = ?,",
+                    "           subscription_plan = ?,",
+                    "           subscription_requests_balance = ?,",
+                    "           subscription_last_purchase_at = ?,",
+                    "           updated_at = ?",
+                    "       WHERE user_id = ?"""
+                    (new_until, plan_id, new_balance, now, now, user_id),
+                )
+                self.query_count += 2 if self.enable_metrics else 0
+                return new_until, new_balance
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in apply_subscription_purchase: {str(e)}")
+
+    async def consume_subscription_quota(self, user_id: int, amount: int = 1) -> bool:
+        """Atomically decrement remaining subscription quota."""
+        if amount <= 0:
+            return True
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                cursor = await conn.execute(
+                    """UPDATE users",
+                    "       SET subscription_requests_balance = subscription_requests_balance - ?,",
+                    "           updated_at = ?",
+                    "       WHERE user_id = ?",
+                    "         AND subscription_plan IS NOT NULL",
+                    "         AND subscription_requests_balance >= ?"""
+                    (amount, now, user_id, amount),
+                )
+                affected = cursor.rowcount
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+                return affected > 0
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in consume_subscription_quota: {str(e)}")
 
     async def record_transaction(
         self,

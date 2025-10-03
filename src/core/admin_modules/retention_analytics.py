@@ -467,54 +467,57 @@ class RetentionAnalytics:
                 indicators.append('had_errors')
 
         # 3. Не изучил продукт
-        cursor = await conn.execute("""
-            SELECT COUNT(DISTINCT request_type) FROM requests
-            WHERE user_id = ?
-        """, (user_id,))
-        unique_features = (await cursor.fetchone())[0]
-        await cursor.close()
-
-        if unique_features <= 2:
-            indicators.append('limited_exploration')
-
-        # 4. Негативный опыт
-        cursor = await conn.execute("""
-            SELECT COUNT(*) FROM ratings r
-            INNER JOIN requests req ON r.request_id = req.id
-            WHERE req.user_id = ? AND r.rating = -1
-        """, (user_id,))
-        dislikes = (await cursor.fetchone())[0]
-        await cursor.close()
-
-        if dislikes > 2:
-            indicators.append('poor_experience')
-
-        # 5. Быстро бросил после покупки
-        cursor = await conn.execute("""
-            SELECT MIN(created_at) as first_payment
-            FROM transactions
-            WHERE user_id = ? AND status = 'completed'
-        """, (user_id,))
-        first_payment_row = await cursor.fetchone()
-        await cursor.close()
-
-        if first_payment_row:
-            first_payment = first_payment_row[0]
-
+        async with self.db.pool.acquire() as conn:
             cursor = await conn.execute("""
-                SELECT MAX(created_at) as last_request
-                FROM requests
+                SELECT COUNT(DISTINCT request_type) FROM requests
                 WHERE user_id = ?
             """, (user_id,))
-            last_request_row = await cursor.fetchone()
+            unique_features = (await cursor.fetchone())[0]
             await cursor.close()
 
-            if last_request_row and last_request_row[0]:
-                last_request = last_request_row[0]
-                days_after_payment = (last_request - first_payment) // 86400
+            if unique_features <= 2:
+                indicators.append('limited_exploration')
 
-                if days_after_payment < 3:
-                    indicators.append('immediate_abandonment')
+        # 4. Негативный опыт
+        async with self.db.pool.acquire() as conn:
+            cursor = await conn.execute("""
+                SELECT COUNT(*) FROM ratings r
+                INNER JOIN requests req ON r.request_id = req.id
+                WHERE req.user_id = ? AND r.rating = -1
+            """, (user_id,))
+            dislikes = (await cursor.fetchone())[0]
+            await cursor.close()
+
+            if dislikes > 2:
+                indicators.append('poor_experience')
+
+        # 5. Быстро бросил после покупки
+        async with self.db.pool.acquire() as conn:
+            cursor = await conn.execute("""
+                SELECT MIN(created_at) as first_payment
+                FROM transactions
+                WHERE user_id = ? AND status = 'completed'
+            """, (user_id,))
+            first_payment_row = await cursor.fetchone()
+            await cursor.close()
+
+            first_payment = first_payment_row[0] if first_payment_row else None
+
+            if first_payment is not None:
+                cursor = await conn.execute("""
+                    SELECT MAX(created_at) as last_request
+                    FROM requests
+                    WHERE user_id = ?
+                """, (user_id,))
+                last_request_row = await cursor.fetchone()
+                await cursor.close()
+
+                last_request = last_request_row[0] if last_request_row else None
+                if last_request is not None:
+                    days_after_payment = (last_request - first_payment) // 86400
+
+                    if days_after_payment < 3:
+                        indicators.append('immediate_abandonment')
 
         # 6. Вероятно цена слишком высокая
         if total_requests < 10:  # мало использовал перед окончанием

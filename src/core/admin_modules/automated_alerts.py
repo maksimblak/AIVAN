@@ -249,7 +249,7 @@ class AutomatedAlerts:
                     timestamp=int(datetime.now().timestamp())
                 ))
 
-            if nps.previous_nps and (nps.nps_score < nps.previous_nps - self.config.nps_drop_threshold):
+            if (nps.previous_nps is not None) and (nps.nps_score < nps.previous_nps - self.config.nps_drop_threshold):
                 alerts.append(Alert(
                     severity="warning",
                     category="pmf",

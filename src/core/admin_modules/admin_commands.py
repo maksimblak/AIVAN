@@ -16,6 +16,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from src.bot.ui_components import Emoji
 from src.core.admin_modules.admin_analytics import AdminAnalytics
 from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer
+from src.core.admin_modules.admin_alerts_commands import alerts_router
+from src.core.admin_modules.admin_behavior_commands import behavior_router
+from src.core.admin_modules.admin_cohort_commands import cohort_router
+from src.core.admin_modules.admin_pmf_commands import pmf_router
+from src.core.admin_modules.admin_retention_commands import retention_router
+from src.core.admin_modules.admin_revenue_commands import revenue_router
 from src.core.safe_telegram import send_html_text
 
 if TYPE_CHECKING:
@@ -376,7 +382,8 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
     cache_key = f"{message.from_user.id}:{segment_id}"
     message.bot._broadcast_cache[cache_key] = {  # type: ignore
         'user_ids': user_ids,
-        'message': broadcast_message
+        'message': broadcast_message,
+        'segment_name': segment.name,
     }
 
     await message.answer(
@@ -390,28 +397,117 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
     )
 
 
-# TODO: Добавить обработчик broadcast_confirm для фактической отправки
+
+@admin_router.callback_query(F.data.startswith("broadcast_confirm:"))
+async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+    """Trigger broadcast delivery after admin confirmation."""
+    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
+        await callback.answer("No access", show_alert=True)
+        return
+
+    data = callback.data or ""
+    _, _, segment_id = data.partition(":")
+    cache = getattr(callback.bot, "_broadcast_cache", {})
+    cache_key = f"{callback.from_user.id}:{segment_id}"
+    payload = cache.pop(cache_key, None) if segment_id else None
+
+    if not payload:
+        await callback.answer("Broadcast payload not found", show_alert=True)
+        if callback.message:
+            await edit_or_answer(callback, "<b>Broadcast payload not found.</b>", None)
+        return
+
+    user_ids = payload.get('user_ids') or []
+    message_text = payload.get('message') or ""
+    segment_label = payload.get('segment_name') or segment_id or 'unknown'
+
+    sent = 0
+    failed = []
+
+    for user_id in user_ids:
+        try:
+            await send_html_text(callback.bot, user_id, message_text)
+            sent += 1
+        except Exception as exc:
+            failed.append(user_id)
+            logger.warning("Failed to deliver broadcast to %s: %s", user_id, exc)
+
+    summary_lines = [
+        "<b>Broadcast completed</b>",
+        "",
+        f"Segment: <b>{segment_label}</b>",
+        f"Recipients: {sent}",
+    ]
+    if failed:
+        summary_lines.append(f"Failures: {len(failed)}")
+
+    summary_text = "\n".join(summary_lines)
+
+    if callback.message:
+        await edit_or_answer(callback, summary_text, None)
+
+    await callback.answer("Done")
+    logger.info(
+        "Admin %s broadcasted to %s: sent=%s failed=%s",
+        callback.from_user.id if callback.from_user else 'unknown',
+        segment_id,
+        sent,
+        len(failed),
+    )
+
+
+@admin_router.callback_query(F.data.startswith("broadcast_cancel:"))
+async def handle_broadcast_cancel(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+    """Cancel a prepared broadcast."""
+    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
+        await callback.answer("No access", show_alert=True)
+        return
+
+    data = callback.data or ""
+    _, _, segment_id = data.partition(":")
+    cache = getattr(callback.bot, "_broadcast_cache", {})
+    if segment_id:
+        cache.pop(f"{callback.from_user.id}:{segment_id}", None)
+
+    if callback.message:
+        await edit_or_answer(callback, "<b>Broadcast cancelled.</b>", None)
+
+    await callback.answer("Cancelled")
+    logger.info(
+        "Admin %s cancelled broadcast for %s",
+        callback.from_user.id if callback.from_user else 'unknown',
+        segment_id,
+    )
 
 
 def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     """
-    Регистрация админ-команд в dispatcher
+    ����������� �����-������ � dispatcher
 
-    Использование:
+    �������������:
         setup_admin_commands(dp, db, {123456, 789012})
     """
-    # Регистрируем router с передачей зависимостей
-    admin_router.message.filter(lambda msg: msg.from_user and is_admin(msg.from_user.id, admin_ids))
+    routers = [
+        admin_router,
+        alerts_router,
+        behavior_router,
+        cohort_router,
+        pmf_router,
+        retention_router,
+        revenue_router,
+    ]
 
-    # Передаем db и admin_ids как зависимости
-    for handler in admin_router.observers['message']:
-        handler.callback.__globals__['db'] = db
-        handler.callback.__globals__['admin_ids'] = admin_ids
+    for router in routers:
+        router.message.filter(lambda msg, _admins=admin_ids: msg.from_user and is_admin(msg.from_user.id, _admins))
 
-    for handler in admin_router.observers['callback_query']:
-        handler.callback.__globals__['db'] = db
-        handler.callback.__globals__['admin_ids'] = admin_ids
+        for handler in router.observers.get('message', []):
+            handler.callback.__globals__['db'] = db
+            handler.callback.__globals__['admin_ids'] = admin_ids
 
-    dp.include_router(admin_router)
+        for handler in router.observers.get('callback_query', []):
+            handler.callback.__globals__['db'] = db
+            handler.callback.__globals__['admin_ids'] = admin_ids
 
-    logger.info(f"✅ Админ-команды зарегистрированы для {len(admin_ids)} админов")
+        dp.include_router(router)
+
+    logger.info(f" �����-������� ���������������� ��� {len(admin_ids)} �������")
