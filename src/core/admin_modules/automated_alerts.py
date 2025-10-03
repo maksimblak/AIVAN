@@ -428,7 +428,7 @@ class AutomatedAlerts:
                     await self.send_alerts(alerts)
 
                     # Log alerts
-                    print(f"[AutoAlerts] Sent {len(alerts)} alerts at {datetime.now()}")
+                    logger.info("Sent %d alerts at %s", len(alerts), datetime.now())
 
             except Exception:
                 logger.exception("Error in monitoring loop")

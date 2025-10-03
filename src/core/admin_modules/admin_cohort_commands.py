@@ -245,11 +245,16 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
     for cohort in comparison.cohorts_data[:6]:
         text += f"<b>{cohort.cohort_month}</b>\n"
 
-        # ASCII visualization
-        day_1_bar = "█" * int(cohort.day_1_retention / 10) + "░" * (10 - int(cohort.day_1_retention / 10))
-        day_7_bar = "█" * int(cohort.day_7_retention / 10) + "░" * (10 - int(cohort.day_7_retention / 10))
-        day_30_bar = "█" * int(cohort.day_30_retention / 10) + "░" * (10 - int(cohort.day_30_retention / 10))
-        day_90_bar = "█" * int(cohort.day_90_retention / 10) + "░" * (10 - int(cohort.day_90_retention / 10))
+        # ASCII visualization (ограничиваем значения до 100%)
+        day_1_filled = int(min(100, cohort.day_1_retention) / 10)
+        day_7_filled = int(min(100, cohort.day_7_retention) / 10)
+        day_30_filled = int(min(100, cohort.day_30_retention) / 10)
+        day_90_filled = int(min(100, cohort.day_90_retention) / 10)
+
+        day_1_bar = "█" * day_1_filled + "░" * (10 - day_1_filled)
+        day_7_bar = "█" * day_7_filled + "░" * (10 - day_7_filled)
+        day_30_bar = "█" * day_30_filled + "░" * (10 - day_30_filled)
+        day_90_bar = "█" * day_90_filled + "░" * (10 - day_90_filled)
 
         text += f"  Д1:  {day_1_bar} {cohort.day_1_retention:.0f}%\n"
         text += f"  Д7:  {day_7_bar} {cohort.day_7_retention:.0f}%\n"

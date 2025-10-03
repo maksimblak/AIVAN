@@ -271,7 +271,8 @@ class RevenueAnalytics:
         # Quick Ratio
         new_expansion = mrr.new_mrr + mrr.expansion_mrr
         churn_contraction = mrr.churn_mrr + mrr.contraction_mrr
-        quick_ratio = (new_expansion / churn_contraction) if churn_contraction > 0 else float('inf')
+        # Используем 999.0 вместо inf для корректного отображения и сравнений
+        quick_ratio = (new_expansion / churn_contraction) if churn_contraction > 0 else 999.0
 
         # CAC Payback (нужны данные о marketing spend - пока None)
         cac_payback_months = None

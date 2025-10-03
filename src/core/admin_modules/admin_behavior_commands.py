@@ -106,7 +106,7 @@ async def handle_popular_features(callback: CallbackQuery, db, admin_ids: set[in
     if top_features:
         total_uses = sum(f['uses'] for f in top_features)
         top_3_uses = sum(f['uses'] for f in top_features[:3])
-        concentration = (top_3_uses / total_uses) * 100
+        concentration = (top_3_uses / total_uses * 100) if total_uses > 0 else 0
 
         output += "<b>💡 Выводы:</b>\n"
         output += f"• Топ-3 фичи составляют {concentration:.0f}% всего использования\n"
