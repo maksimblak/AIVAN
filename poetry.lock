@@ -3801,4 +3801,4 @@ scaling = ["pydantic", "redis"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "fe9941a5bda04d6912c1b2ab5bac3249a59c0dd0bcadeaf6dbc7dacd52683379"
+content-hash = "72a7a3299361db14208fb127ddb66bc64b08d6b887fed7c1d3f6eff5b9c0e400"
