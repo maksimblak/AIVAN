@@ -2324,6 +2324,7 @@ async def handle_referral_program_callback(callback: CallbackQuery):
             await callback.message.answer("Ошибка получения данных пользователя")
             return
 
+        referral_code: str | None = None
         # Генерируем реферальный код если его нет
         try:
             if not user.referral_code:
@@ -2332,7 +2333,9 @@ async def handle_referral_program_callback(callback: CallbackQuery):
                 referral_code = user.referral_code
         except Exception as e:
             logger.error(f"Error with referral code: {e}")
-            referral_code = "SYSTEM_ERROR"
+            referral_code = None
+
+        referral_link, share_code = _build_referral_link(referral_code)
 
         # Получаем список рефералов
         try:
@@ -2349,46 +2352,69 @@ async def handle_referral_program_callback(callback: CallbackQuery):
         referral_bonus_days = getattr(user, 'referral_bonus_days', 0)
         referrals_count = getattr(user, 'referrals_count', 0)
 
-        referral_text = f"""👥 <b>Реферальная программа</b>
+        referral_lines: list[str] = [
+            "👥 <b>Реферальная программа</b>",
+            "",
+            "🎁 <b>Ваши бонусы</b>",
+            f"• Бонусных дней: {referral_bonus_days}",
+            f"• Приглашено друзей: {referrals_count}",
+            f"• С активной подпиской: {active_referrals}",
+            "",
+        ]
 
-🎁 <b>Ваши бонусы</b>
-• Бонусных дней: {referral_bonus_days}
-• Приглашено друзей: {referrals_count}
-• С активной подпиской: {active_referrals}
+        if referral_link:
+            referral_lines.extend([
+                "🔗 <b>Ваша реферальная ссылка</b>",
+                f"<code>{referral_link}</code>",
+            ])
+        elif share_code:
+            safe_code = html_escape(share_code)
+            referral_lines.extend([
+                "🔗 <b>Ваш реферальный код</b>",
+                f"<code>ref_{safe_code}</code>",
+                "Отправьте его друзьям, чтобы они указали код при запуске бота.",
+            ])
+        else:
+            referral_lines.extend([
+                "🔗 <b>Реферальная ссылка временно недоступна</b>",
+                "Попробуйте позже или обратитесь в поддержку.",
+            ])
 
-🔗 <b>Ваша реферальная ссылка</b>
-<code>https://t.me/your_bot?start=ref_{referral_code}</code>
-
-💡 <b>Как это работает</b>
-• Поделитесь ссылкой с друзьями
-• За каждого друга получите 3 дня подписки
-• Друг получит скидку 20% на первую покупку
-
-📈 <b>Ваши рефералы</b>"""
+        referral_lines.extend([
+            "",
+            "💡 <b>Как это работает</b>",
+            "• Поделитесь ссылкой с друзьями",
+            "• За каждого друга получите 3 дня подписки",
+            "• Друг получит скидку 20% на первую покупку",
+            "",
+            "📈 <b>Ваши рефералы</b>",
+        ])
 
         if referrals:
-            referral_text += f"\n• Всего: {total_referrals}"
-            referral_text += f"\n• С подпиской: {active_referrals}"
+            referral_lines.append(f"• Всего: {total_referrals}")
+            referral_lines.append(f"• С подпиской: {active_referrals}")
 
             # Показываем последних рефералов
             recent_referrals = referrals[:5]
             for ref in recent_referrals:
                 join_date = datetime.fromtimestamp(ref['joined_at']).strftime('%d.%m.%Y')
                 status = "💎" if ref['has_active_subscription'] else "👤"
-                referral_text += f"\n{status} Пользователь #{ref['user_id']} - {join_date}"
+                referral_lines.append(f"{status} Пользователь #{ref['user_id']} - {join_date}")
         else:
-            referral_text += "\n• Пока никого нет"
+            referral_lines.append("• Пока никого нет")
+
+        referral_text = "\n".join(referral_lines)
 
         # Создаем клавиатуру
-        keyboard_buttons = []
-
-        # Кнопка копирования ссылки
-        keyboard_buttons.append([
-            InlineKeyboardButton(
-                text="📋 Скопировать ссылку",
-                callback_data=f"copy_referral_{referral_code}"
-            )
-        ])
+        keyboard_buttons: list[list[InlineKeyboardButton]] = []
+        if share_code:
+            copy_text = "📋 Скопировать ссылку" if referral_link else "📋 Скопировать код"
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=copy_text,
+                    callback_data=f"copy_referral_{share_code}",
+                )
+            ])
 
         # Кнопка назад к профилю
         keyboard_buttons.append([
@@ -2419,13 +2445,19 @@ async def handle_copy_referral_callback(callback: CallbackQuery):
         callback_data = callback.data
         if callback_data and callback_data.startswith("copy_referral_"):
             referral_code = callback_data.replace("copy_referral_", "")
+            referral_link, share_code = _build_referral_link(referral_code)
 
-            await callback.answer(
-                f"📋 Ссылка скопирована!\nhttps://t.me/your_bot?start=ref_{referral_code}",
-                show_alert=True
-            )
-        else:
-            await callback.answer("❌ Ошибка получения кода")
+            if referral_link:
+                await callback.answer(f"📋 Ссылка скопирована!\n{referral_link}", show_alert=True)
+                return
+            if share_code:
+                await callback.answer(f"📋 Код скопирован!\nref_{share_code}", show_alert=True)
+                return
+
+            await callback.answer("❌ Реферальная ссылка временно недоступна", show_alert=True)
+            return
+
+        await callback.answer("❌ Ошибка получения кода")
 
     except Exception as e:
         logger.error(f"Error in handle_copy_referral_callback: {e}")
