@@ -126,12 +126,12 @@ async def parse_user_id(message: Message, command_name: str) -> int | None:
     """Extract user id argument from command message; report errors to the user."""
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer(f"Usage: /{command_name} <user_id>")
+        await message.answer(f"Использование: /{command_name} <user_id>")
         return None
     try:
         return int(parts[1])
     except ValueError:
-        await message.answer("Invalid user_id format")
+        await message.answer("Неверный формат user_id")
         return None
 
 

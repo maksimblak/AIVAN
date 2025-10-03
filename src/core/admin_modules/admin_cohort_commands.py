@@ -24,7 +24,7 @@ async def cmd_cohort(message: Message, db, admin_ids: list[int]):
     comparison = await analytics.compare_cohorts(months_back=6)
 
     # Формирование сообщения
-    text = "📊 <b>Cohort Analysis - Retention Dynamics</b>\n\n"
+    text = "📊 <b>Когортный анализ — динамика удержания</b>\n\n"
 
     text += f"🏆 <b>Лучшая когорта:</b> {comparison.best_cohort}\n"
     text += f"📉 <b>Худшая когорта:</b> {comparison.worst_cohort}\n\n"
@@ -39,16 +39,16 @@ async def cmd_cohort(message: Message, db, admin_ids: list[int]):
     text += "\n<b>📅 Когорты (последние 6 месяцев):</b>\n\n"
 
     for cohort in comparison.cohorts_data[:6]:
-        text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} users)\n"
-        text += f"  Day 1: {cohort.day_1_retention:.1f}% | Day 7: {cohort.day_7_retention:.1f}%\n"
-        text += f"  Day 30: {cohort.day_30_retention:.1f}% | Day 90: {cohort.day_90_retention:.1f}%\n"
-        text += f"  Conversion: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
+        text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} пользователей)\n"
+        text += f"  День 1: {cohort.day_1_retention:.1f}% | День 7: {cohort.day_7_retention:.1f}%\n"
+        text += f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        text += f"  Конверсия: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
 
     # Кнопки
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🎯 Feature Adoption", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="📈 Retention Curves", callback_data="cohort:retention_curves")],
+        [InlineKeyboardButton(text="🎯 Использование функций", callback_data="cohort:feature_adoption")],
+        [InlineKeyboardButton(text="📈 Кривые удержания", callback_data="cohort:retention_curves")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
     ])
 
@@ -66,7 +66,7 @@ async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 
-    text = "📊 <b>Cohort Analysis - Retention Dynamics</b>\n\n"
+    text = "📊 <b>Когортный анализ — динамика удержания</b>\n\n"
     text += f"🏆 <b>Лучшая когорта:</b> {comparison.best_cohort}\n"
     text += f"📉 <b>Худшая когорта:</b> {comparison.worst_cohort}\n\n"
     text += f"📈 <b>Тренд retention:</b> {format_trend(comparison.retention_trend)}\n"
@@ -78,15 +78,15 @@ async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int
 
     text += "\n<b>📅 Когорты (последние 6 месяцев):</b>\n\n"
     for cohort in comparison.cohorts_data[:6]:
-        text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} users)\n"
-        text += f"  Day 1: {cohort.day_1_retention:.1f}% | Day 7: {cohort.day_7_retention:.1f}%\n"
-        text += f"  Day 30: {cohort.day_30_retention:.1f}% | Day 90: {cohort.day_90_retention:.1f}%\n"
-        text += f"  Conversion: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
+        text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} пользователей)\n"
+        text += f"  День 1: {cohort.day_1_retention:.1f}% | День 7: {cohort.day_7_retention:.1f}%\n"
+        text += f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        text += f"  Конверсия: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🎯 Feature Adoption", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="📈 Retention Curves", callback_data="cohort:retention_curves")],
+        [InlineKeyboardButton(text="🎯 Использование функций", callback_data="cohort:feature_adoption")],
+        [InlineKeyboardButton(text="📈 Кривые удержания", callback_data="cohort:retention_curves")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
     ])
 
@@ -105,7 +105,7 @@ async def handle_select_month(callback: CallbackQuery, db, admin_ids: list[int])
     for cohort in comparison.cohorts_data[:6]:
         buttons.append([
             InlineKeyboardButton(
-                text=f"{cohort.cohort_month} ({cohort.cohort_size} users)",
+                text=f"{cohort.cohort_month} ({cohort.cohort_size} пользователей)",
                 callback_data=f"cohort:details:{cohort.cohort_month}"
             )
         ])
@@ -132,32 +132,32 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
     text += f"👥 <b>Размер когорты:</b> {cohort.cohort_size} пользователей\n\n"
 
     text += "<b>📈 Retention Rates:</b>\n"
-    text += f"  Day 1:  {cohort.day_1_retention:.1f}%\n"
-    text += f"  Day 7:  {cohort.day_7_retention:.1f}%\n"
-    text += f"  Day 30: {cohort.day_30_retention:.1f}%\n"
-    text += f"  Day 90: {cohort.day_90_retention:.1f}%\n\n"
+    text += f"  День 1:  {cohort.day_1_retention:.1f}%\n"
+    text += f"  День 7:  {cohort.day_7_retention:.1f}%\n"
+    text += f"  День 30: {cohort.day_30_retention:.1f}%\n"
+    text += f"  День 90: {cohort.day_90_retention:.1f}%\n\n"
 
     text += "<b>💰 Revenue Metrics:</b>\n"
-    text += f"  Paid users: {cohort.paid_users}\n"
-    text += f"  Conversion rate: {cohort.conversion_rate:.1f}%\n"
-    text += f"  Total revenue: {cohort.total_revenue:,}₽\n"
+    text += f"  Платящих пользователей: {cohort.paid_users}\n"
+    text += f"  Конверсия: {cohort.conversion_rate:.1f}%\n"
+    text += f"  Совокупная выручка: {cohort.total_revenue:,}₽\n"
     text += f"  ARPU: {cohort.arpu:.0f}₽\n\n"
 
-    text += "<b>🎯 Engagement:</b>\n"
-    text += f"  Avg requests/user: {cohort.avg_requests_per_user:.1f}\n"
-    text += f"  Avg lifetime: {cohort.avg_lifetime_days:.1f} дней\n"
-    text += f"  Power users: {cohort.power_users_count}\n"
-    text += f"  Avg features used: {cohort.avg_features_used:.1f}\n\n"
+    text += "<b>🎯 Вовлечённость:</b>\n"
+    text += f"  Среднее число запросов на пользователя: {cohort.avg_requests_per_user:.1f}\n"
+    text += f"  Средний жизненный цикл: {cohort.avg_lifetime_days:.1f} дней\n"
+    text += f"  Power-пользователей: {cohort.power_users_count}\n"
+    text += f"  Среднее число используемых функций: {cohort.avg_features_used:.1f}\n\n"
 
-    text += "<b>🔥 Top Features:</b>\n"
+    text += "<b>🔥 Лучшие функции:</b>\n"
     for feature, adoption in cohort.top_features[:5]:
         text += f"  • {feature}: {adoption:.1f}% adoption\n"
 
     text += f"\n<b>📉 Churn:</b>\n"
-    text += f"  Churned users: {cohort.churned_count}\n"
-    text += f"  Churn rate: {cohort.churn_rate:.1f}%\n"
+    text += f"  Пользователей в оттоке: {cohort.churned_count}\n"
+    text += f"  Доля оттока: {cohort.churn_rate:.1f}%\n"
     if cohort.avg_days_to_churn:
-        text += f"  Avg days to churn: {cohort.avg_days_to_churn:.1f}\n"
+        text += f"  Среднее число дней до оттока: {cohort.avg_days_to_churn:.1f}\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="cohort:select_month")],
@@ -171,7 +171,7 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
 @cohort_router.callback_query(F.data == "cohort:feature_adoption")
 @require_admin
 async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Feature adoption по когортам"""
+    """Использование функций по когортам"""
     # Список популярных фич для анализа
     features = FEATURE_KEYS
 
@@ -201,9 +201,9 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
     analytics = CohortAnalytics(db)
     adoption = await analytics.get_feature_adoption_by_cohort(feature_name, months_back=6)
 
-    text = f"🎯 <b>Feature Adoption: {feature_name.replace('_', ' ').title()}</b>\n\n"
+    text = f"🎯 <b>Использование функции: {feature_name.replace('_', ' ').title()}</b>\n\n"
 
-    text += "<b>📊 Adoption Rate по когортам:</b>\n"
+    text += "<b>📊 Уровень использования по когортам:</b>\n"
     for cohort_month, rate in sorted(adoption.cohort_adoption.items(), reverse=True):
         text += f"  {cohort_month}: {rate:.1f}%\n"
 
@@ -214,7 +214,7 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
     text += f"\n<b>🔗 Влияние на Retention:</b>\n"
     text += f"  С фичей: {adoption.users_with_feature_retention:.1f}%\n"
     text += f"  Без фичи: {adoption.users_without_feature_retention:.1f}%\n"
-    text += f"  Retention Lift: <b>{adoption.retention_lift:+.1f}%</b>\n\n"
+    text += f"  Прирост удержания: <b>{adoption.retention_lift:+.1f}%</b>\n\n"
 
     if adoption.retention_lift > 10:
         text += "✅ <b>Эта фича значительно улучшает retention!</b>\n"
@@ -235,11 +235,11 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
 @cohort_router.callback_query(F.data == "cohort:retention_curves")
 @require_admin
 async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[int]):
-    """Retention curves визуализация"""
+    """Визуализация кривых удержания"""
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 
-    text = "📈 <b>Retention Curves</b>\n\n"
+    text = "📈 <b>Кривые удержания</b>\n\n"
     text += "Сравнение retention по дням для всех когорт:\n\n"
 
     for cohort in comparison.cohorts_data[:6]:
@@ -271,7 +271,7 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
     analytics = CohortAnalytics(db)
     comparison = await analytics.compare_cohorts(months_back=6)
 
-    text = "📊 <b>Cohort Analysis - Retention Dynamics</b>\n\n"
+    text = "📊 <b>Когортный анализ — динамика удержания</b>\n\n"
     text += f"🏆 <b>Лучшая когорта:</b> {comparison.best_cohort}\n"
     text += f"📉 <b>Худшая когорта:</b> {comparison.worst_cohort}\n\n"
     text += f"📈 <b>Тренд retention:</b> {format_trend(comparison.retention_trend)}\n"
@@ -283,15 +283,15 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
 
     text += "\n<b>📅 Когорты (последние 6 месяцев):</b>\n\n"
     for cohort in comparison.cohorts_data[:6]:
-        text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} users)\n"
-        text += f"  Day 1: {cohort.day_1_retention:.1f}% | Day 7: {cohort.day_7_retention:.1f}%\n"
-        text += f"  Day 30: {cohort.day_30_retention:.1f}% | Day 90: {cohort.day_90_retention:.1f}%\n"
-        text += f"  Conversion: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
+        text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} пользователей)\n"
+        text += f"  День 1: {cohort.day_1_retention:.1f}% | День 7: {cohort.day_7_retention:.1f}%\n"
+        text += f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        text += f"  Конверсия: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🎯 Feature Adoption", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="📈 Retention Curves", callback_data="cohort:retention_curves")],
+        [InlineKeyboardButton(text="🎯 Использование функций", callback_data="cohort:feature_adoption")],
+        [InlineKeyboardButton(text="📈 Кривые удержания", callback_data="cohort:retention_curves")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
     ])
 
