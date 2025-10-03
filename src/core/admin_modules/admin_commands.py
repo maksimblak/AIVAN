@@ -30,6 +30,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_GLOBAL_DB: DatabaseAdvanced | None = None
+
+
+
+def _resolve_db(db: DatabaseAdvanced | None) -> DatabaseAdvanced:
+    global _GLOBAL_DB
+    candidate = db or _GLOBAL_DB
+    if candidate is None:
+        raise RuntimeError("Database is not configured for admin commands")
+    return candidate
+
+
 def create_main_menu() -> InlineKeyboardMarkup:
     """Главное меню админ-панели"""
     return InlineKeyboardMarkup(
@@ -40,8 +52,8 @@ def create_main_menu() -> InlineKeyboardMarkup:
     )
 
 
-async def _build_admin_summary(db: DatabaseAdvanced) -> str:
-    analytics = AdminAnalytics(db)
+async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
+    analytics = AdminAnalytics(_resolve_db(db))
     segments = await analytics.get_user_segments()
     conversion_metrics = await analytics.get_conversion_metrics()
 
@@ -108,7 +120,7 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
 
 @admin_router.message(Command("admin"))
 @require_admin
-async def cmd_admin(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
+async def cmd_admin(message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Главная команда админ-панели"""
 
     summary = await _build_admin_summary(db)
@@ -117,7 +129,7 @@ async def cmd_admin(message: Message, db: DatabaseAdvanced, admin_ids: set[int])
 
 @admin_router.callback_query(F.data == "admin_menu:analytics")
 @require_admin
-async def handle_admin_menu_analytics(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_admin_menu_analytics(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Показать раздел аналитики из главного меню."""
 
     summary = await _build_admin_summary(db)
@@ -127,7 +139,7 @@ async def handle_admin_menu_analytics(callback: CallbackQuery, db: DatabaseAdvan
 
 @admin_router.callback_query(F.data == "admin_menu:refresh")
 @require_admin
-async def handle_admin_menu_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_admin_menu_refresh(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Обновить данные на главном экране."""
 
     summary = await _build_admin_summary(db)
@@ -139,7 +151,7 @@ async def handle_admin_menu_refresh(callback: CallbackQuery, db: DatabaseAdvance
 
 @admin_router.callback_query(F.data == "admin_menu:back")
 @require_admin
-async def handle_admin_menu_back(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_admin_menu_back(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Вернуться в главное меню админ-панели."""
 
     summary = await _build_admin_summary(db)
@@ -149,7 +161,7 @@ async def handle_admin_menu_back(callback: CallbackQuery, db: DatabaseAdvanced, 
 
 @admin_router.callback_query(F.data.startswith("admin_segment:"))
 @require_admin
-async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Просмотр детальной информации по сегменту"""
 
     if not callback.data:
@@ -158,7 +170,7 @@ async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced, adm
 
     segment_id = callback.data.replace("admin_segment:", "")
 
-    analytics = AdminAnalytics(db)
+    analytics = AdminAnalytics(_resolve_db(db))
     segments = await analytics.get_user_segments()
 
     if segment_id not in segments:
@@ -179,10 +191,10 @@ async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced, adm
 
 @admin_router.callback_query(F.data == "admin_stats:conversion")
 @require_admin
-async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Детальная статистика конверсии"""
 
-    analytics = AdminAnalytics(db)
+    analytics = AdminAnalytics(_resolve_db(db))
     conversion = await analytics.get_conversion_metrics()
     churn = await analytics.get_churn_metrics(period_days=30)
 
@@ -224,10 +236,10 @@ async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced,
 
 @admin_router.callback_query(F.data == "admin_stats:daily")
 @require_admin
-async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Ежедневная статистика"""
 
-    analytics = AdminAnalytics(db)
+    analytics = AdminAnalytics(_resolve_db(db))
     daily_stats = await analytics.get_daily_stats(days=7)
 
     output = "<b>📈 ЕЖЕДНЕВНАЯ СТАТИСТИКА (7 дней)</b>\n\n"
@@ -259,7 +271,7 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admi
 
 @admin_router.callback_query(F.data == "admin_refresh")
 @require_admin
-async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Обновление раздела аналитики"""
 
     summary = await _build_admin_summary(db)
@@ -271,14 +283,14 @@ async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_id
 
 @admin_router.message(Command("export_users"))
 @require_admin
-async def cmd_export_users(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
+async def cmd_export_users(message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Экспорт списка пользователей определенного сегмента"""
 
     # Парсим аргументы команды: /export_users <segment>
     args = (message.text or "").split(maxsplit=1)
     segment_id = args[1] if len(args) > 1 else "power_users"
 
-    analytics = AdminAnalytics(db)
+    analytics = AdminAnalytics(_resolve_db(db))
     segments = await analytics.get_user_segments()
 
     if segment_id not in segments:
@@ -329,7 +341,7 @@ async def cmd_export_users(message: Message, db: DatabaseAdvanced, admin_ids: se
 
 @admin_router.message(Command("broadcast"))
 @require_admin
-async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
+async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """
     Отправка сообщения группе пользователей
     Использование: /broadcast <segment> <сообщение>
@@ -356,7 +368,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
     segment_id = args[1]
     broadcast_message = args[2]
 
-    analytics = AdminAnalytics(db)
+    analytics = AdminAnalytics(_resolve_db(db))
     segments = await analytics.get_user_segments()
 
     if segment_id not in segments:
@@ -405,7 +417,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
 
 @admin_router.callback_query(F.data.startswith("broadcast_confirm:"))
 @require_admin
-async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Trigger broadcast delivery after admin confirmation."""
 
     data = callback.data or ""
@@ -461,7 +473,7 @@ async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced
 
 @admin_router.callback_query(F.data.startswith("broadcast_cancel:"))
 @require_admin
-async def handle_broadcast_cancel(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
+async def handle_broadcast_cancel(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
     """Cancel a prepared broadcast."""
 
     data = callback.data or ""
@@ -488,6 +500,8 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     �������������:
         setup_admin_commands(dp, db, {123456, 789012})
     """
+    global _GLOBAL_DB
+    _GLOBAL_DB = db
     set_admin_ids(admin_ids)
 
     routers = [

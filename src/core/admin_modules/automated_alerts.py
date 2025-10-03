@@ -196,8 +196,8 @@ class AutomatedAlerts:
                     timestamp=int(datetime.now().timestamp())
                 ))
 
-        except Exception as e:
-            print(f"Error checking revenue alerts: {e}")
+        except Exception:
+            logger.exception("Error checking revenue alerts")
 
         return alerts
 
@@ -239,8 +239,8 @@ class AutomatedAlerts:
                     timestamp=int(datetime.now().timestamp())
                 ))
 
-        except Exception as e:
-            print(f"Error checking retention alerts: {e}")
+        except Exception:
+            logger.exception("Error checking retention alerts")
 
         return alerts
 
@@ -311,8 +311,8 @@ class AutomatedAlerts:
                     timestamp=int(datetime.now().timestamp())
                 ))
 
-        except Exception as e:
-            print(f"Error checking PMF alerts: {e}")
+        except Exception:
+            logger.exception("Error checking PMF alerts")
 
         return alerts
 
@@ -353,8 +353,8 @@ class AutomatedAlerts:
                         timestamp=int(datetime.now().timestamp())
                     ))
 
-        except Exception as e:
-            print(f"Error checking technical alerts: {e}")
+        except Exception:
+            logger.exception("Error checking technical alerts")
 
         return alerts
 
@@ -400,8 +400,8 @@ class AutomatedAlerts:
 
                     await self.bot.send_message(admin_id, message, parse_mode="HTML")
 
-            except Exception as e:
-                print(f"Error sending alert to {admin_id}: {e}")
+            except Exception:
+                logger.exception("Error sending alert to admin %s", admin_id)
 
     def _format_alert(self, alert: Alert) -> str:
         """Форматировать alert для Telegram"""
@@ -430,8 +430,8 @@ class AutomatedAlerts:
                     # Log alerts
                     print(f"[AutoAlerts] Sent {len(alerts)} alerts at {datetime.now()}")
 
-            except Exception as e:
-                print(f"Error in monitoring loop: {e}")
+            except Exception:
+                logger.exception("Error in monitoring loop")
 
             await asyncio.sleep(check_interval_seconds)
 
@@ -484,8 +484,8 @@ class AutomatedAlerts:
             for admin_id in self.admin_chat_ids:
                 await self.bot.send_message(admin_id, text, parse_mode="HTML")
 
-        except Exception as e:
-            print(f"Error sending daily digest: {e}")
+        except Exception:
+            logger.exception("Error sending daily digest")
 
 
 # Helper function для запуска monitoring в background

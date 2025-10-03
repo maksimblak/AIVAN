@@ -982,16 +982,14 @@ class DatabaseAdvanced:
                 # Обновляем счетчики в таблице пользователей
                 if success:
                     await conn.execute(
-                        """UPDATE users SET 
+                        """UPDATE users SET
                            total_requests = total_requests + 1,
                            successful_requests = successful_requests + 1,
                            last_request_at = ?,
                            updated_at = ?,
-                           subscription_requests_balance = CASE
-                               WHEN subscription_plan IS NOT NULL AND subscription_requests_balance > 0 THEN subscription_requests_balance - 1
-                               ELSE subscription_requests_balance
-                           END
-                           WHERE user_id = ?""",
+                           subscription_requests_balance = MAX(0, subscription_requests_balance - 1)
+                           WHERE user_id = ?
+                           AND (subscription_plan IS NULL OR subscription_requests_balance > 0 OR subscription_requests_balance = 0)""",
                         (now, now, user_id),
                     )
                 else:
@@ -1284,11 +1282,11 @@ class DatabaseAdvanced:
     # Методы для реферальной системы
     async def generate_referral_code(self, user_id: int) -> str:
         """Генерация реферального кода для пользователя"""
+        import secrets
         import string
-        import random
 
-        # Генерируем уникальный код
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        # Генерируем уникальный код с криптографической стойкостью
+        code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
 
         async with self.pool.acquire() as conn:
             try:
