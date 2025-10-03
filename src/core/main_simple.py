@@ -28,6 +28,7 @@ from html import escape as html_escape
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -71,9 +72,14 @@ from src.core.exceptions import (
 from src.core.middlewares.error_middleware import ErrorHandlingMiddleware
 from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider, convert_rub_to_xtr
+from src.core.subscription_payments import (
+    build_subscription_payload,
+    parse_subscription_payload,
+    SubscriptionPayloadError,
+)
 from src.core.session_store import SessionStore, UserSession
 from src.core.validation import InputValidator, ValidationSeverity
-from src.core.runtime import AppRuntime, DerivedRuntime, WelcomeMedia
+from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
 from src.core.settings import AppSettings
 from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
@@ -112,6 +118,9 @@ SUB_PRICE_RUB_KOPEKS = 0
 STARS_PROVIDER_TOKEN = ""
 SUB_PRICE_XTR = 0
 DYNAMIC_PRICE_XTR = 0
+SUBSCRIPTION_PLANS: tuple[SubscriptionPlanPricing, ...] = ()
+SUBSCRIPTION_PLAN_MAP: dict[str, SubscriptionPlanPricing] = {}
+DEFAULT_SUBSCRIPTION_PLAN: SubscriptionPlanPricing | None = None
 ADMIN_IDS: set[int] = set()
 USER_SESSIONS_MAX = 0
 USER_SESSION_TTL_SECONDS = 0
@@ -202,6 +211,9 @@ def _sync_runtime_globals() -> None:
         'STARS_PROVIDER_TOKEN': cfg.telegram_provider_token_stars,
         'SUB_PRICE_XTR': cfg.subscription_price_xtr,
         'DYNAMIC_PRICE_XTR': drv.dynamic_price_xtr,
+        'SUBSCRIPTION_PLANS': drv.subscription_plans,
+        'SUBSCRIPTION_PLAN_MAP': drv.subscription_plan_map,
+        'DEFAULT_SUBSCRIPTION_PLAN': drv.default_subscription_plan,
         'ADMIN_IDS': drv.admin_ids,
         'USER_SESSIONS_MAX': cfg.user_sessions_max,
         'USER_SESSION_TTL_SECONDS': cfg.user_session_ttl_seconds,
@@ -741,20 +753,39 @@ async def process_question(message: Message, *, text_override: str | None = None
         if access_service is not None:
             decision = await access_service.check_and_consume(user_id)
             if not decision.allowed:
-                await message.answer(
-                    (
-                        f"{Emoji.WARNING} <b>Лимит бесплатных запросов исчерпан</b>\n\n"
-                        f"Вы использовали {TRIAL_REQUESTS} из {TRIAL_REQUESTS}. "
-                        f"Оформите подписку за {SUB_PRICE_RUB}₽ в месяц командой /buy"
-                    ),
-                    parse_mode=ParseMode.HTML,
-                )
+                if decision.has_subscription and decision.subscription_plan:
+                    plan_info = _get_plan_pricing(decision.subscription_plan)
+                    plan_name = plan_info.plan.name if plan_info else decision.subscription_plan
+                    limit_lines = [
+                        f"{Emoji.WARNING} <b>Лимит подписки исчерпан</b>",
+                        f"Тариф: {plan_name}",
+                    ]
+                    if plan_info is not None:
+                        limit_lines.append(
+                            f"Использовано: {plan_info.plan.request_quota}/{plan_info.plan.request_quota} запросов."
+                        )
+                    limit_lines.append("Оформите новый пакет — /buy.")
+                    await message.answer("\n".join(limit_lines), parse_mode=ParseMode.HTML)
+                else:
+                    await message.answer(
+                        f"{Emoji.WARNING} <b>Лимит бесплатных запросов исчерпан</b>\n\nОформите подписку — /buy.",
+                        parse_mode=ParseMode.HTML,
+                    )
                 return
             if decision.is_admin:
                 quota_text = f"\n\n{Emoji.STATS} <b>Статус: безлимитный доступ</b>"
-            elif decision.has_subscription and decision.subscription_until:
-                until_dt = datetime.fromtimestamp(decision.subscription_until)
-                quota_text = f"\n\n{Emoji.CALENDAR} <b>Подписка активна до:</b> {until_dt:%Y-%m-%d}"
+            elif decision.has_subscription:
+                plan_info = _get_plan_pricing(decision.subscription_plan) if decision.subscription_plan else None
+                plan_name = plan_info.plan.name if plan_info else "Подписка"
+                parts: list[str] = []
+                if decision.subscription_requests_remaining is not None:
+                    parts.append(
+                        f"{Emoji.STATS} <b>{plan_name}:</b> осталось {decision.subscription_requests_remaining} запросов"
+                    )
+                if decision.subscription_until:
+                    until_dt = datetime.fromtimestamp(decision.subscription_until)
+                    parts.append(f"{Emoji.CALENDAR} <b>Активна до:</b> {until_dt:%Y-%m-%d}")
+                quota_text = "\n\n" + "\n".join(parts) if parts else ""
             elif decision.trial_used is not None and decision.trial_remaining is not None:
                 quota_is_trial = True
                 quota_msg_core = html_escape(
@@ -986,26 +1017,122 @@ async def process_question(message: Message, *, text_override: str | None = None
 # ============ ПОДПИСКИ И ПЛАТЕЖИ ============
 
 
-def _build_payload(method: str, user_id: int) -> str:
-    return f"sub:{method}:{user_id}:{int(datetime.now().timestamp())}"
+def _format_rub(amount_rub: int) -> str:
+    return f"{amount_rub:,}".replace(",", " ")
 
 
-async def send_rub_invoice(message: Message):
-    if not message.from_user or not message.bot:
+def _plan_stars_amount(plan_info: SubscriptionPlanPricing) -> int:
+    amount = int(plan_info.price_stars or 0)
+    if amount <= 0:
+        cfg = settings()
+        amount = convert_rub_to_xtr(
+            amount_rub=float(plan_info.plan.price_rub),
+            rub_per_xtr=cfg.rub_per_xtr,
+            default_xtr=cfg.subscription_price_xtr,
+        )
+    return max(int(amount), 0)
+
+
+def _get_plan_pricing(plan_id: str | None) -> SubscriptionPlanPricing | None:
+    if not plan_id:
+        return DEFAULT_SUBSCRIPTION_PLAN
+    return SUBSCRIPTION_PLAN_MAP.get(plan_id)
+
+
+_def_catalog_intro = "\n".join(
+    [
+        f"{Emoji.MAGIC} <b>Каталог подписок</b>",
+        "",
+        "Выберите тариф, чтобы посмотреть детали и оформить оплату.",
+    ]
+)
+
+
+def _plan_catalog_text() -> str:
+    if not SUBSCRIPTION_PLANS:
+        return f"{Emoji.WARNING} Подписки временно недоступны. Попробуйте позже."
+    return _def_catalog_intro
+
+
+_def_no_plans_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]]
+)
+
+
+def _build_plan_catalog_keyboard() -> InlineKeyboardMarkup:
+    if not SUBSCRIPTION_PLANS:
+        return _def_no_plans_keyboard
+    rows: list[list[InlineKeyboardButton]] = []
+    for plan_info in SUBSCRIPTION_PLANS:
+        label = f"{plan_info.plan.name} • {_format_rub(plan_info.plan.price_rub)} ₽"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"select_plan:{plan_info.plan.plan_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_plan_catalog(message: Message, *, edit: bool = False) -> None:
+    text = _plan_catalog_text()
+    keyboard = _build_plan_catalog_keyboard()
+    kwargs = dict(parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    if edit:
+        try:
+            await message.edit_text(text, **kwargs)
+        except TelegramBadRequest:
+            await message.answer(text, **kwargs)
+    else:
+        await message.answer(text, **kwargs)
+
+
+async def cmd_buy(message: Message):
+    await _send_plan_catalog(message, edit=False)
+
+
+async def handle_buy_catalog_callback(callback: CallbackQuery):
+    if not callback.message:
+        await callback.answer("Ошибка: нет данных сообщения", show_alert=True)
         return
+    await callback.answer()
+    await _send_plan_catalog(callback.message, edit=True)
 
+
+async def handle_get_subscription_callback(callback: CallbackQuery):
+    if not callback.from_user or not callback.message:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+    try:
+        await callback.answer()
+        await _send_plan_catalog(callback.message, edit=False)
+    except TelegramBadRequest:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Не удалось показать каталог подписок. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def _send_rub_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+    if not message.bot or not message.chat:
+        return
     if not RUB_PROVIDER_TOKEN:
         await message.answer(
-            f"{Emoji.WARNING} Оплата картами временно недоступна. Попробуйте Telegram Stars или криптовалюту (/buy)",
+            f"{Emoji.WARNING} Оплата картами временно недоступна.",
             parse_mode=ParseMode.HTML,
         )
         return
-    prices = [LabeledPrice(label="Подписка на 30 дней", amount=SUB_PRICE_RUB_KOPEKS)]
-    payload = _build_payload("rub", message.from_user.id)
+    payload = build_subscription_payload(plan_info.plan.plan_id, "rub", user_id)
+    prices = [
+        LabeledPrice(
+            label=f"{plan_info.plan.name}",
+            amount=plan_info.price_rub_kopeks,
+        )
+    ]
+    description = (
+        f"Доступ к ИИ-Иван на {plan_info.plan.duration_days} дн.\n"
+        f"Квота: {plan_info.plan.request_quota} запросов."
+    )
     await message.bot.send_invoice(
         chat_id=message.chat.id,
-        title="Месячная подписка",
-        description="Доступ к ИИ-Иван: анализ практики, документы, рекомендации. Срок: 30 дней.",
+        title=f"Подписка • {plan_info.plan.name}",
+        description=description,
         payload=payload,
         provider_token=RUB_PROVIDER_TOKEN,
         currency="RUB",
@@ -1014,23 +1141,32 @@ async def send_rub_invoice(message: Message):
     )
 
 
-async def send_stars_invoice(message: Message):
-    if not message.from_user or not message.bot:
+async def _send_stars_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+    if not message.bot or not message.chat:
         return
-
     if not STARS_PROVIDER_TOKEN:
-        raise RuntimeError("Telegram Stars provider token is not configured")
-    dynamic_xtr = convert_rub_to_xtr(
-        amount_rub=float(SUB_PRICE_RUB),
-        rub_per_xtr=settings().rub_per_xtr,
-        default_xtr=SUB_PRICE_XTR,
+        await message.answer(
+            f"{Emoji.WARNING} Telegram Stars временно недоступны.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    stars_amount = _plan_stars_amount(plan_info)
+    if stars_amount <= 0:
+        await message.answer(
+            f"{Emoji.WARNING} Не удалось рассчитать стоимость в Stars, попробуйте другой способ.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    payload = build_subscription_payload(plan_info.plan.plan_id, "stars", user_id)
+    prices = [LabeledPrice(label=f"{plan_info.plan.name}", amount=stars_amount)]
+    description = (
+        f"Оплата в Telegram Stars. Срок: {plan_info.plan.duration_days} дн.\n"
+        f"Квота: {plan_info.plan.request_quота} запросов."
     )
-    prices = [LabeledPrice(label="Подписка на 30 дней", amount=dynamic_xtr)]
-    payload = _build_payload("xtr", message.from_user.id)
     await message.bot.send_invoice(
         chat_id=message.chat.id,
-        title="Месячная подписка (Telegram Stars)",
-        description="Оплата в Telegram Stars (XTR). Срок подписки: 30 дней.",
+        title=f"Подписка • {plan_info.plan.name} (Stars)",
+        description=description,
         payload=payload,
         provider_token=STARS_PROVIDER_TOKEN,
         currency="XTR",
@@ -1039,67 +1175,132 @@ async def send_stars_invoice(message: Message):
     )
 
 
-async def cmd_buy(message: Message):
-    dynamic_xtr = convert_rub_to_xtr(
-        amount_rub=float(SUB_PRICE_RUB),
-        rub_per_xtr=settings().rub_per_xtr,
-        default_xtr=SUB_PRICE_XTR,
-    )
-    text = (
-        f"{Emoji.MAGIC} <b>Оплата подписки</b>\n\n"
-        f"Стоимость: <b>{SUB_PRICE_RUB} ₽</b> (≈{dynamic_xtr} ⭐) за 30 дней\n\n"
-        f"Выберите способ оплаты:"
-    )
-    await message.answer(text, parse_mode=ParseMode.HTML)
-
-    # Банковские карты (если настроен токен)
-    if RUB_PROVIDER_TOKEN:
-        await send_rub_invoice(message)
-
-    # Telegram Stars
-    try:
-        await send_stars_invoice(message)
-    except Exception as e:
-        logger.warning("Failed to send stars invoice: %s", e)
-        await message.answer(
-            f"{Emoji.WARNING} Telegram Stars временно недоступны. Попробуйте другой способ оплаты.",
-            parse_mode=ParseMode.HTML,
-        )
-
-    # Крипта: инвойс через CryptoBot
-    payload = _build_payload("crypto", message.from_user.id)
+async def _send_crypto_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
     if crypto_provider is None:
-        logger.warning("Crypto provider not initialized; skipping crypto invoice")
         await message.answer(
-            f"{Emoji.IDEA} Криптовалюта: временно недоступна (настройте CRYPTO_PAY_TOKEN)",
+            f"{Emoji.IDEA} Криптовалюта временно недоступна.",
             parse_mode=ParseMode.HTML,
         )
         return
-
+    payload = build_subscription_payload(plan_info.plan.plan_id, "crypto", user_id)
     try:
-        inv = await crypto_provider.create_invoice(
-            amount_rub=float(SUB_PRICE_RUB),
-            description="Подписка ИИ-Иван на 30 дней",
+        invoice = await crypto_provider.create_invoice(
+            amount_rub=float(plan_info.plan.price_rub),
+            description=f"Подписка {plan_info.plan.name} на {plan_info.plan.duration_days} дн.",
             payload=payload,
         )
-        if inv.get("ok") and "url" in inv:
-            await message.answer(
-                f"{Emoji.DOWNLOAD} Оплата криптовалютой: перейдите по ссылке\n{inv['url']}",
-                parse_mode=ParseMode.HTML,
-            )
-        else:
-            await message.answer(
-                f"{Emoji.IDEA} Криптовалюта: временно недоступна (настройте CRYPTO_PAY_TOKEN)",
-                parse_mode=ParseMode.HTML,
-            )
-    except Exception as e:
-        logger.warning("Crypto invoice failed: %s", e)
+    except Exception as exc:
+        logger.warning("Crypto invoice failed: %s", exc)
         await message.answer(
-            f"{Emoji.IDEA} Криптовалюта: временно недоступна",
+            f"{Emoji.WARNING} Не удалось создать крипто-счет. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    url = invoice.get("url") if isinstance(invoice, dict) else None
+    if invoice and invoice.get("ok") and url:
+        await message.answer(
+            f"{Emoji.DOWNLOAD} Оплата криптовалютой: перейдите по ссылке
+{url}",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await message.answer(
+            f"{Emoji.IDEA} Криптовалюта временно недоступна.",
             parse_mode=ParseMode.HTML,
         )
 
 
+def _plan_details_keyboard(plan_info: SubscriptionPlanPricing) -> tuple[InlineKeyboardMarkup, list[str]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    unavailable: list[str] = []
+
+    rub_label = f"💳 Карта • {_format_rub(plan_info.plan.price_rub)} ₽"
+    if RUB_PROVIDER_TOKEN:
+        rows.append([InlineKeyboardButton(text=rub_label, callback_data=f"pay_plan:{plan_info.plan.plan_id}:rub")])
+    else:
+        unavailable.append("• 💳 Карта — временно недоступно")
+
+    stars_amount = _plan_stars_amount(plan_info)
+    stars_label = f"⭐ Telegram Stars • {stars_amount}"
+    if stars_amount > 0 and STARS_PROVIDER_TOKEN:
+        rows.append([InlineKeyboardButton(text=stars_label, callback_data=f"pay_plan:{plan_info.plan.plan_id}:stars")])
+    else:
+        unavailable.append("• ⭐ Telegram Stars — временно недоступно")
+
+    crypto_label = f"🪙 Криптовалюта • {_format_rub(plan_info.plan.price_rub)} ₽"
+    if crypto_provider is not None:
+        rows.append([InlineKeyboardButton(text=crypto_label, callback_data=f"pay_plan:{plan_info.plan.plan_id}:crypto")])
+    else:
+        unavailable.append("• 🪙 Криптовалюта — временно недоступно")
+
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_catalog")])
+    return InlineKeyboardMarkup(inline_keyboard=rows), unavailable
+
+
+async def handle_select_plan_callback(callback: CallbackQuery):
+    data = callback.data or ""
+    parts = data.split(":", 1)
+    if len(parts) != 2:
+        await callback.answer("❌ Некорректный тариф", show_alert=True)
+        return
+    plan_id = parts[1]
+    plan_info = _get_plan_pricing(plan_id)
+    if not plan_info:
+        await callback.answer("❌ Тариф недоступен", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+    await callback.answer()
+    stars_amount = _plan_stars_amount(plan_info)
+    lines = [
+        f"{Emoji.DIAMOND} <b>{plan_info.plan.name}</b>",
+        "",
+        f"• Срок: {plan_info.plan.duration_days} дней",
+        f"• Квота: {plan_info.plan.request_quota} запросов",
+        f"• Стоимость: {_format_rub(plan_info.plan.price_rub)} ₽",
+    ]
+    if stars_amount > 0:
+        lines.append(f"• Telegram Stars: {stars_amount} ⭐")
+    lines.append("")
+    lines.append("Выберите способ оплаты ниже.")
+    keyboard, unavailable = _plan_details_keyboard(plan_info)
+    if unavailable:
+        lines.append("")
+        lines.append("Недоступно:")
+        lines.extend(unavailable)
+    text = "
+".join(lines)
+    try:
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except TelegramBadRequest:
+        await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def handle_pay_plan_callback(callback: CallbackQuery):
+    data = callback.data or ""
+    parts = data.split(":")
+    if len(parts) != 3:
+        await callback.answer("❌ Некорректные параметры оплаты", show_alert=True)
+        return
+    _, plan_id, method = parts
+    plan_info = _get_plan_pricing(plan_id)
+    if not plan_info:
+        await callback.answer("❌ Тариф недоступен", show_alert=True)
+        return
+    if not callback.message or not callback.from_user:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+    await callback.answer()
+    user_id = callback.from_user.id
+    if method == "rub":
+        await _send_rub_invoice(callback.message, plan_info, user_id)
+    elif method in {"stars", "xtr"}:
+        await _send_stars_invoice(callback.message, plan_info, user_id)
+    elif method == "crypto":
+        await _send_crypto_invoice(callback.message, plan_info, user_id)
+    else:
+        await callback.message.answer("❌ Этот способ оплаты не поддерживается")
 async def cmd_status(message: Message):
     if db is None:
         await message.answer("Статус временно недоступен")
@@ -1128,22 +1329,55 @@ async def cmd_status(message: Message):
         default_trial=TRIAL_REQUESTS,
         is_admin=user_id in ADMIN_IDS,
     )
-    until = getattr(user, "subscription_until", 0)
-    if until and until > 0:
-        until_dt = datetime.fromtimestamp(until)
-        left_days = max(0, (until_dt - datetime.now()).days)
-        sub_text = f"Активна до {until_dt:%Y-%m-%d} (≈{left_days} дн.)"
-    else:
-        sub_text = "Не активна"
 
-    await message.answer(
-        f"{Emoji.STATS} <b>Статус</b>\n\n"
-        f"ID: <code>{user_id}</code>\n"
-        f"Роль: {'админ' if getattr(user, 'is_admin', False) else 'пользователь'}\n"
-        f"Триал: {getattr(user, 'trial_remaining', 0)} запрос(ов)\n"
-        f"Подписка: {sub_text}",
-        parse_mode=ParseMode.HTML,
-    )
+    until_ts = int(getattr(user, "subscription_until", 0) or 0)
+    now_ts = int(time.time())
+    has_active = until_ts > now_ts
+    plan_id = getattr(user, "subscription_plan", None)
+    plan_info = _get_plan_pricing(plan_id) if plan_id else None
+    if plan_info:
+        plan_label = plan_info.plan.name
+    elif plan_id:
+        plan_label = plan_id
+    elif has_active:
+        plan_label = "Безлимит"
+    else:
+        plan_label = "нет"
+
+    if until_ts > 0:
+        until_dt = datetime.fromtimestamp(until_ts)
+        if has_active:
+            left_days = max(0, (until_dt - datetime.now()).days)
+            until_text = f"{until_dt:%Y-%m-%d} (≈{left_days} дн.)"
+        else:
+            until_text = f"Истекла {until_dt:%Y-%m-%d}"
+    else:
+        until_text = "Не активна"
+
+    quota_balance_raw = getattr(user, "subscription_requests_balance", None)
+    quota_balance = int(quota_balance_raw) if quota_balance_raw is not None else None
+
+    lines = [
+        f"{Emoji.STATS} <b>Статус</b>",
+        "",
+        f"ID: <code>{user_id}</code>",
+        f"Роль: {'админ' if getattr(user, 'is_admin', False) else 'пользователь'}",
+        f"Триал: {getattr(user, 'trial_remaining', 0)} запрос(ов)",
+        "Подписка:",
+    ]
+    if plan_info or plan_id or until_ts:
+        lines.append(f"• План: {plan_label}")
+        lines.append(f"• Доступ до: {until_text}")
+        if plan_info and quota_balance is not None:
+            lines.append(f"• Остаток запросов: {max(0, quota_balance)}")
+        elif plan_id and quota_balance is not None:
+            lines.append(f"• Остаток запросов: {max(0, quota_balance)}")
+        elif has_active and not plan_id:
+            lines.append("• Лимит: без ограничений")
+    else:
+        lines.append("• Не активна")
+
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 async def cmd_mystats(message: Message):
@@ -1161,51 +1395,40 @@ async def cmd_mystats(message: Message):
         # Получаем детальную статистику
         stats = await db.get_user_statistics(user_id, days=30)
 
+        plan_id = stats.get('subscription_plan') or getattr(user, 'subscription_plan', None)
+        plan_info = _get_plan_pricing(plan_id) if plan_id else None
+        plan_label = plan_info.plan.name if plan_info else (plan_id or '—')
+        quota_balance_raw = stats.get('subscription_requests_balance')
+        quota_balance = int(quota_balance_raw) if quota_balance_raw is not None else None
+        plan_line = f"• Тариф: {plan_label}\n" if plan_id or plan_info else ''
+        quota_line = (
+            f"• Остаток запросов: {max(0, quota_balance)}\n"
+            if quota_balance is not None and (plan_id or plan_info)
+            else ''
+        )
+
         # Форматируем даты
         def format_timestamp(ts):
             if not ts or ts == 0:
-                return "Никогда"
-            return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+                return 'Никогда'
+            return datetime.fromtimestamp(ts).strftime('%d.%m.%Y %H:%M')
 
         def format_subscription_status(until_ts):
             if not until_ts or until_ts == 0:
-                return "❌ Не активна"
+                return '❌ Не активна'
             until_dt = datetime.fromtimestamp(until_ts)
             if until_dt < datetime.now():
-                return "❌ Истекла"
+                return '❌ Истекла'
             days_left = (until_dt - datetime.now()).days
-            return f"✅ До {until_dt.strftime('%d.%m.%Y')} ({days_left} дн.)"
+            return f"✔ До {until_dt.strftime('%d.%m.%Y')} ({days_left} дн.)"
 
-        status_text = f"""📊 <b>Моя статистика</b>
-
-👤 <b>Профиль</b>
-• ID: <code>{user_id}</code>
-• Статус: {'👑 Администратор' if stats.get('is_admin') else '👤 Пользователь'}
-• Регистрация: {format_timestamp(getattr(user, 'created_at', 0))}
-
-💰 <b>Баланс и доступ</b>
-• Пробные запросы: {stats.get('trial_remaining', 0)} из {TRIAL_REQUESTS}
-• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}
-
-📈 <b>Общая статистика</b>
-• Всего запросов: {stats.get('total_requests', 0)}
-• Успешных: {stats.get('successful_requests', 0)} ✅
-• Неудачных: {stats.get('failed_requests', 0)} ❌
-• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}
-
-📅 <b>За последние 30 дней</b>
-• Запросов: {stats.get('period_requests', 0)}
-• Успешных: {stats.get('period_successful', 0)}
-• Потрачено токенов: {stats.get('period_tokens', 0)}
-• Среднее время ответа: {stats.get('avg_response_time_ms', 0)} мс"""
-
-        if stats.get("request_types"):
-            status_text += "\n\n📊 <b>Типы запросов (30 дней)</b>\n"
-            for req_type, count in stats["request_types"].items():
-                emoji = "⚖️" if req_type == "legal_question" else "🤖"
-                status_text += f"• {emoji} {req_type}: {count}\n"
-
-        await message.answer(status_text, parse_mode=ParseMode.HTML)
+        status_text = (
+            f"📊 <b>Моя статистика</b>\n\n"
+            f"👤 <b>Профиль</b>\n"
+            f"• ID: <code>{user_id}</code>\n"
+            f"• Статус: {'🛡️ Администратор' if stats.get('is_admin') else '👤 Пользователь'}\n"
+            f"• Регистрация: {format_timestamp(getattr(user, 'created_at', 0))}\n\н"
+            f"💰 <b>Баланс и доступ</b>\н"\н            f"• Пробные запросы: {stats.get('trial_remaining', 0)} из {TRIAL_REQUESTS}\н"\н            f"{plan_line}"\н            f"• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}\н"\н            f"{quota_line}"\н            f"📈 <b>Общая статистика</b>\н"\н            f"• Всего запросов: {stats.get('total_requests', 0)}\н"\н            f"• Успешных: {stats.get('successful_requests', 0)} ✔\н"\н            f"• Неудачных: {stats.get('failed_requests', 0)} ✖\н"\н            f"• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}\н\н"\н            f"📅 <b>За последние 30 дней</b>\н"\н            f"• Запросов: {stats.get('period_requests', 0)}\н"\н            f"• Успешных: {stats.get('period_successful', 0)}\н"\н            f"• Потрачено токенов: {stats.get('period_tokens', 0)}\н"\н            f"• Среднее время ответа: {stats.get('avg_response_time_ms', 0)} мс"\н        )\н\н        await message.answer(status_text, parse_mode=ParseMode.HTML)
 
     except Exception as e:
         logger.error(f"Error in cmd_mystats: {e}")
@@ -1804,34 +2027,6 @@ async def handle_back_to_main_callback(callback: CallbackQuery):
 
     except Exception as e:
         logger.error(f"Error in handle_back_to_main_callback: {e}")
-        await callback.answer("❌ Произошла ошибка")
-
-
-async def handle_get_subscription_callback(callback: CallbackQuery):
-    """Обработчик кнопки 'Оформить подписку'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
-        return
-
-    try:
-        await callback.answer()
-
-        # Создаем временное сообщение для функции cmd_buy
-        from aiogram.types import Message
-        temp_message = Message(
-            message_id=callback.message.message_id,
-            date=callback.message.date,
-            chat=callback.message.chat,
-            from_user=callback.from_user,
-            content_type='text',
-            options={}
-        )
-
-        # Вызываем существующую функцию покупки подписки
-        await cmd_buy(temp_message)
-
-    except Exception as e:
-        logger.error(f"Error in handle_get_subscription_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -2932,26 +3127,43 @@ async def cmd_error_stats(message: Message):
 
 async def pre_checkout(pre: PreCheckoutQuery):
     try:
-        payload = pre.invoice_payload or ""
-        parts = payload.split(":")
-        method = parts[1] if len(parts) >= 2 else ""
+        payload_raw = pre.invoice_payload or ""
+        parsed = None
+        try:
+            parsed = parse_subscription_payload(payload_raw)
+        except SubscriptionPayloadError:
+            parsed = None
+
+        plan_info = _get_plan_pricing(parsed.plan_id if parsed else None)
+        if plan_info is None:
+            plan_info = DEFAULT_SUBSCRIPTION_PLAN
+        if plan_info is None:
+            await pre.answer(ok=False, error_message="Подписка недоступна")
+            return
+
+        method = (parsed.method if parsed else "").lower()
         if method == "xtr":
-            expected_currency = "XTR"
-            expected_amount = convert_rub_to_xtr(
-                amount_rub=float(SUB_PRICE_RUB),
-                rub_per_xtr=settings().rub_per_xtr,
-                default_xtr=SUB_PRICE_XTR,
-            )
-        elif method == "rub":
+            method = "stars"
+
+        if parsed and pre.from_user and parsed.user_id and parsed.user_id != pre.from_user.id:
+            await pre.answer(ok=False, error_message="Счёт предназначен для другого пользователя")
+            return
+
+        if method == "rub":
             expected_currency = "RUB"
-            expected_amount = SUB_PRICE_RUB_KOPEKS
+            expected_amount = plan_info.price_rub_kopeks
+        elif method == "stars":
+            expected_currency = "XTR"
+            expected_amount = _plan_stars_amount(plan_info)
         else:
             expected_currency = pre.currency.upper()
             expected_amount = pre.total_amount
 
-        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(
-            expected_amount
-        ):
+        if expected_amount <= 0:
+            await pre.answer(ok=False, error_message="Некорректная сумма оплаты")
+            return
+
+        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(expected_amount):
             await pre.answer(ok=False, error_message="Некорректные параметры оплаты")
             return
 
@@ -2966,11 +3178,13 @@ async def pre_checkout(pre: PreCheckoutQuery):
         await pre.answer(ok=False, error_message="Ошибка проверки оплаты, попробуйте позже")
 
 
+
 async def on_successful_payment(message: Message):
     try:
         sp = message.successful_payment
-        if sp is None:
+        if sp is None or message.from_user is None:
             return
+
         currency_up = sp.currency.upper()
         if currency_up == "RUB":
             provider_name = "telegram_rub"
@@ -2979,36 +3193,81 @@ async def on_successful_payment(message: Message):
         else:
             provider_name = f"telegram_{currency_up.lower()}"
 
+        payload_raw = sp.invoice_payload or ""
+        parsed_payload = None
+        try:
+            parsed_payload = parse_subscription_payload(payload_raw)
+        except SubscriptionPayloadError:
+            parsed_payload = None
+
+        plan_info = _get_plan_pricing(parsed_payload.plan_id if parsed_payload else None)
+        if plan_info is None:
+            plan_info = DEFAULT_SUBSCRIPTION_PLAN
+
+        cfg = settings()
+        duration_days = plan_info.plan.duration_days if plan_info else max(1, int(cfg.sub_duration_days or 30))
+        quota = plan_info.plan.request_quota if plan_info else 0
+        plan_id = plan_info.plan.plan_id if plan_info else (parsed_payload.plan_id if parsed_payload and parsed_payload.plan_id else "legacy")
+
+        user_id = message.from_user.id
+        new_until = None
+        new_balance: int | None = None
+
         if db is not None and sp.telegram_payment_charge_id:
-            exists = await db.transaction_exists_by_telegram_charge_id(
-                sp.telegram_payment_charge_id
-            )
+            exists = await db.transaction_exists_by_telegram_charge_id(sp.telegram_payment_charge_id)
             if exists:
                 return
-        until_text = ""
+
         if db is not None:
             await db.record_transaction(
-                user_id=message.from_user.id,
+                user_id=user_id,
                 provider=provider_name,
                 currency=sp.currency,
                 amount=sp.total_amount,
                 amount_minor_units=sp.total_amount,
-                payload=sp.invoice_payload or "",
+                payload=payload_raw,
                 status=TransactionStatus.COMPLETED.value,
                 telegram_payment_charge_id=sp.telegram_payment_charge_id,
                 provider_payment_charge_id=sp.provider_payment_charge_id,
             )
-            await db.extend_subscription_days(message.from_user.id, SUB_DURATION_DAYS)
-            user = await db.get_user(message.from_user.id)
-            if user and user.subscription_until:
-                until_text = datetime.fromtimestamp(user.subscription_until).strftime("%Y-%m-%d")
 
-        await message.answer(
-            f"{Emoji.SUCCESS} <b>Оплата получена!</b> Подписка активирована на {SUB_DURATION_DAYS} дней.\nДо: {until_text}",
-            parse_mode=ParseMode.HTML,
-        )
+            if plan_info is not None:
+                new_until, new_balance = await db.apply_subscription_purchase(
+                    user_id,
+                    plan_id=plan_id,
+                    duration_days=duration_days,
+                    request_quota=quota,
+                )
+            else:
+                await db.extend_subscription_days(user_id, duration_days)
+                user = await db.get_user(user_id)
+                if user and user.subscription_until:
+                    new_until = int(user.subscription_until)
+                if user and getattr(user, "subscription_requests_balance", None) is not None:
+                    new_balance = int(getattr(user, "subscription_requests_balance"))
+
+        response_lines = [f"{Emoji.SUCCESS} <b>Оплата получена!</b>"]
+        if plan_info is not None:
+            response_lines.append(f"Тариф: <b>{plan_info.plan.name}</b>")
+            response_lines.append(f"Срок действия: {duration_days} дней")
+            response_lines.append(f"Квота: {plan_info.plan.request_quota} запросов")
+        elif parsed_payload and parsed_payload.plan_id:
+            response_lines.append(f"Тариф: {parsed_payload.plan_id}")
+            response_lines.append(f"Срок действия: {duration_days} дней")
+
+        if new_until:
+            until_text = datetime.fromtimestamp(new_until).strftime("%Y-%m-%d")
+            response_lines.append(f"Доступ до: {until_text}")
+
+        if plan_info is not None and new_balance is not None:
+            response_lines.append(f"Остаток запросов: {new_balance}")
+
+        response_lines.append("Проверить подписку — команда /status.")
+
+        await message.answer("\n".join(response_lines), parse_mode=ParseMode.HTML)
     except Exception:
         logger.exception("Failed to handle successful payment")
+
 
 
 # ============ ОБРАБОТКА ОШИБОК ============

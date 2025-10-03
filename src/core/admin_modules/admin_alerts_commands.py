@@ -5,6 +5,7 @@ Admin commands для Automated Alerts
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from html import escape as html_escape
 
 from src.core.admin_modules.admin_utils import edit_or_answer, require_admin
 from src.core.admin_modules.automated_alerts import AlertConfig, AutomatedAlerts, group_alerts_by_severity
@@ -54,17 +55,22 @@ def _build_alerts_overview(alerts: list) -> tuple[str, InlineKeyboardMarkup]:
         lines.append("<b>🚨 КРИТИЧЕСКИЕ:</b>")
         lines.append("")
         for alert in critical[:5]:
-            lines.append(f"• <b>{alert.title}</b>")
-            lines.append(f"  {alert.message}")
-            lines.append(f"  <i>Действие: {alert.action_required}</i>")
+            title = html_escape(alert.title or "")
+            message = html_escape(alert.message or "")
+            action_required = html_escape(alert.action_required or "")
+            lines.append(f"• <b>{title}</b>")
+            lines.append(f"  {message}")
+            lines.append(f"  <i>Действие: {action_required}</i>")
             lines.append("")
 
     if warnings:
         lines.append("<b>⚠️ ПРЕДУПРЕЖДЕНИЯ:</b>")
         lines.append("")
         for alert in warnings[:3]:
-            lines.append(f"• <b>{alert.title}</b>")
-            lines.append(f"  {alert.message}")
+            title = html_escape(alert.title or "")
+            message = html_escape(alert.message or "")
+            lines.append(f"• <b>{title}</b>")
+            lines.append(f"  {message}")
             lines.append("")
 
     joiner = chr(10)
@@ -109,9 +115,12 @@ def _build_category_text(category: str, alerts: list) -> str:
     lines = [header, ""]
     for alert in alerts:
         severity = severity_map.get(alert.severity, "")
-        lines.append(f"{severity} <b>{alert.title}</b>")
-        lines.append(f"  {alert.message}")
-        lines.append(f"  <i>Действие: {alert.action_required}</i>")
+        title = html_escape(alert.title or "")
+        message = html_escape(alert.message or "")
+        action_required = html_escape(alert.action_required or "")
+        lines.append(f"{severity} <b>{title}</b>")
+        lines.append(f"  {message}")
+        lines.append(f"  <i>Действие: {action_required}</i>")
         lines.append("")
 
     joiner = chr(10)
@@ -142,7 +151,7 @@ async def handle_alerts_refresh(callback: CallbackQuery, db, bot, admin_ids: lis
     await callback.answer("🔍 Проверяю...")
 
     alert_system = AutomatedAlerts(db, bot, admin_ids)
-    alerts = await alert_system.check_all_alerts()
+    alerts = await alert_system.check_all_alerts(force_refresh=True)
 
     if not alerts:
         text, keyboard = _build_no_alerts_view()
@@ -206,6 +215,9 @@ async def handle_alerts_config(callback: CallbackQuery, db, admin_ids: list[int]
 <b>⚙️ Пороговые значения технических метрик:</b>
   Доля ошибок: >{config.error_rate_threshold}%
   Минимальный процент успешных запросов: {config.feature_success_rate_min}%
+
+<b>🕒 Кэширование:</b>
+  TTL проверки алертов: {config.alerts_cache_ttl_seconds} с
 
 <i>Изменить значения можно командой /alert_config</i>"""
 

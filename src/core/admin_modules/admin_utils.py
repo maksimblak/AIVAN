@@ -3,11 +3,14 @@ Shared utilities для admin commands
 """
 
 import inspect
+import logging
 
 from functools import wraps
 from typing import Any, Callable
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
+
+logger = logging.getLogger(__name__)
 
 FEATURE_KEYS = [
     "legal_question",
@@ -150,8 +153,8 @@ def handle_errors(error_message: str = "Ошибка выполнения"):
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
-            except Exception as e:
-                print(f"{error_message}: {e}")
+            except Exception:
+                logger.exception("%s (handler=%s)", error_message, func.__name__)
                 return None
         return wrapper
     return decorator

@@ -89,7 +89,7 @@ class RetentionAnalytics:
                     u.created_at,
                     MIN(t.created_at) as first_payment_at
                 FROM users u
-                INNER JOIN transactions t ON u.user_id = t.user_id
+                INNER JOIN payments t ON u.user_id = t.user_id
                 WHERE t.status = 'completed'
                 GROUP BY u.user_id
                 HAVING payment_count >= ?
@@ -375,7 +375,7 @@ class RetentionAnalytics:
                     u.total_requests,
                     u.last_request_at
                 FROM users u
-                INNER JOIN transactions t ON u.user_id = t.user_id
+                INNER JOIN payments t ON u.user_id = t.user_id
                 WHERE t.status = 'completed'
                   AND u.subscription_until > ?
                   AND u.subscription_until < ?
@@ -495,7 +495,7 @@ class RetentionAnalytics:
         async with self.db.pool.acquire() as conn:
             cursor = await conn.execute("""
                 SELECT MIN(created_at) as first_payment
-                FROM transactions
+                FROM payments
                 WHERE user_id = ? AND status = 'completed'
             """, (user_id,))
             first_payment_row = await cursor.fetchone()

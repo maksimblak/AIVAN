@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from src.bot.ui_components import Emoji
 from src.core.admin_modules.admin_analytics import AdminAnalytics
-from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer
+from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, require_admin
 from src.core.admin_modules.admin_alerts_commands import alerts_router
 from src.core.admin_modules.admin_behavior_commands import behavior_router
 from src.core.admin_modules.admin_cohort_commands import cohort_router
@@ -32,10 +32,6 @@ logger = logging.getLogger(__name__)
 # Создаем router для admin команд
 admin_router = Router()
 
-
-def is_admin(user_id: int, admin_ids: set[int]) -> bool:
-    """Проверка, является ли пользователь админом"""
-    return user_id in admin_ids
 
 
 def create_analytics_menu() -> InlineKeyboardMarkup:
@@ -69,11 +65,9 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
 
 
 @admin_router.message(Command("admin"))
+@require_admin
 async def cmd_admin(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
     """Главная команда админ-панели"""
-    if not message.from_user or not is_admin(message.from_user.id, admin_ids):
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа к админ-панели")
-        return
 
     analytics = AdminAnalytics(db)
 
@@ -107,11 +101,9 @@ async def cmd_admin(message: Message, db: DatabaseAdvanced, admin_ids: set[int])
 
 
 @admin_router.callback_query(F.data.startswith("admin_segment:"))
+@require_admin
 async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
     """Просмотр детальной информации по сегменту"""
-    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
 
     if not callback.data:
         await callback.answer("❌ Ошибка данных")
@@ -139,11 +131,9 @@ async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced, adm
 
 
 @admin_router.callback_query(F.data == "admin_stats:conversion")
+@require_admin
 async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
     """Детальная статистика конверсии"""
-    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
 
     analytics = AdminAnalytics(db)
     conversion = await analytics.get_conversion_metrics()
@@ -186,11 +176,9 @@ async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced,
 
 
 @admin_router.callback_query(F.data == "admin_stats:daily")
+@require_admin
 async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
     """Ежедневная статистика"""
-    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
 
     analytics = AdminAnalytics(db)
     daily_stats = await analytics.get_daily_stats(days=7)
@@ -223,11 +211,9 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced, admi
 
 
 @admin_router.callback_query(F.data == "admin_refresh")
+@require_admin
 async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
     """Обновление главного меню"""
-    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
-        await callback.answer("❌ Нет доступа", show_alert=True)
-        return
 
     analytics = AdminAnalytics(db)
     segments = await analytics.get_user_segments()
@@ -261,11 +247,9 @@ async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced, admin_id
 
 
 @admin_router.message(Command("export_users"))
+@require_admin
 async def cmd_export_users(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
     """Экспорт списка пользователей определенного сегмента"""
-    if not message.from_user or not is_admin(message.from_user.id, admin_ids):
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа к админ-панели")
-        return
 
     # Парсим аргументы команды: /export_users <segment>
     args = (message.text or "").split(maxsplit=1)
@@ -321,14 +305,12 @@ async def cmd_export_users(message: Message, db: DatabaseAdvanced, admin_ids: se
 
 
 @admin_router.message(Command("broadcast"))
+@require_admin
 async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[int]):
     """
     Отправка сообщения группе пользователей
     Использование: /broadcast <segment> <сообщение>
     """
-    if not message.from_user or not is_admin(message.from_user.id, admin_ids):
-        await message.answer(f"{Emoji.ERROR} У вас нет доступа к админ-панели")
-        return
 
     args = (message.text or "").split(maxsplit=2)
 
@@ -399,11 +381,9 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced, admin_ids: set[i
 
 
 @admin_router.callback_query(F.data.startswith("broadcast_confirm:"))
+@require_admin
 async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
     """Trigger broadcast delivery after admin confirmation."""
-    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
-        await callback.answer("No access", show_alert=True)
-        return
 
     data = callback.data or ""
     _, _, segment_id = data.partition(":")
@@ -457,11 +437,9 @@ async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced
 
 
 @admin_router.callback_query(F.data.startswith("broadcast_cancel:"))
+@require_admin
 async def handle_broadcast_cancel(callback: CallbackQuery, db: DatabaseAdvanced, admin_ids: set[int]):
     """Cancel a prepared broadcast."""
-    if not callback.from_user or not is_admin(callback.from_user.id, admin_ids):
-        await callback.answer("No access", show_alert=True)
-        return
 
     data = callback.data or ""
     _, _, segment_id = data.partition(":")
@@ -498,7 +476,7 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     ]
 
     for router in routers:
-        router.message.filter(lambda msg, _admins=admin_ids: msg.from_user and is_admin(msg.from_user.id, _admins))
+        router.message.filter(lambda msg, _admins=admin_ids: msg.from_user and msg.from_user.id in _admins)
 
         for handler in router.observers.get('message', []):
             handler.callback.__globals__['db'] = db

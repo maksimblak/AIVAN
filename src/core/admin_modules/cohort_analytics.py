@@ -351,9 +351,10 @@ class CohortAnalytics:
         best = max(cohorts_data, key=lambda c: c.day_30_retention)
         worst = min(cohorts_data, key=lambda c: c.day_30_retention)
 
-        # Определить тренды
-        retention_trend = self._calculate_trend([c.day_30_retention for c in cohorts_data])
-        conversion_trend = self._calculate_trend([c.conversion_rate for c in cohorts_data])
+        # Определить тренды (нужен хронологический порядок)
+        chronological = sorted(cohorts_data, key=lambda c: c.cohort_month)
+        retention_trend = self._calculate_trend([c.day_30_retention for c in chronological])
+        conversion_trend = self._calculate_trend([c.conversion_rate for c in chronological])
 
         # Генерация инсайтов
         insights = self._generate_insights(cohorts_data, best, worst)

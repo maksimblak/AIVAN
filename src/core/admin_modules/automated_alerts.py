@@ -13,8 +13,14 @@ import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Iterable
+from html import escape as html_escape
+import logging
+from typing import Any, Awaitable, Callable, Iterable
 import json
+import time
+
+logger = logging.getLogger(__name__)
+
 
 from src.core.admin_modules.cohort_analytics import CohortAnalytics
 from src.core.admin_modules.pmf_metrics import PMFMetrics
@@ -70,6 +76,9 @@ class AlertConfig:
     error_rate_threshold: float = 10.0  # % ошибок
     feature_success_rate_min: float = 80.0  # %
 
+    # Cache
+    alerts_cache_ttl_seconds: int = 60
+
 
 class AutomatedAlerts:
     """
@@ -89,31 +98,55 @@ class AutomatedAlerts:
         self.retention_analytics = RetentionAnalytics(db)
         self.behavior_tracker = UserBehaviorTracker(db)
 
-    async def check_all_alerts(self) -> list[Alert]:
+        self._alerts_cache: list[Alert] = []
+        self._alerts_cache_timestamp: float = 0.0
+        self._alerts_cache_lock = asyncio.Lock()
+
+    async def check_all_alerts(self, force_refresh: bool = False) -> list[Alert]:
         """
         Проверить все метрики и сгенерировать alerts
 
+        Args:
+            force_refresh: игнорировать кэш и пересчитать метрики заново
+
         Returns: Список alerts
         """
-        alerts = []
+        now = time.time()
+        ttl = self.config.alerts_cache_ttl_seconds
 
-        # Revenue alerts
-        revenue_alerts = await self._check_revenue_alerts()
-        alerts.extend(revenue_alerts)
+        if not force_refresh and self._alerts_cache and (now - self._alerts_cache_timestamp) < ttl:
+            return list(self._alerts_cache)
 
-        # Retention alerts
-        retention_alerts = await self._check_retention_alerts()
-        alerts.extend(retention_alerts)
+        async with self._alerts_cache_lock:
+            now = time.time()
+            if not force_refresh and self._alerts_cache and (now - self._alerts_cache_timestamp) < ttl:
+                return list(self._alerts_cache)
 
-        # PMF alerts
-        pmf_alerts = await self._check_pmf_alerts()
-        alerts.extend(pmf_alerts)
+            tasks = [
+                self._run_check("revenue", self._check_revenue_alerts()),
+                self._run_check("retention", self._check_retention_alerts()),
+                self._run_check("pmf", self._check_pmf_alerts()),
+                self._run_check("technical", self._check_technical_alerts()),
+            ]
 
-        # Technical alerts
-        technical_alerts = await self._check_technical_alerts()
-        alerts.extend(technical_alerts)
+            results = await asyncio.gather(*tasks)
 
-        return alerts
+            alerts: list[Alert] = []
+            for result in results:
+                alerts.extend(result)
+
+            self._alerts_cache = list(alerts)
+            self._alerts_cache_timestamp = now
+            return list(alerts)
+
+
+    async def _run_check(self, name: str, coroutine: Awaitable[list[Alert]]) -> list[Alert]:
+        """Запустить проверку метрик с логированием ошибок"""
+        try:
+            return await coroutine
+        except Exception:
+            logger.exception("Error checking %s alerts", name)
+            return []
 
     async def _check_revenue_alerts(self) -> list[Alert]:
         """Проверка revenue метрик"""
@@ -216,14 +249,16 @@ class AutomatedAlerts:
         async with self.db.pool.acquire() as conn:
             cursor = await conn.execute("""
                 SELECT COUNT(*) as churned
-                FROM users
-                WHERE total_requests > 50
+                FROM users u
+                WHERE u.total_requests > 50
                   AND (
                       SELECT COUNT(*) FROM payments
-                      WHERE payments.user_id = users.user_id AND status = 'completed'
+                      WHERE payments.user_id = u.user_id AND status = 'completed'
                   ) >= 2
-                  AND (strftime('%s', 'now') - last_active) BETWEEN ? AND ?
-            """, (86400 * days, 86400 * (days + 30)))
+                  AND u.subscription_until < strftime('%s', 'now')
+                  AND u.last_active IS NOT NULL
+                  AND (strftime('%s', 'now') - u.last_active) BETWEEN 0 AND ?
+            """, (86400 * days,))
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -370,9 +405,12 @@ class AutomatedAlerts:
 
     def _format_alert(self, alert: Alert) -> str:
         """Форматировать alert для Telegram"""
-        text = f"<b>{alert.title}</b>\n"
-        text += f"{alert.message}\n"
-        text += f"<i>Action: {alert.action_required}</i>\n"
+        title = html_escape(alert.title or "")
+        message = html_escape(alert.message or "")
+        action = html_escape(alert.action_required or "")
+        text = f"<b>{title}</b>\n"
+        text += f"{message}\n"
+        text += f"<i>Action: {action}</i>\n"
         return text
 
     async def monitoring_loop(self, check_interval_seconds: int = 3600):

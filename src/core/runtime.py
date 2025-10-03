@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from src.core.settings import AppSettings
+from src.core.subscription_plans import SubscriptionPlan
 
 if False:  # pragma: no cover - hints only
     from src.bot.stream_manager import StreamManager
@@ -30,12 +31,26 @@ class WelcomeMedia:
     media_type: str
 
 
+
+@dataclass(frozen=True)
+class SubscriptionPlanPricing:
+    """Runtime view of a subscription plan with calculated prices."""
+
+    plan: SubscriptionPlan
+    price_rub_kopeks: int
+    price_stars: int
+
+
+
 @dataclass
 class DerivedRuntime:
     welcome_media: WelcomeMedia | None
     subscription_price_rub_kopeks: int
     dynamic_price_xtr: int
     admin_ids: set[int]
+    subscription_plans: Tuple[SubscriptionPlanPricing, ...] = ()
+    default_subscription_plan: SubscriptionPlanPricing | None = None
+    subscription_plan_map: dict[str, SubscriptionPlanPricing] = field(default_factory=dict)
     max_message_length: int = 4000
     safe_limit: int = 3900
 

@@ -206,7 +206,7 @@ class AdminAnalytics:
                     u.created_at,
                     COUNT(t.id) as total_payments
                 FROM users u
-                LEFT JOIN transactions t ON u.user_id = t.user_id
+                LEFT JOIN payments t ON u.user_id = t.user_id
                 WHERE u.subscription_until > ?
                   AND u.subscription_until < ?
                   AND u.last_request_at < u.subscription_until
@@ -260,7 +260,7 @@ class AdminAnalytics:
                     MIN(t.created_at) as first_payment_at,
                     COUNT(t.id) as payment_count
                 FROM users u
-                INNER JOIN transactions t ON u.user_id = t.user_id
+                INNER JOIN payments t ON u.user_id = t.user_id
                     AND t.status = 'completed'
                 GROUP BY u.user_id
                 ORDER BY first_payment_at DESC
@@ -313,7 +313,7 @@ class AdminAnalytics:
                     u.last_request_at,
                     u.created_at
                 FROM users u
-                LEFT JOIN transactions t ON u.user_id = t.user_id
+                LEFT JOIN payments t ON u.user_id = t.user_id
                 WHERE u.trial_remaining < 3
                   AND u.subscription_until <= ?
                   AND t.id IS NULL
@@ -404,7 +404,7 @@ class AdminAnalytics:
                     MIN(t.created_at) as first_payment,
                     MAX(t.created_at) as last_payment
                 FROM users u
-                INNER JOIN transactions t ON u.user_id = t.user_id
+                INNER JOIN payments t ON u.user_id = t.user_id
                     AND t.status = 'completed'
                 GROUP BY u.user_id
                 HAVING payment_count >= 2
@@ -454,7 +454,7 @@ class AdminAnalytics:
                     AVG(u.total_requests) as avg_requests,
                     AVG(t.created_at - u.created_at) as avg_time_to_conversion
                 FROM users u
-                INNER JOIN transactions t ON u.user_id = t.user_id
+                INNER JOIN payments t ON u.user_id = t.user_id
                 WHERE u.trial_remaining < 10
             """)
             row = await cursor.fetchone()
@@ -487,7 +487,7 @@ class AdminAnalytics:
                 FROM users u
                 LEFT JOIN (
                     SELECT DISTINCT user_id
-                    FROM transactions
+                    FROM payments
                     WHERE created_at >= ? AND status = 'completed'
                 ) renewed ON u.user_id = renewed.user_id
                 WHERE u.subscription_until >= ?

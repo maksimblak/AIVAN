@@ -6,7 +6,8 @@ from typing import Tuple
 
 from src.core.di_container import create_container
 from src.core.payments import convert_rub_to_xtr
-from src.core.runtime import AppRuntime, DerivedRuntime, WelcomeMedia
+from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
+from src.core.subscription_plans import get_default_subscription_plans
 from src.core.settings import AppSettings
 
 
@@ -27,19 +28,51 @@ def _discover_welcome_media() -> WelcomeMedia | None:
     return None
 
 
+def _calculate_plan_stars(price_rub: float, settings: AppSettings) -> int:
+    """Convert RUB price to Telegram Stars using configured ratio."""
+    default_xtr = None
+    try:
+        base_price = float(settings.subscription_price_rub)
+        base_stars = float(settings.subscription_price_xtr)
+        if base_price > 0 and base_stars > 0:
+            default_xtr = int(round(price_rub * (base_stars / base_price)))
+    except (TypeError, ValueError, ZeroDivisionError):
+        default_xtr = settings.subscription_price_xtr
+
+    return convert_rub_to_xtr(
+        amount_rub=price_rub,
+        rub_per_xtr=settings.rub_per_xtr,
+        default_xtr=default_xtr,
+    )
+
+
 def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None) -> Tuple[AppRuntime, object]:
     """Construct base runtime context and DI container."""
     logger = logger or logging.getLogger("ai-ivan.simple")
 
+    plan_catalog = get_default_subscription_plans()
+    plan_infos = tuple(
+        SubscriptionPlanPricing(
+            plan=plan,
+            price_rub_kopeks=plan.price_rub_kopeks,
+            price_stars=_calculate_plan_stars(float(plan.price_rub), settings),
+        )
+        for plan in plan_catalog
+    )
+    plan_map = {info.plan.plan_id: info for info in plan_infos}
+    default_plan = plan_map.get('base_1m') or (plan_infos[0] if plan_infos else None)
+
+    fallback_price_rub_kopeks = int(float(settings.subscription_price_rub) * 100)
+    fallback_price_stars = _calculate_plan_stars(float(settings.subscription_price_rub), settings)
+
     derived = DerivedRuntime(
         welcome_media=_discover_welcome_media(),
-        subscription_price_rub_kopeks=int(float(settings.subscription_price_rub) * 100),
-        dynamic_price_xtr=convert_rub_to_xtr(
-            amount_rub=float(settings.subscription_price_rub),
-            rub_per_xtr=settings.rub_per_xtr,
-            default_xtr=settings.subscription_price_xtr,
-        ),
+        subscription_price_rub_kopeks=(default_plan.price_rub_kopeks if default_plan else fallback_price_rub_kopeks),
+        dynamic_price_xtr=(default_plan.price_stars if default_plan else fallback_price_stars),
         admin_ids=set(settings.admin_ids),
+        subscription_plans=plan_infos,
+        default_subscription_plan=default_plan,
+        subscription_plan_map=plan_map,
     )
 
     container = create_container(settings)

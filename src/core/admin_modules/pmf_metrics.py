@@ -316,11 +316,12 @@ class PMFMetrics:
             cursor = await conn.execute("""
                 SELECT
                     AVG(CASE WHEN success = 1 THEN 100.0 ELSE 0.0 END) as success_rate,
-                    COUNT(DISTINCT user_id) * 100.0 / (
+                    COUNT(DISTINCT user_id) * 100.0 / NULLIF((
                         SELECT COUNT(DISTINCT user_id)
                         FROM behavior_events
-                        WHERE timestamp > strftime('%s', 'now', ? || ' days')
-                    ) as repeat_rate
+                        WHERE feature = ?
+                          AND timestamp > strftime('%s', 'now', ? || ' days')
+                    ), 0) as repeat_rate
                 FROM behavior_events
                 WHERE feature = ?
                   AND timestamp > strftime('%s', 'now', ? || ' days')
@@ -331,7 +332,7 @@ class PMFMetrics:
                       GROUP BY user_id
                       HAVING COUNT(*) > 1
                   )
-            """, (f'-{days}', feature_name, f'-{days}', feature_name))
+            """, (feature_name, f'-{days}', feature_name, f'-{days}', feature_name))
             row = await cursor.fetchone()
             await cursor.close()
 

@@ -451,6 +451,8 @@ class DatabaseAdvanced:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_tg_charge ON transactions(telegram_payment_charge_id) WHERE telegram_payment_charge_id IS NOT NULL;",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_provider ON transactions(provider);",
+                "CREATE INDEX IF NOT EXISTS idx_users_created_month ON users(strftime('%Y-%m', created_at, 'unixepoch'));",
+                "CREATE INDEX IF NOT EXISTS idx_payments_created_month ON payments(strftime('%Y-%m', created_at, 'unixepoch'));",
                 "CREATE INDEX IF NOT EXISTS idx_requests_user_created ON requests(user_id, created_at);",
                 "CREATE INDEX IF NOT EXISTS idx_requests_type ON requests(request_type);",
                 "CREATE INDEX IF NOT EXISTS idx_requests_success ON requests(success);",
