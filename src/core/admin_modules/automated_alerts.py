@@ -160,7 +160,7 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="critical",
                     category="revenue",
-                    title="🔴 MRR Drop Detected",
+                    title="🔴 Обнаружено падение MRR",
                     message=f"MRR упал на {abs(current_mrr.mrr_growth_rate):.1f}% в {current_mrr.month}",
                     metric_value=current_mrr.mrr_growth_rate,
                     threshold=-self.config.mrr_drop_threshold,
@@ -173,8 +173,8 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="critical",
                     category="revenue",
-                    title="🚨 High Churn Rate",
-                    message=f"Customer churn rate: {current_mrr.customer_churn_rate:.1f}% ({current_mrr.churned_customers} users)",
+                    title="🚨 Высокий уровень оттока",
+                    message=f"Уровень оттока клиентов: {current_mrr.customer_churn_rate:.1f}% ({current_mrr.churned_customers} пользователей)",
                     metric_value=current_mrr.customer_churn_rate,
                     threshold=self.config.churn_spike_threshold,
                     action_required="Запустить winback campaign, провести exit interviews",
@@ -188,8 +188,8 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="warning",
                     category="revenue",
-                    title="⚠️ Low Quick Ratio",
-                    message=f"Quick Ratio: {arr_metrics.quick_ratio:.2f} (target: >{self.config.quick_ratio_min})",
+                    title="⚠️ Низкий Quick Ratio",
+                    message=f"Quick Ratio: {arr_metrics.quick_ratio:.2f} (цель: >{self.config.quick_ratio_min})",
                     metric_value=arr_metrics.quick_ratio,
                     threshold=self.config.quick_ratio_min,
                     action_required="Фокус на уменьшении churn и увеличении expansion revenue",
@@ -216,8 +216,8 @@ class AutomatedAlerts:
                     alerts.append(Alert(
                         severity="warning",
                         category="retention",
-                        title="📉 Low Day-30 Retention",
-                        message=f"Cohort {latest_cohort.cohort_month}: {latest_cohort.day_30_retention:.1f}% retention",
+                        title="📉 Низкое удержание на 30-й день",
+                        message=f"Когорта {latest_cohort.cohort_month}: {latest_cohort.day_30_retention:.1f}% удержание",
                         metric_value=latest_cohort.day_30_retention,
                         threshold=self.config.day_30_retention_min,
                         action_required="Улучшить onboarding, добавить engagement hooks",
@@ -231,11 +231,11 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="critical",
                     category="retention",
-                    title="🔴 Power Users Churning",
-                    message=f"{churned_power_users} power users ушли за последние 7 дней",
+                    title="🔴 Уходят активные пользователи",
+                    message=f"{churned_power_users} активных пользователей ушли за последние 7 дней",
                     metric_value=churned_power_users,
                     threshold=self.config.power_user_churn_threshold,
-                    action_required="СРОЧНО связаться с ушедшими power users, выяснить причины",
+                    action_required="СРОЧНО связаться с ушедшими активными пользователями, выяснить причины",
                     timestamp=int(datetime.now().timestamp())
                 ))
 
@@ -276,11 +276,11 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="critical",
                     category="pmf",
-                    title="🔴 Negative NPS",
-                    message=f"NPS Score: {nps.nps_score:+.0f} (Detractors: {nps.detractor_rate:.1f}%)",
+                    title="🔴 Отрицательный NPS",
+                    message=f"NPS Score: {nps.nps_score:+.0f} (Критики: {nps.detractor_rate:.1f}%)",
                     metric_value=nps.nps_score,
                     threshold=self.config.nps_min,
-                    action_required="Survey detractors, identify main pain points",
+                    action_required="Опросить критиков, выявить основные проблемы",
                     timestamp=int(datetime.now().timestamp())
                 ))
 
@@ -288,11 +288,11 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="warning",
                     category="pmf",
-                    title="📉 NPS Declining",
+                    title="📉 Падение NPS",
                     message=f"NPS упал с {nps.previous_nps:+.0f} до {nps.nps_score:+.0f}",
                     metric_value=nps.nps_score - nps.previous_nps,
                     threshold=-self.config.nps_drop_threshold,
-                    action_required="Проанализировать recent changes, user feedback",
+                    action_required="Проанализировать недавние изменения, отзывы пользователей",
                     timestamp=int(datetime.now().timestamp())
                 ))
 
@@ -303,11 +303,11 @@ class AutomatedAlerts:
                 alerts.append(Alert(
                     severity="warning",
                     category="pmf",
-                    title="⚠️ Low Stickiness",
-                    message=f"DAU/MAU: {usage.dau_mau_ratio:.1f}% (target: >{self.config.dau_mau_min}%)",
+                    title="⚠️ Низкая вовлеченность",
+                    message=f"DAU/MAU: {usage.dau_mau_ratio:.1f}% (цель: >{self.config.dau_mau_min}%)",
                     metric_value=usage.dau_mau_ratio,
                     threshold=self.config.dau_mau_min,
-                    action_required="Добавить daily engagement hooks, push notifications",
+                    action_required="Добавить ежедневные механики вовлечения, push-уведомления",
                     timestamp=int(datetime.now().timestamp())
                 ))
 
@@ -329,11 +329,11 @@ class AutomatedAlerts:
                     alerts.append(Alert(
                         severity="critical",
                         category="technical",
-                        title=f"🔴 High Error Rate: {engagement.feature_name}",
-                        message=f"Success rate: {engagement.success_rate:.1f}% (uses: {engagement.total_uses})",
+                        title=f"🔴 Высокий уровень ошибок: {engagement.feature_name}",
+                        message=f"Успешность: {engagement.success_rate:.1f}% (использований: {engagement.total_uses})",
                         metric_value=engagement.success_rate,
                         threshold=self.config.feature_success_rate_min,
-                        action_required=f"Check logs for {engagement.feature_name}, fix errors",
+                        action_required=f"Проверить логи для {engagement.feature_name}, исправить ошибки",
                         timestamp=int(datetime.now().timestamp())
                     ))
 
@@ -345,11 +345,11 @@ class AutomatedAlerts:
                     alerts.append(Alert(
                         severity="critical",
                         category="technical",
-                        title=f"🚨 Critical Friction: {friction.location}",
-                        message=f"Impact: {friction.impact_score}/100, {friction.affected_users} users affected",
+                        title=f"🚨 Критическая проблема: {friction.location}",
+                        message=f"Влияние: {friction.impact_score}/100, затронуто {friction.affected_users} пользователей",
                         metric_value=friction.impact_score,
                         threshold=80,
-                        action_required=f"Fix {friction.friction_type} at {friction.location}",
+                        action_required=f"Исправить {friction.friction_type} в {friction.location}",
                         timestamp=int(datetime.now().timestamp())
                     ))
 
@@ -386,7 +386,7 @@ class AutomatedAlerts:
 
                 # Warnings
                 if warnings:
-                    message = "⚠️ <b>Warnings</b>\n\n"
+                    message = "⚠️ <b>Предупреждения</b>\n\n"
                     for alert in warnings:
                         message += self._format_alert(alert) + "\n"
 
@@ -394,7 +394,7 @@ class AutomatedAlerts:
 
                 # Info (only if no critical/warnings)
                 if info and not critical and not warnings:
-                    message = "ℹ️ <b>Info</b>\n\n"
+                    message = "ℹ️ <b>Информация</b>\n\n"
                     for alert in info:
                         message += self._format_alert(alert) + "\n"
 
@@ -410,7 +410,7 @@ class AutomatedAlerts:
         action = html_escape(alert.action_required or "")
         text = f"<b>{title}</b>\n"
         text += f"{message}\n"
-        text += f"<i>Action: {action}</i>\n"
+        text += f"<i>Действие: {action}</i>\n"
         return text
 
     async def monitoring_loop(self, check_interval_seconds: int = 3600):
