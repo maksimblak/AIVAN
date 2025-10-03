@@ -22,44 +22,12 @@ class SubscriptionPlan:
 
 DEFAULT_SUBSCRIPTION_PLANS: tuple[SubscriptionPlan, ...] = (
     SubscriptionPlan(
-        plan_id="test_30",
-        name="Тест",
-        price_rub=300,
-        duration_days=30,
-        request_quota=10,
-        description="Пробный пакет для знакомства",
-    ),
-    SubscriptionPlan(
         plan_id="base_1m",
         name="Базовый",
         price_rub=1499,
         duration_days=30,
         request_quota=60,
         description="Регулярные консультации",
-    ),
-    SubscriptionPlan(
-        plan_id="base_3m",
-        name="Базовый 3 мес",
-        price_rub=1499 * 3,
-        duration_days=90,
-        request_quota=60 * 3,
-        description="Выгоднее на три месяца",
-    ),
-    SubscriptionPlan(
-        plan_id="base_6m",
-        name="Базовый 6 мес",
-        price_rub=1499 * 6,
-        duration_days=180,
-        request_quota=60 * 6,
-        description="Полгода поддержки",
-    ),
-    SubscriptionPlan(
-        plan_id="base_12m",
-        name="Базовый 12 мес",
-        price_rub=1499 * 12,
-        duration_days=360,
-        request_quota=60 * 12,
-        description="Год с максимальной выгодой",
     ),
     SubscriptionPlan(
         plan_id="standard_1m",
@@ -75,7 +43,7 @@ DEFAULT_SUBSCRIPTION_PLANS: tuple[SubscriptionPlan, ...] = (
         price_rub=4000,
         duration_days=30,
         request_quota=200,
-        description="Максимум запросов и приоритет", 
+        description="Максимум запросов и приоритет",
     ),
 )
 
@@ -90,3 +58,4 @@ def build_plan_map(plans: Iterable[SubscriptionPlan]) -> dict[str, SubscriptionP
     """Create a fast lookup dictionary by plan_id."""
 
     return {plan.plan_id: plan for plan in plans}
+
