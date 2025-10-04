@@ -101,14 +101,6 @@ def _protect_entities(text: str) -> Tuple[str, Dict[str, str]]:
     mapping: Dict[str, str] = {}
     counter = {"URL": 0, "EM": 0, "DT": 0, "N": 0}
 
-    def sub_with(tag: str, regex: re.Pattern) -> str:
-        def repl(m: re.Match) -> str:
-            key = f"{{{{{tag}{counter[tag]}}}}}"
-            mapping[key] = m.group(0)
-            counter[tag] += 1
-            return key
-        return regex.sub(repl, text_map[tag])
-
     # этапно заменяем (важен порядок: URL/Email до чисел/дат)
     text_map = {"URL": text, "EM": "", "DT": "", "N": ""}
     text_map["EM"] = URL_RE.sub(lambda m: m.group(0), text_map["URL"])  # no-op, держим структуру
@@ -347,20 +339,3 @@ class DocumentTranslator(DocumentProcessor):
         return "\n\n".join(cleaned).strip()
 
     # ------------------------------ Поддержка ------------------------------
-
-    def get_supported_languages(self) -> Dict[str, str]:
-        return self.supported_languages.copy()
-
-    def detect_language(self, text: str) -> str:
-        """Простая эвристика детекта языка."""
-        t = text or ""
-        if re.search(r"[А-Яа-яЁё]", t):
-            return "ru"
-        if re.search(r"[\u4e00-\u9fff]", t):
-            return "zh"
-        if re.search(r"[äöüß]", t.lower()):
-            return "de"
-        if re.search(r"[A-Za-z]", t):
-            return "en"
-        return "ru"  # по умолчанию
-

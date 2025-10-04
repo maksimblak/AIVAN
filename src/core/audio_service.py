@@ -110,16 +110,3 @@ class AudioService:
             raise ValueError(
                 f"Voice message longer than allowed {self.max_duration_seconds} seconds"
             )
-
-
-async def transcribe_voice(
-    audio_service: AudioService,
-    file_path: Path,
-    *,
-    language: Optional[str] = None,
-) -> str:
-    return await audio_service.transcribe(file_path, language=language)
-
-
-async def synthesize_voice(audio_service: AudioService, text: str) -> Path:
-    return await audio_service.synthesize(text)

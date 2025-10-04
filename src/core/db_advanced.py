@@ -847,29 +847,6 @@ class DatabaseAdvanced:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in apply_subscription_purchase: {str(e)}")
 
-    async def consume_subscription_quota(self, user_id: int, amount: int = 1) -> bool:
-        """Atomically decrement remaining subscription quota."""
-        if amount <= 0:
-            return True
-        async with self.pool.acquire() as conn:
-            try:
-                now = int(time.time())
-                cursor = await conn.execute(
-                    """UPDATE users SET
-                       subscription_requests_balance = subscription_requests_balance - ?,
-                       updated_at = ?
-                     WHERE user_id = ?
-                       AND subscription_plan IS NOT NULL
-                       AND subscription_requests_balance >= ?""",
-                    (amount, now, user_id, amount),
-                )
-                affected = cursor.rowcount
-                await cursor.close()
-                self.query_count += 1 if self.enable_metrics else 0
-                return affected > 0
-            except Exception as e:
-                self.error_count += 1 if self.enable_metrics else 0
-                raise DatabaseException(f"Database error in consume_subscription_quota: {str(e)}")
 
     async def record_transaction(
         self,
@@ -1132,185 +1109,10 @@ class DatabaseAdvanced:
 
     # ============ Методы для работы с рейтингами ============
 
-    async def add_rating(
-        self,
-        request_id: int,
-        user_id: int,
-        rating: int,  # 1 = like, -1 = dislike
-        feedback_text: str | None = None,
-        *,
-        username: str | None = None,
-        answer_text: str | None = None,
-    ) -> bool:
-        """Insert or update rating and optional feedback"""
-        async with self.pool.acquire() as conn:
-            try:
-                now = int(time.time())
 
-                cursor = await conn.execute(
-                    """INSERT INTO ratings 
-                       (request_id, user_id, rating, feedback_text, created_at, username, answer_text)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(request_id, user_id) DO UPDATE SET
-                           rating = excluded.rating,
-                           feedback_text = COALESCE(excluded.feedback_text, ratings.feedback_text),
-                           username = COALESCE(excluded.username, ratings.username),
-                           answer_text = COALESCE(excluded.answer_text, ratings.answer_text),
-                           created_at = CASE
-                               WHEN ratings.created_at IS NULL OR ratings.created_at = 0 THEN excluded.created_at
-                               ELSE ratings.created_at
-                           END
-                    """,
-                    (request_id, user_id, rating, feedback_text, now, username, answer_text),
-                )
-                await cursor.close()
 
-                self.query_count += 1 if self.enable_metrics else 0
-                return True
 
-            except Exception as e:
-                self.error_count += 1 if self.enable_metrics else 0
-                logger.error(f"Database error in add_rating: {e}")
-                return False
 
-    async def get_rating(self, request_id: int, user_id: int) -> RatingRecord | None:
-        """Получение рейтинга пользователя для конкретного запроса"""
-        async with self.pool.acquire() as conn:
-            try:
-                cursor = await conn.execute(
-                    """SELECT id, request_id, user_id, rating, feedback_text, created_at, username, answer_text 
-                       FROM ratings WHERE request_id = ? AND user_id = ?""",
-                    (request_id, user_id),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
-
-                self.query_count += 1 if self.enable_metrics else 0
-                return RatingRecord(*row) if row else None
-
-            except Exception as e:
-                self.error_count += 1 if self.enable_metrics else 0
-                logger.error(f"Database error in get_rating: {e}")
-                return None
-
-    async def get_request_ratings_summary(self, request_id: int) -> dict[str, Any]:
-        """Получение суммарной статистики рейтингов для запроса"""
-        async with self.pool.acquire() as conn:
-            try:
-                cursor = await conn.execute(
-                    """SELECT 
-                       COUNT(*) as total_ratings,
-                       SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as likes,
-                       SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as dislikes,
-                       AVG(rating) as avg_rating
-                       FROM ratings WHERE request_id = ? AND rating != 0""",
-                    (request_id,),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
-
-                self.query_count += 1 if self.enable_metrics else 0
-
-                if row:
-                    return {
-                        "total_ratings": row[0],
-                        "likes": row[1] or 0,
-                        "dislikes": row[2] or 0,
-                        "avg_rating": row[3] or 0.0,
-                    }
-                return {"total_ratings": 0, "likes": 0, "dislikes": 0, "avg_rating": 0.0}
-
-            except Exception as e:
-                self.error_count += 1 if self.enable_metrics else 0
-                logger.error(f"Database error in get_request_ratings_summary: {e}")
-                return {"total_ratings": 0, "likes": 0, "dislikes": 0, "avg_rating": 0.0}
-
-    async def get_ratings_statistics(self, days: int = 30) -> dict[str, Any]:
-        """Получение общей статистики рейтингов за период"""
-        async with self.pool.acquire() as conn:
-            try:
-                now = int(time.time())
-                period_start = now - (days * 86400)
-
-                cursor = await conn.execute(
-                    """SELECT 
-                       COUNT(*) as total_ratings,
-                       SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as total_likes,
-                       SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as total_dislikes,
-                       AVG(rating) as avg_rating,
-                       COUNT(CASE WHEN feedback_text IS NOT NULL THEN 1 END) as feedback_count
-                       FROM ratings WHERE created_at >= ? AND rating != 0""",
-                    (period_start,),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
-
-                self.query_count += 1 if self.enable_metrics else 0
-
-                if row:
-                    return {
-                        "period_days": days,
-                        "total_ratings": row[0] or 0,
-                        "total_likes": row[1] or 0,
-                        "total_dislikes": row[2] or 0,
-                        "avg_rating": row[3] or 0.0,
-                        "feedback_count": row[4] or 0,
-                        "like_rate": (row[1] or 0) / max(row[0] or 1, 1) * 100,
-                    }
-                return {
-                    "period_days": days,
-                    "total_ratings": 0,
-                    "total_likes": 0,
-                    "total_dislikes": 0,
-                    "avg_rating": 0.0,
-                    "feedback_count": 0,
-                    "like_rate": 0.0,
-                }
-
-            except Exception as e:
-                self.error_count += 1 if self.enable_metrics else 0
-                logger.error(f"Database error in get_ratings_statistics: {e}")
-                return {}
-
-    async def get_low_rated_requests(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Получение запросов с низкими рейтингами для анализа"""
-        async with self.pool.acquire() as conn:
-            try:
-                cursor = await conn.execute(
-                    """SELECT 
-                       r.id, r.user_id, r.request_type, r.created_at,
-                       AVG(rt.rating) as avg_rating,
-                       COUNT(rt.rating) as rating_count
-                       FROM requests r 
-                       JOIN ratings rt ON r.id = rt.request_id
-                       WHERE r.success = 1
-                       GROUP BY r.id
-                       HAVING avg_rating < 0
-                       ORDER BY avg_rating ASC, rating_count DESC
-                       LIMIT ?""",
-                    (limit,),
-                )
-                rows = await cursor.fetchall()
-                await cursor.close()
-
-                self.query_count += 1 if self.enable_metrics else 0
-
-                return [
-                    {
-                        "request_id": row[0],
-                        "user_id": row[1],
-                        "request_type": row[2],
-                        "created_at": row[3],
-                        "avg_rating": row[4],
-                        "rating_count": row[5],
-                    }
-                    for row in rows
-                ]
-
-            except Exception as e:
-                self.error_count += 1 if self.enable_metrics else 0
-                logger.error(f"Database error in get_low_rated_requests: {e}")
-                return []
 
     async def get_stats(self) -> dict[str, Any]:
         """Получение статистики базы данных"""
@@ -1364,49 +1166,7 @@ class DatabaseAdvanced:
                 logger.error(f"Database error in generate_referral_code: {e}")
                 raise DatabaseException(f"Error generating referral code: {e}")
 
-    async def get_user_by_referral_code(self, referral_code: str) -> UserRecord | None:
-        """Получение пользователя по реферальному коду"""
-        async with self.pool.acquire() as conn:
-            try:
-                cursor = await conn.execute(
-                    """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
-                       total_requests, successful_requests, failed_requests, last_request_at,
-                       referred_by, referral_code, referrals_count, referral_bonus_days
-                       FROM users WHERE referral_code = ?""",
-                    (referral_code,),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
 
-                return UserRecord(*row) if row else None
-            except Exception as e:
-                logger.error(f"Database error in get_user_by_referral_code: {e}")
-                return None
-
-    async def set_user_referrer(self, user_id: int, referrer_id: int) -> bool:
-        """Установка реферера для пользователя"""
-        async with self.pool.acquire() as conn:
-            try:
-                # Проверяем, что пользователь не ссылается сам на себя
-                if user_id == referrer_id:
-                    return False
-
-                await conn.execute(
-                    "UPDATE users SET referred_by = ?, updated_at = ? WHERE user_id = ? AND referred_by IS NULL",
-                    (referrer_id, int(time.time()), user_id),
-                )
-
-                # Увеличиваем счетчик рефералов у реферера
-                await conn.execute(
-                    "UPDATE users SET referrals_count = referrals_count + 1, updated_at = ? WHERE user_id = ?",
-                    (int(time.time()), referrer_id),
-                )
-
-                await conn.commit()
-                return True
-            except Exception as e:
-                logger.error(f"Database error in set_user_referrer: {e}")
-                return False
 
     async def get_user_referrals(self, user_id: int) -> list[dict[str, Any]]:
         """Получение списка рефералов пользователя"""
@@ -1432,21 +1192,7 @@ class DatabaseAdvanced:
                 logger.error(f"Database error in get_user_referrals: {e}")
                 return []
 
-    async def add_referral_bonus(self, user_id: int, bonus_days: int) -> bool:
-        """Добавление бонусных дней пользователю"""
-        async with self.pool.acquire() as conn:
-            try:
-                await conn.execute(
-                    "UPDATE users SET referral_bonus_days = referral_bonus_days + ?, updated_at = ? WHERE user_id = ?",
-                    (bonus_days, int(time.time()), user_id),
-                )
-                await conn.commit()
-                return True
-            except Exception as e:
-                logger.error(f"Database error in add_referral_bonus: {e}")
-                return False
 
-    # Методы для истории платежей
     async def get_user_transactions(self, user_id: int, limit: int = 20) -> list[TransactionRecord]:
         """Получение истории транзакций пользователя"""
         async with self.pool.acquire() as conn:

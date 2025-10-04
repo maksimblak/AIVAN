@@ -681,15 +681,3 @@ class OCRConverter(DocumentProcessor):
     # ——————————————————————————————————————
     # Зависимости
     # ——————————————————————————————————————
-
-    def get_required_dependencies(self) -> List[str]:
-        """Список требований (без Tesseract/ocrmypdf)."""
-        return [
-            "pymupdf>=1.22.0",       # fitz — извлечение текста и рендер страниц
-            "paddlepaddle>=2.6.0",   # бэкенд для PaddleOCR
-            "paddleocr>=2.8.0",      # PaddleOCR
-            "pillow>=9.0.0",         # предобработка изображений
-            "httpx>=0.24.0",         # OpenAI fallback
-            # "opencv-python-headless>=4.7.0", # (опционально) для CLAHE+deskew
-            # "setuptools>=68",                # (желательно для paddle)
-        ]

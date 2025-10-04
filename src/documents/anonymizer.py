@@ -522,19 +522,3 @@ class DocumentAnonymizer(DocumentProcessor):
         return replacement
 
     # -------------------------------- ВОССТАНОВЛЕНИЕ ----------------------------
-
-    def restore_data(
-        self, anonymized_text: str, restoration_key: Dict[str, str] | None = None
-    ) -> str:
-        """
-        Восстановление данных из обезличенного текста.
-        Важно: сортируем ключи по длине убыв., чтобы не частично «раскрасить» метки.
-        """
-        if not restoration_key:
-            restoration_key = {v: k for k, v in self.anonymization_map.items()}
-
-        restored_text = anonymized_text
-        for key in sorted(restoration_key.keys(), key=len, reverse=True):
-            restored_text = restored_text.replace(key, restoration_key[key])
-
-        return restored_text

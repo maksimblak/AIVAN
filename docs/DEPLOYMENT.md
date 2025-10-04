@@ -338,9 +338,6 @@ docker stats aivan-bot
 
 # Просмотр метрик производительности
 docker-compose exec aivan python -c "
-from src.core.performance import get_performance_summary
-import json
-print(json.dumps(get_performance_summary(), indent=2))
 "
 ```
 
