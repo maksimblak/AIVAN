@@ -133,6 +133,11 @@ async def tg_edit_html(
             if "message to edit not found" in low:
                 raise
             if "can't parse entities" in low or "entity" in low or "too long" in low:
+                logger.warning(
+                    "Telegram rejected HTML chunk (len=%s), falling back to plain text: %s",
+                    len(html),
+                    e,
+                )
                 # plain fallback (всё равно ограничение по длине применяет Telegram)
                 await bot.edit_message_text(
                     chat_id=chat_id,
@@ -170,6 +175,11 @@ async def tg_send_html(
         except TelegramBadRequest as e:
             low = str(e).lower()
             if "can't parse entities" in low or "entity" in low or "too long" in low:
+                logger.warning(
+                    "Telegram rejected HTML chunk (len=%s), falling back to plain text: %s",
+                    len(html),
+                    e,
+                )
                 await bot.send_message(
                     chat_id=chat_id,
                     text=_plain(html)[:3900] or " ",

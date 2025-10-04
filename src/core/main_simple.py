@@ -644,7 +644,7 @@ async def send_rating_request(message: Message, request_id: int):
     get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
     if get_rating_fn:
         existing_rating = await get_rating_fn(request_id, user_id)
-        if existing_rating:
+        if existing_rating and getattr(existing_rating, "rating", 0) in (1, -1):
             return
 
     rating_keyboard = create_rating_keyboard(request_id)
