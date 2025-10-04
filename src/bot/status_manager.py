@@ -134,11 +134,6 @@ class ProgressStatus:
 
         await self._safe_edit(self._render())
 
-    async def set_stage(self, step: int) -> None:
-        if 1 <= step <= len(self.steps):
-            self.current_stage = max(self.current_stage, step)
-            await self._safe_edit(self._render())
-
     def duration_text(self) -> str:
         if not self.start_time:
             return "00:00"

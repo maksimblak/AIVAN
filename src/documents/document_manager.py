@@ -14,7 +14,7 @@ from typing import Any, List
 
 from .anonymizer import DocumentAnonymizer
 from .base import DocumentResult, DocumentStorage, ProcessingError
-from .storage_backends import ArtifactUploader
+from .storage_backends import ArtifactUploader, S3ArtifactUploader
 from .document_chat import DocumentChat
 from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
@@ -85,6 +85,21 @@ class DocumentManager:
         self.anonymizer = DocumentAnonymizer(settings=settings)
         self.translator = DocumentTranslator(openai_service, settings=settings)
         self.ocr_converter = OCRConverter(settings=settings)
+
+        self._dependencies: dict[str, bool] = {
+            "docx": self._module_available("docx"),
+            "reportlab": self._module_available("reportlab.pdfgen"),
+        }
+
+        self.PROCESSOR_PARAM_WHITELIST: dict[str, set[str]] = {
+            "summarize": {"detail_level", "language", "output_formats"},
+            "analyze_risks": {"custom_criteria"},
+            "chat": set(),
+            "anonymize": {"anonymization_mode", "exclude_types", "custom_patterns"},
+            "translate": {"source_lang", "target_lang", "output_formats"},
+            "ocr": {"output_format"},
+        }
+
     def _build_artifact_uploader(self, settings: AppSettings) -> ArtifactUploader | None:
         bucket = settings.documents_s3_bucket
         if not bucket:
@@ -101,22 +116,6 @@ class DocumentManager:
         except RuntimeError as exc:
             logger.warning("S3 artifact uploader disabled: %s", exc)
             return None
-
-
-
-        self._dependencies: dict[str, bool] = {
-            'docx': self._module_available('docx'),
-            'reportlab': self._module_available('reportlab.pdfgen'),
-        }
-
-        self.PROCESSOR_PARAM_WHITELIST: dict[str, set[str]] = {
-            "summarize": {"detail_level", "language", "output_formats"},
-            "analyze_risks": {"custom_criteria"},
-            "chat": set(),
-            "anonymize": {"anonymization_mode", "exclude_types", "custom_patterns"},
-            "translate": {"source_lang", "target_lang", "output_formats"},
-            "ocr": {"output_format"},
-        }
 
     @staticmethod
     def _module_available(module: str) -> bool:
