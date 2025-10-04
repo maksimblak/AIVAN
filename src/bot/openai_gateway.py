@@ -745,8 +745,15 @@ async def _ask_legal_internal(
                                 items = getattr(final, "output", []) or []
                                 chunks: list[str] = []
                                 for it in items:
-                                    for c in getattr(it, "content", []) or []:
+                                    contents = []
+                                    if hasattr(it, "content") and getattr(it, "content"):
+                                        contents = getattr(it, "content")
+                                    elif isinstance(it, dict):
+                                        contents = it.get("content") or []
+                                    for c in contents:
                                         t = getattr(c, "text", None)
+                                        if not t and isinstance(c, dict):
+                                            t = c.get("text")
                                         if t:
                                             chunks.append(t)
                                 text = "\n\n".join(chunks) if chunks else ""
@@ -780,8 +787,15 @@ async def _ask_legal_internal(
                     items = getattr(resp, "output", []) or []
                     chunks: list[str] = []
                     for it in items:
-                        for c in getattr(it, "content", []) or []:
+                        contents = []
+                        if hasattr(it, "content") and getattr(it, "content"):
+                            contents = getattr(it, "content")
+                        elif isinstance(it, dict):
+                            contents = it.get("content") or []
+                        for c in contents:
                             t = getattr(c, "text", None)
+                            if not t and isinstance(c, dict):
+                                t = c.get("text")
                             if t:
                                 chunks.append(t)
                     if chunks:
