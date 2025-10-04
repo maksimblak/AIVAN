@@ -1112,7 +1112,7 @@ def _plan_catalog_text() -> str:
         lines.append("╔═══════════════════════╗")
 
         # Название тарифа с emoji
-        plan_emoji = "🌟" if idx == 1 else "💎" if idx == 2 else "⭐"
+        plan_emoji = "💎" if idx == 1 else "👑" if idx == 2 else "✨"
         lines.append(f"║ {plan_emoji} <b>{html_escape(plan.name).upper()}</b>")
         lines.append("╠═══════════════════════╣")
 
@@ -1153,7 +1153,7 @@ def _build_plan_catalog_keyboard() -> InlineKeyboardMarkup:
         stars_amount = _plan_stars_amount(plan_info)
 
         # Emoji для каждого плана
-        plan_emoji = "🌟" if idx == 1 else "💎" if idx == 2 else "⭐"
+        plan_emoji = "💎" if idx == 1 else "👑" if idx == 2 else "✨"
 
         # Формируем красивую метку
         price_label = f"{_format_rub(plan_info.plan.price_rub)} ₽"
@@ -1171,9 +1171,6 @@ def _build_plan_catalog_keyboard() -> InlineKeyboardMarkup:
                 )
             ]
         )
-
-    # Разделитель
-    rows.append([InlineKeyboardButton(text="━━━━━━━━━━━━━━━", callback_data="ignore")])
 
     # Кнопка назад
     rows.append([InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_main")])
