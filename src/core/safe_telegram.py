@@ -20,6 +20,7 @@ def format_safe_html(raw_text: str) -> str:
     """Sanitize text for Telegram while preserving simple markup and line breaks."""
     normalized = (raw_text or "").replace("\r\n", "\n")
     normalized = normalized.replace('\\n', '\n')
+    normalized = normalized.replace(' ', ' ').replace('‑', '-')
     try:
         safe_html = sanitize_telegram_html(normalized)
         safe_html = re.sub(r'<blockquote(?:[^>]*)>', '<i>', safe_html, flags=re.IGNORECASE)
