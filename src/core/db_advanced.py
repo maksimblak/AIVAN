@@ -353,7 +353,11 @@ class DatabaseAdvanced:
                     total_requests INTEGER NOT NULL DEFAULT 0,
                     successful_requests INTEGER NOT NULL DEFAULT 0,
                     failed_requests INTEGER NOT NULL DEFAULT 0,
-                    last_request_at INTEGER NOT NULL DEFAULT 0
+                    last_request_at INTEGER NOT NULL DEFAULT 0,
+                    referred_by INTEGER,
+                    referral_code TEXT,
+                    referrals_count INTEGER NOT NULL DEFAULT 0,
+                    referral_bonus_days INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
@@ -492,7 +496,7 @@ class DatabaseAdvanced:
                     "ALTER TABLE users ADD COLUMN failed_requests INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN last_request_at INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN referred_by INTEGER;",
-                    "ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;",
+                    "ALTER TABLE users ADD COLUMN referral_code TEXT;",
                     "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE users ADD COLUMN subscription_plan TEXT;",
@@ -519,6 +523,7 @@ class DatabaseAdvanced:
                 "CREATE INDEX IF NOT EXISTS idx_users_admin ON users(is_admin) WHERE is_admin = 1;",
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_until) WHERE subscription_until > 0;",
                 "CREATE INDEX IF NOT EXISTS idx_users_requests ON users(total_requests);",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL;",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);",
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_tg_charge ON transactions(telegram_payment_charge_id) WHERE telegram_payment_charge_id IS NOT NULL;",
                 "CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);",
@@ -583,12 +588,13 @@ class DatabaseAdvanced:
     async def _ensure_referral_columns(self, conn) -> None:
         required_columns = {
             'referred_by': "ALTER TABLE users ADD COLUMN referred_by INTEGER;",
-            'referral_code': "ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;",
+            'referral_code': "ALTER TABLE users ADD COLUMN referral_code TEXT;",
             'referrals_count': "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
             'referral_bonus_days': "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
         }
         existing = await self._get_table_columns(conn, 'users')
         applied = False
+        index_applied = False
         for column_name, ddl in required_columns.items():
             if column_name not in existing:
                 try:
@@ -597,7 +603,19 @@ class DatabaseAdvanced:
                     logger.info(f'Applied late migration for users: {ddl}')
                 except Exception as migration_error:
                     logger.error(f'Failed to apply late migration {ddl}: {migration_error}')
-        if applied:
+        cursor = await conn.execute("PRAGMA index_list(users)")
+        indexes = {row[1] for row in await cursor.fetchall()}
+        await cursor.close()
+        if 'idx_users_referral_code' not in indexes:
+            try:
+                await conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL;"
+                )
+                index_applied = True
+                logger.info('Ensured unique index for users.referral_code')
+            except Exception as index_error:
+                logger.warning(f'Failed to ensure referral_code unique index: {index_error}')
+        if applied or index_applied:
             await conn.commit()
 
     async def ensure_user(
@@ -1313,18 +1331,35 @@ class DatabaseAdvanced:
         import secrets
         import string
 
-        # Генерируем уникальный код с криптографической стойкостью
-        code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
-
+        max_attempts = 5
         async with self.pool.acquire() as conn:
             try:
                 await self._ensure_referral_columns(conn)
-                await conn.execute(
-                    "UPDATE users SET referral_code = ?, updated_at = ? WHERE user_id = ?",
-                    (code, int(time.time()), user_id),
+                for attempt in range(max_attempts):
+                    code = ''.join(
+                        secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8)
+                    )
+                    try:
+                        await conn.execute(
+                            "UPDATE users SET referral_code = ?, updated_at = ? WHERE user_id = ?",
+                            (code, int(time.time()), user_id),
+                        )
+                        await conn.commit()
+                        return code
+                    except aiosqlite.IntegrityError:
+                        await conn.rollback()
+                        logger.warning(
+                            "Referral code collision for user %s on attempt %s",
+                            user_id,
+                            attempt + 1,
+                        )
+                error_message = (
+                    f"Failed to generate unique referral code for user {user_id} after several attempts"
                 )
-                await conn.commit()
-                return code
+                logger.error(error_message)
+                raise DatabaseException(error_message)
+            except DatabaseException:
+                raise
             except Exception as e:
                 logger.error(f"Database error in generate_referral_code: {e}")
                 raise DatabaseException(f"Error generating referral code: {e}")
