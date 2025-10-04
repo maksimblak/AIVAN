@@ -582,7 +582,7 @@ async def _start_status_indicator(message):
         auto_advance_stages=True,
         # percent_thresholds=[1, 10, 30, 50, 70, 85, 95],
     )
-    await status.start(auto_cycle=True, interval=1.0)  # см. пункт 2 ниже
+    await status.start(auto_cycle=True, interval=2.7)  # approx. 4 min until auto-complete
     return status
 
 async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> None:
