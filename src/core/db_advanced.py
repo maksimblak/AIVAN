@@ -574,6 +574,32 @@ class DatabaseAdvanced:
 
     # Методы с улучшенной производительностью и транзакциями
 
+    async def _get_table_columns(self, conn, table: str) -> set[str]:
+        cursor = await conn.execute(f'PRAGMA table_info({table})')
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {row[1] for row in rows}
+
+    async def _ensure_referral_columns(self, conn) -> None:
+        required_columns = {
+            'referred_by': "ALTER TABLE users ADD COLUMN referred_by INTEGER;",
+            'referral_code': "ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;",
+            'referrals_count': "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
+            'referral_bonus_days': "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
+        }
+        existing = await self._get_table_columns(conn, 'users')
+        applied = False
+        for column_name, ddl in required_columns.items():
+            if column_name not in existing:
+                try:
+                    await conn.execute(ddl)
+                    applied = True
+                    logger.info(f'Applied late migration for users: {ddl}')
+                except Exception as migration_error:
+                    logger.error(f'Failed to apply late migration {ddl}: {migration_error}')
+        if applied:
+            await conn.commit()
+
     async def ensure_user(
         self, user_id: int, *, default_trial: int = 10, is_admin: bool = False
     ) -> UserRecord:
@@ -596,7 +622,7 @@ class DatabaseAdvanced:
                         (user_id, 1 if is_admin else 0, default_trial, now, now),
                     )
                 except Exception:
-                    # Fallback для старой схемы без реферальных полей
+                    await self._ensure_referral_columns(conn)
                     await conn.execute(
                         """
                         INSERT OR IGNORE INTO users
@@ -628,6 +654,7 @@ class DatabaseAdvanced:
                     row = await cursor.fetchone()
                     await cursor.close()
                 except Exception:
+                    await self._ensure_referral_columns(conn)
                     # Fallback для старой схемы
                     cursor = await conn.execute(
                         """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
@@ -668,6 +695,7 @@ class DatabaseAdvanced:
                     row = await cursor.fetchone()
                     await cursor.close()
                 except Exception:
+                    await self._ensure_referral_columns(conn)
                     # Fallback для старой схемы
                     cursor = await conn.execute(
                         """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
@@ -1290,6 +1318,7 @@ class DatabaseAdvanced:
 
         async with self.pool.acquire() as conn:
             try:
+                await self._ensure_referral_columns(conn)
                 await conn.execute(
                     "UPDATE users SET referral_code = ?, updated_at = ? WHERE user_id = ?",
                     (code, int(time.time()), user_id),
