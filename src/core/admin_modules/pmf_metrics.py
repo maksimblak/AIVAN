@@ -573,3 +573,16 @@ class PMFMetrics:
             await cursor.close()
 
             return affected > 0
+
+# Static analysis hints
+_PMF_METRIC_METHODS = (
+    PMFMetrics.record_nps_response,
+)
+
+__all__ = (
+    "NPSResult",
+    "SeanEllisResult",
+    "FeaturePMF",
+    "UsageIntensity",
+    "PMFMetrics",
+)
