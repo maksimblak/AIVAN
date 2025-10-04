@@ -1710,7 +1710,7 @@ async def process_voice_message(message: Message):
             return
 
         try:
-            tts_path = await audio_service.synthesize(response_text)
+            tts_path = await audio_service.synthesize(response_text, prefer_male=True)
         except Exception as tts_error:
             logger.warning("Text-to-speech failed: %s", tts_error)
             return
@@ -3727,13 +3727,15 @@ async def run_bot() -> None:
             tts_voice=cfg.voice_tts_voice,
             tts_format=cfg.voice_tts_format,
             max_duration_seconds=cfg.voice_max_duration_seconds,
+            tts_voice_male=cfg.voice_tts_voice_male,
         )
         ctx.audio_service = audio_service
         logger.info(
-            "Voice mode enabled (stt=%s, tts=%s, voice=%s, format=%s)",
+            "Voice mode enabled (stt=%s, tts=%s, voice=%s, male_voice=%s, format=%s)",
             cfg.voice_stt_model,
             cfg.voice_tts_model,
             cfg.voice_tts_voice,
+            cfg.voice_tts_voice_male,
             cfg.voice_tts_format,
         )
     else:
