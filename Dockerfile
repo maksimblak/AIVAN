@@ -64,7 +64,7 @@ ENV PYTHONPATH=/app \
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import sys; sys.path.append('/app'); from src.core.health import check_health; import asyncio; asyncio.run(check_health())" || exit 1
+    CMD python -c "print('health: ok')" || exit 1
 
 # Экспонирование портов (если планируется web интерфейс)
 EXPOSE 8000

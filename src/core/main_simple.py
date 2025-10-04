@@ -56,7 +56,7 @@ from src.bot.document_drafter import (
 from src.bot.status_manager import ProgressStatus, progress_router
 
 from src.bot.stream_manager import StreamingCallback, StreamManager
-from src.bot.ui_components import Emoji, sanitize_telegram_html, render_legal_html
+from src.bot.ui_components import Emoji, sanitize_telegram_html
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db_advanced import DatabaseAdvanced, TransactionStatus

@@ -14,7 +14,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "bot"))
 
 from src.bot.stream_manager import StreamingCallback, StreamManager
-from src.bot.ui_components import render_legal_html
+from src.bot.openai_gateway import format_legal_response_text
 
 
 # Мок бот для тестирования
@@ -126,7 +126,7 @@ async def test_streaming_manager():
     print(f"Содержит переносы: {'<br>' in final_message['text']}")
 
     print("\n5. Проверяем форматирование...")
-    formatted_text = render_legal_html(STREAMING_CHUNKS[-1])
+    formatted_text = format_legal_response_text(STREAMING_CHUNKS[-1])
     print(f"Форматированный текст: {len(formatted_text)} символов")
 
     # Проверяем наличие ключевых элементов форматирования

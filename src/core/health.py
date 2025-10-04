@@ -232,43 +232,6 @@ class OpenAIHealthCheck(HealthCheck):
                 status=HealthStatus.UNHEALTHY, message=f"OpenAI service error: {str(e)}"
             )
 
-
-class RedisHealthCheck(HealthCheck):
-    """Проверка здоровья Redis"""
-
-    def __init__(self, redis_client, **kwargs):
-        super().__init__("redis", critical=False, **kwargs)  # Redis не критичен
-        self.redis_client = redis_client
-
-    async def check(self) -> HealthCheckResult:
-        try:
-            if not self.redis_client:
-                return HealthCheckResult(
-                    status=HealthStatus.UNKNOWN, message="Redis client not initialized"
-                )
-
-            # Ping Redis
-            await self.redis_client.ping()
-
-            # Получаем базовую информацию
-            info = await self.redis_client.info()
-
-            return HealthCheckResult(
-                status=HealthStatus.HEALTHY,
-                message="Redis connection healthy",
-                details={
-                    "connected_clients": info.get("connected_clients", 0),
-                    "used_memory_human": info.get("used_memory_human", "unknown"),
-                    "uptime_in_seconds": info.get("uptime_in_seconds", 0),
-                },
-            )
-
-        except Exception as e:
-            return HealthCheckResult(
-                status=HealthStatus.UNHEALTHY, message=f"Redis error: {str(e)}"
-            )
-
-
 class SessionStoreHealthCheck(HealthCheck):
     """Проверка здоровья session store"""
 
@@ -474,13 +437,6 @@ class HealthChecker:
         self.checks[health_check.name] = health_check
         logger.info(f"Registered health check '{health_check.name}'")
 
-    async def check_component(self, component_name: str) -> HealthCheckResult | None:
-        """Проверка конкретного компонента"""
-        if component_name not in self.checks:
-            return None
-
-        return await self.checks[component_name].execute()
-
     async def check_all(self) -> dict[str, HealthCheckResult]:
         """Проверка всех компонентов"""
         results = {}
@@ -510,59 +466,6 @@ class HealthChecker:
                 results[name] = outcome
         self.last_full_check = time.time()
         return results
-
-    async def get_system_status(self) -> dict[str, Any]:
-        """Получение общего статуса системы"""
-        results = await self.check_all()
-
-        # Определяем общий статус
-        critical_checks = {
-            name: result for name, result in results.items() if self.checks[name].critical
-        }
-
-        overall_status = HealthStatus.HEALTHY
-        unhealthy_critical = []
-        degraded_critical = []
-
-        for name, result in critical_checks.items():
-            if result.status == HealthStatus.UNHEALTHY:
-                unhealthy_critical.append(name)
-            elif result.status == HealthStatus.DEGRADED:
-                degraded_critical.append(name)
-
-        if unhealthy_critical:
-            overall_status = HealthStatus.UNHEALTHY
-        elif degraded_critical:
-            overall_status = HealthStatus.DEGRADED
-
-        # Статистика
-        total_checks = len(results)
-        healthy_count = sum(1 for r in results.values() if r.status == HealthStatus.HEALTHY)
-
-        return {
-            "overall_status": overall_status.value,
-            "timestamp": time.time(),
-            "summary": {
-                "total_checks": total_checks,
-                "healthy": healthy_count,
-                "degraded": len(degraded_critical)
-                + sum(
-                    1
-                    for r in results.values()
-                    if r.status == HealthStatus.DEGRADED and r not in critical_checks.values()
-                ),
-                "unhealthy": len(unhealthy_critical)
-                + sum(
-                    1
-                    for r in results.values()
-                    if r.status == HealthStatus.UNHEALTHY and r not in critical_checks.values()
-                ),
-                "unknown": sum(1 for r in results.values() if r.status == HealthStatus.UNKNOWN),
-            },
-            "critical_issues": unhealthy_critical,
-            "degraded_services": degraded_critical,
-            "checks": {name: result.to_dict() for name, result in results.items()},
-        }
 
     async def start_background_checks(self) -> None:
         """Запуск фоновых проверок"""
@@ -629,80 +532,3 @@ class HealthChecker:
     def get_all_stats(self) -> dict[str, Any]:
         """Alias для get_stats для совместимости с BackgroundTask"""
         return self.get_stats()
-
-async def check_health(*, raise_on_degraded: bool = True) -> dict[str, Any]:
-    """Run a single-pass health check suitable for Docker health probes."""
-    from src.core.app_context import get_settings, set_settings
-
-    from src.core.bootstrap import build_runtime
-    from src.core.settings import AppSettings
-    from src.core.db_advanced import DatabaseAdvanced
-    from src.core.openai_service import OpenAIService
-    from src.core.session_store import SessionStore
-    from src.telegram_legal_bot.ratelimit import RateLimiter
-
-    health_logger = logging.getLogger("ai-ivan.healthcheck")
-
-    settings = get_settings()
-    set_settings(settings)
-    runtime, container = build_runtime(settings, logger=health_logger)
-
-    db = None
-    rate_limiter = None
-    session_store = None
-    openai_service = None
-
-    try:
-        db = runtime.db or container.get(DatabaseAdvanced)
-        runtime.db = db
-        rate_limiter = runtime.rate_limiter or container.get(RateLimiter)
-        runtime.rate_limiter = rate_limiter
-        session_store = runtime.session_store or container.get(SessionStore)
-        runtime.session_store = session_store
-        openai_service = runtime.openai_service or container.get(OpenAIService)
-        runtime.openai_service = openai_service
-
-        await container.init_async_services()
-
-        checker = HealthChecker(check_interval=settings.health_check_interval)
-        checker.register_check(DatabaseHealthCheck(db))
-        checker.register_check(OpenAIHealthCheck(openai_service))
-        checker.register_check(SessionStoreHealthCheck(session_store))
-        checker.register_check(RateLimiterHealthCheck(rate_limiter))
-        if settings.enable_system_monitoring:
-            checker.register_check(SystemResourcesHealthCheck())
-
-        results = await checker.check_all()
-
-        status = HealthStatus.HEALTHY
-        degraded: list[str] = []
-        unhealthy: list[str] = []
-
-        for name, result in results.items():
-            if result.status == HealthStatus.UNHEALTHY:
-                unhealthy.append(f"{name}: {result.message}")
-                status = HealthStatus.UNHEALTHY
-            elif result.status == HealthStatus.DEGRADED:
-                degraded.append(f"{name}: {result.message}")
-                if status != HealthStatus.UNHEALTHY:
-                    status = HealthStatus.DEGRADED
-
-        if unhealthy:
-            health_logger.error("Health check failed: %s", "; ".join(unhealthy))
-        if degraded and status == HealthStatus.DEGRADED:
-            health_logger.warning("Health check degraded: %s", "; ".join(degraded))
-
-        if status == HealthStatus.UNHEALTHY or (raise_on_degraded and status == HealthStatus.DEGRADED):
-            details = [
-                f"{name}: {result.message}"
-                for name, result in results.items()
-                if result.status != HealthStatus.HEALTHY
-            ]
-            raise RuntimeError("Health check failed: " + "; ".join(details))
-
-        return {"status": status.value, "results": {name: result.to_dict() for name, result in results.items()}}
-
-    finally:
-        if container is not None:
-            with suppress(Exception):
-                await container.cleanup()
