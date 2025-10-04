@@ -293,12 +293,12 @@ class SessionStoreHealthCheck(HealthCheck):
 
             if max_size > 0:
                 usage_percent = sessions_count / max_size
-                if usage_percent > 0.8:  # Более 80% заполненности
-                    status = HealthStatus.DEGRADED
-                    message = f"Session store nearly full ({usage_percent:.1%})"
-                elif usage_percent >= 1.0:  # Переполнение
+                if usage_percent >= 1.0:  # Session store overflow
                     status = HealthStatus.UNHEALTHY
                     message = "Session store overflow"
+                elif usage_percent > 0.8:  # Session store nearly full
+                    status = HealthStatus.DEGRADED
+                    message = f"Session store nearly full ({usage_percent:.1%})"
 
             return HealthCheckResult(
                 status=status,
@@ -490,15 +490,24 @@ class HealthChecker:
 
         completed = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
-        for (name, _), result in zip(tasks.items(), completed, strict=False):
-            if isinstance(result, Exception):
-                results[name] = HealthCheckResult(
+        for (name, _), outcome in zip(tasks.items(), completed, strict=False):
+            if isinstance(outcome, BaseException):
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
+                if isinstance(outcome, (KeyboardInterrupt, SystemExit)):
+                    raise outcome
+                logger.error("Health check '%s' failed during execution: %s", name, outcome)
+                fallback = HealthCheckResult(
                     status=HealthStatus.UNHEALTHY,
-                    message=f"Health check execution failed: {str(result)}",
+                    message=f"Health check execution failed: {str(outcome)}",
                 )
+                check = self.checks.get(name)
+                if check is not None:
+                    check._update_counters(fallback.status)
+                    check.last_result = fallback
+                results[name] = fallback
             else:
-                results[name] = result
-
+                results[name] = outcome
         self.last_full_check = time.time()
         return results
 
