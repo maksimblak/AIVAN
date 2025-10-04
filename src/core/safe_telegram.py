@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from html import escape as html_escape
 from typing import List, Optional
 
 from aiogram import Bot
@@ -21,6 +22,17 @@ def format_safe_html(raw_text: str) -> str:
     normalized = (raw_text or "").replace("\r\n", "\n")
     normalized = normalized.replace('\\n', '\n')
     normalized = normalized.replace(' ', ' ').replace('‑', '-')
+
+    def _convert_markdown_link(match: re.Match[str]) -> str:
+        text_part = html_escape(match.group(1).strip())
+        href = html_escape(match.group(2).strip(), quote=True)
+        return f'<a href="{href}">{text_part}</a>'
+
+    normalized = re.sub(
+        r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)",
+        _convert_markdown_link,
+        normalized,
+    )
     try:
         safe_html = sanitize_telegram_html(normalized)
         safe_html = re.sub(r'<blockquote(?:[^>]*)>', '<i>', safe_html, flags=re.IGNORECASE)
