@@ -766,6 +766,10 @@ async def _ask_legal_internal(
                             if formatted_final:
                                 return {"ok": True, "text": formatted_final, "usage": usage_info}
 
+                            logger.warning("OpenAI stream returned no text; trying next payload option")
+                            last_err = "empty_response"
+                            continue
+
                     resp = await oai.responses.create(**payload)
                     text = getattr(resp, "output_text", None)
                     if text and text.strip():
@@ -788,6 +792,10 @@ async def _ask_legal_internal(
                             "text": joined,
                             "usage": getattr(resp, "usage", None),
                         }
+
+                    logger.warning("OpenAI response contained no text output; trying next payload option")
+                    last_err = "empty_response"
+                    continue
 
                 except TypeError as type_err:
                     message = str(type_err)
