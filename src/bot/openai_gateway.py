@@ -10,7 +10,7 @@ import html
 from html.parser import HTMLParser
 import inspect
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -31,6 +31,85 @@ def _infer_model_caps(model: str) -> dict[str, bool]:
     if lower.startswith('gpt-5') or (lower.startswith('o') and not lower.startswith('omni')):
         caps['supports_sampling'] = False
     return caps
+
+
+
+def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
+    summary = str(data.get('summary') or '').strip()
+    analysis = str(data.get('analysis') or '').strip()
+    disclaimer = str(data.get('disclaimer') or '').strip()
+    legal_basis = data.get('legal_basis') or []
+    risks = data.get('risks') or []
+
+    parts: list[str] = []
+    if summary:
+        parts.append(f"<b>Кратко:</b> {html.escape(summary)}")
+    if analysis:
+        parts.append(f"<b>Анализ:</b> {html.escape(analysis)}")
+
+    basis_lines: list[str] = []
+    for item in legal_basis:
+        if not isinstance(item, Mapping):
+            continue
+        reference = str(item.get('reference') or '').strip()
+        explanation = str(item.get('explanation') or '').strip()
+        if reference and explanation:
+            basis_lines.append(f"• {html.escape(reference)} — {html.escape(explanation)}")
+        elif reference:
+            basis_lines.append(f"• {html.escape(reference)}")
+    if basis_lines:
+        basis_block = '\n'.join(basis_lines)
+        parts.append(f"<b>Правовое основание:</b>\n{basis_block}")
+
+    risk_lines: list[str] = []
+    for risk in risks:
+        risk_text = str(risk or '').strip()
+        if risk_text:
+            risk_lines.append(f"• {html.escape(risk_text)}")
+    if risk_lines:
+        risk_block = '\n'.join(risk_lines)
+        parts.append(f"<b>Риски:</b>\n{risk_block}")
+
+    if disclaimer:
+        parts.append(f"<i>{html.escape(disclaimer)}</i>")
+
+    combined = '\n\n'.join(part for part in parts if part).strip()
+    return combined
+
+
+def _extract_text_from_content(content: Any) -> str | None:
+    text_value = getattr(content, 'text', None)
+    if text_value:
+        return text_value
+    if isinstance(content, dict):
+        dict_text = content.get('text')
+        if dict_text:
+            return str(dict_text)
+
+    for key in ('parsed', 'data'):
+        candidate = getattr(content, key, None)
+        if candidate is None and isinstance(content, dict):
+            candidate = content.get(key)
+        if isinstance(candidate, Mapping):
+            formatted = _format_structured_legal_response(candidate)
+            if formatted:
+                return formatted
+
+    json_schema = getattr(content, 'json_schema', None)
+    if json_schema is None and isinstance(content, dict):
+        json_schema = content.get('json_schema')
+    if isinstance(json_schema, Mapping):
+        for key in ('parsed', 'data'):
+            candidate = json_schema.get(key)
+            if isinstance(candidate, Mapping):
+                formatted = _format_structured_legal_response(candidate)
+                if formatted:
+                    return formatted
+        formatted = _format_structured_legal_response(json_schema)
+        if formatted:
+            return formatted
+
+    return None
 
 StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
@@ -618,12 +697,15 @@ async def _ask_legal_internal(
                                         contents = getattr(it, "content")
                                     elif isinstance(it, dict):
                                         contents = it.get("content") or []
+                                    before = len(chunks)
                                     for c in contents:
-                                        t = getattr(c, "text", None)
-                                        if not t and isinstance(c, dict):
-                                            t = c.get("text")
-                                        if t:
-                                            chunks.append(t)
+                                        extracted = _extract_text_from_content(c)
+                                        if extracted:
+                                            chunks.append(extracted)
+                                    if not contents or len(chunks) == before:
+                                        extracted_item = _extract_text_from_content(it)
+                                        if extracted_item:
+                                            chunks.append(extracted_item)
                                 text = "\n\n".join(chunks) if chunks else ""
 
                             final_raw = (text or accumulated_text or "").strip()
@@ -660,12 +742,15 @@ async def _ask_legal_internal(
                             contents = getattr(it, "content")
                         elif isinstance(it, dict):
                             contents = it.get("content") or []
+                        before = len(chunks)
                         for c in contents:
-                            t = getattr(c, "text", None)
-                            if not t and isinstance(c, dict):
-                                t = c.get("text")
-                            if t:
-                                chunks.append(t)
+                            extracted = _extract_text_from_content(c)
+                            if extracted:
+                                chunks.append(extracted)
+                        if not contents or len(chunks) == before:
+                            extracted_item = _extract_text_from_content(it)
+                            if extracted_item:
+                                chunks.append(extracted_item)
                     if chunks:
                         joined = "\n\n".join(chunks).strip()
                         logger.debug("OpenAI raw response (joined): %s", joined)

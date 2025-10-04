@@ -1033,6 +1033,190 @@ class DatabaseAdvanced:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in record_request: {str(e)}")
 
+    # ============ Rating helpers ============
+
+    async def add_rating(
+        self,
+        request_id: int,
+        user_id: int,
+        rating: int,
+        feedback_text: str | None = None,
+        *,
+        username: str | None = None,
+        answer_text: str | None = None,
+    ) -> bool:
+        """Insert or update a rating for a request."""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                await conn.execute(
+                    """
+                    INSERT INTO ratings (
+                        request_id,
+                        user_id,
+                        rating,
+                        feedback_text,
+                        created_at,
+                        username,
+                        answer_text
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, request_id) DO UPDATE SET
+                        rating = excluded.rating,
+                        feedback_text = excluded.feedback_text,
+                        created_at = excluded.created_at,
+                        username = excluded.username,
+                        answer_text = excluded.answer_text
+                    """,
+                    (
+                        request_id,
+                        user_id,
+                        rating,
+                        feedback_text,
+                        now,
+                        username,
+                        answer_text,
+                    ),
+                )
+                self.query_count += 1 if self.enable_metrics else 0
+                return True
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in add_rating: {e}")
+                return False
+
+    async def get_rating(self, request_id: int, user_id: int) -> RatingRecord | None:
+        """Fetch a rating for the given request/user pair."""
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, request_id, user_id, rating, feedback_text, created_at, username, answer_text
+                    FROM ratings
+                    WHERE request_id = ? AND user_id = ?
+                    """,
+                    (request_id, user_id),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+                if not row:
+                    return None
+                return RatingRecord(*row)
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_rating: {e}")
+                return None
+
+    async def get_ratings_statistics(self, days: int) -> dict[str, Any]:
+        """Aggregate rating metrics for the given period (in days)."""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                period_start = 0 if days <= 0 else now - days * 86400
+                cursor = await conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total_ratings,
+                        SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) AS total_likes,
+                        SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) AS total_dislikes,
+                        SUM(CASE WHEN feedback_text IS NOT NULL AND TRIM(feedback_text) <> '' THEN 1 ELSE 0 END) AS feedback_count
+                    FROM ratings
+                    WHERE created_at >= ?
+                    """,
+                    (period_start,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+                if not row:
+                    return {
+                        "total_ratings": 0,
+                        "total_likes": 0,
+                        "total_dislikes": 0,
+                        "like_rate": 0.0,
+                        "feedback_count": 0,
+                    }
+
+                total_ratings = row[0] or 0
+                total_likes = row[1] or 0
+                total_dislikes = row[2] or 0
+                feedback_count = row[3] or 0
+                like_rate = (total_likes / total_ratings * 100.0) if total_ratings else 0.0
+
+                return {
+                    "total_ratings": total_ratings,
+                    "total_likes": total_likes,
+                    "total_dislikes": total_dislikes,
+                    "like_rate": like_rate,
+                    "feedback_count": feedback_count,
+                }
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_ratings_statistics: {e}")
+                return {
+                    "total_ratings": 0,
+                    "total_likes": 0,
+                    "total_dislikes": 0,
+                    "like_rate": 0.0,
+                    "feedback_count": 0,
+                }
+
+    async def get_low_rated_requests(
+        self,
+        limit: int = 5,
+        days: int = 30,
+        min_count: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return requests with the lowest average ratings."""
+        limit = max(limit, 1)
+        min_count = max(min_count, 1)
+        async with self.pool.acquire() as conn:
+            try:
+                params: list[Any] = []
+                where_clauses: list[str] = []
+                if days and days > 0:
+                    period_start = int(time.time()) - days * 86400
+                    where_clauses.append("created_at >= ?")
+                    params.append(period_start)
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+                query = f"""
+                    SELECT
+                        request_id,
+                        AVG(rating) AS avg_rating,
+                        COUNT(*) AS rating_count
+                    FROM ratings
+                    {where_sql}
+                    GROUP BY request_id
+                    HAVING COUNT(*) >= ?
+                    ORDER BY avg_rating ASC, rating_count DESC
+                    LIMIT ?
+                """
+                params.extend([min_count, limit])
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+
+                results: list[dict[str, Any]] = []
+                for request_id, avg_rating, rating_count in rows:
+                    if avg_rating is None:
+                        continue
+                    results.append(
+                        {
+                            "request_id": request_id,
+                            "avg_rating": float(avg_rating),
+                            "rating_count": int(rating_count),
+                        }
+                    )
+
+                return [item for item in results if item["avg_rating"] < 0.5]
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_low_rated_requests: {e}")
+                return []
+
     async def get_user_statistics(self, user_id: int, days: int = 30) -> dict[str, Any]:
         """Получение статистики пользователя за определенный период"""
         async with self.pool.acquire() as conn:

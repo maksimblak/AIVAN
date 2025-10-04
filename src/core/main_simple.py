@@ -28,7 +28,7 @@ from html import escape as html_escape
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -548,6 +548,30 @@ async def _rate_limit_guard(user_id: int, message: Message) -> bool:
     return False
 
 
+
+
+async def _delete_status_message(bot: Bot, chat_id: int, message_id: int, attempts: int = 3) -> bool:
+    """Attempt to remove the progress message with basic retry/backoff."""
+    for attempt in range(max(1, attempts)):
+        try:
+            await bot.delete_message(chat_id, message_id)
+            return True
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+        except TelegramBadRequest as exc:
+            low = str(exc).lower()
+            if "message to delete not found" in low or "message can't be deleted" in low:
+                return False
+            if attempt == attempts - 1:
+                logger.warning("Unable to delete status message: %s", exc)
+            await asyncio.sleep(0.2 * (attempt + 1))
+        except Exception as exc:  # noqa: BLE001
+            if attempt == attempts - 1:
+                logger.warning("Unexpected error deleting status message: %s", exc)
+            await asyncio.sleep(0.2 * (attempt + 1))
+    return False
+
+
 async def _start_status_indicator(message):
     status = ProgressStatus(
         message.bot,
@@ -565,18 +589,21 @@ async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> Non
     if status is None:
         return
 
+    message_id = getattr(status, "message_id", None)
+
     try:
         if ok:
-            await status.complete()  # ставит «выполнено», фиксирует время
+            if hasattr(status, "_last_edit_ts"):
+                status._last_edit_ts = 0.0  # allow immediate update on completion
+            await status.complete()
         else:
             await status.fail("Ошибка при формировании ответа")
-    except Exception:
-        return  # опционально залогируй
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to finalize status indicator: %s", exc)
+        return
 
-    # по запросу: удаляем прогресс-бар, когда ответ пришёл
-    if ok and getattr(status, "message_id", None):
-        with suppress(Exception):
-            await status.bot.delete_message(status.chat_id, status.message_id)
+    if ok and message_id:
+        await _delete_status_message(status.bot, status.chat_id, message_id)
 
 # ============ ФУНКЦИИ РЕЙТИНГА И UI ============
 

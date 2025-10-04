@@ -199,3 +199,79 @@ class TestDatabaseAdvanced:
         # Assert - изменения должны быть отменены
         user = await db.get_user(user_id)
         assert user.trial_remaining == 10  # Не изменилось
+
+    @pytest.mark.asyncio
+    async def test_add_and_get_rating(self, db):
+        user_id = 101
+        await db.ensure_user(user_id, default_trial=5, is_admin=False)
+        request_id = await db.record_request(user_id)
+
+        success = await db.add_rating(
+            request_id,
+            user_id,
+            1,
+            None,
+            username="tester",
+            answer_text="answer snapshot",
+        )
+        assert success is True
+
+        rating = await db.get_rating(request_id, user_id)
+        assert rating is not None
+        assert rating.rating == 1
+        assert rating.username == "tester"
+        assert rating.answer_text == "answer snapshot"
+
+        success = await db.add_rating(
+            request_id,
+            user_id,
+            -1,
+            "needs work",
+            username="tester",
+            answer_text="answer snapshot",
+        )
+        assert success is True
+
+        updated = await db.get_rating(request_id, user_id)
+        assert updated is not None
+        assert updated.rating == -1
+        assert updated.feedback_text == "needs work"
+
+    @pytest.mark.asyncio
+    async def test_ratings_statistics_and_low_rated_requests(self, db):
+        primary_user = 201
+        await db.ensure_user(primary_user, default_trial=5, is_admin=False)
+        request_id = await db.record_request(primary_user)
+        await db.add_rating(
+            request_id,
+            primary_user,
+            -1,
+            "too vague",
+            username="primary",
+            answer_text="summary",
+        )
+
+        second_user = 202
+        await db.ensure_user(second_user, default_trial=5, is_admin=False)
+        await db.add_rating(
+            request_id,
+            second_user,
+            -1,
+            None,
+            username="secondary",
+            answer_text="summary",
+        )
+
+        stats = await db.get_ratings_statistics(7)
+        assert stats["total_ratings"] == 2
+        assert stats["total_likes"] == 0
+        assert stats["total_dislikes"] == 2
+        assert stats["feedback_count"] == 1
+        assert stats["like_rate"] == 0.0
+
+        low_rated = await db.get_low_rated_requests(limit=5, days=30)
+        assert len(low_rated) == 1
+        assert low_rated[0]["request_id"] == request_id
+        assert low_rated[0]["rating_count"] == 2
+        assert low_rated[0]["avg_rating"] < 0.0
+
