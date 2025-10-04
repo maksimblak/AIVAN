@@ -143,6 +143,7 @@ metrics_collector = None
 task_manager = None
 health_checker = None
 scaling_components = None
+judicial_rag = None
 
 
 async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, answer_text: str) -> None:
@@ -234,6 +235,7 @@ def _sync_runtime_globals() -> None:
         'task_manager': _runtime.task_manager,
         'health_checker': _runtime.health_checker,
         'scaling_components': _runtime.scaling_components,
+        'judicial_rag': _runtime.get_dependency('judicial_rag'),
     })
 
 
@@ -893,14 +895,37 @@ async def process_question(message: Message, *, text_override: str | None = None
 
             # Выбор промпта
             selected_prompt = LEGAL_SYSTEM_PROMPT
-            if getattr(user_session, "practice_search_mode", False):
+            practice_mode = getattr(user_session, "practice_search_mode", False)
+            rag_context = ""
+            rag_fragments = []
+
+            if practice_mode:
                 selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
                 user_session.practice_search_mode = False
+
+                # Интеграция RAG для поиска судебной практики
+                if judicial_rag is not None and judicial_rag.enabled:
+                    try:
+                        if hasattr(status, "update_stage"):
+                            await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику в базе...")
+                        rag_context, rag_fragments = await judicial_rag.build_context(question_text)
+                        if rag_context:
+                            logger.info(f"RAG found {len(rag_fragments)} relevant cases for question")
+                    except Exception as rag_error:
+                        logger.warning(f"RAG search failed: {rag_error}", exc_info=True)
 
             if text_override is not None and getattr(message, "voice", None):
                 selected_prompt = (
                     selected_prompt
                     + "\n\nГолосовой режим: сохрани указанную структуру блоков, обязательно перечисли нормативные акты с точными реквизитами и уточни, что текстовый ответ уже предоставлен в чате."
+                )
+
+            # Добавляем контекст RAG в промпт
+            if rag_context:
+                selected_prompt = (
+                    selected_prompt
+                    + f"\n\n<judicial_practice_context>\nВот релевантная судебная практика из базы данных:\n\n{rag_context}\n</judicial_practice_context>\n\n"
+                    + "ВАЖНО: Используй эту судебную практику в своём ответе, ссылайся на конкретные дела с указанием ссылок."
                 )
 
             # --- Запрос к OpenAI (стрим/нестрим) ---
@@ -991,15 +1016,25 @@ async def process_question(message: Message, *, text_override: str | None = None
 
         # Добавляем время ответа к финальному сообщению
         time_footer_raw = f"{Emoji.CLOCK} Время ответа: {timer.get_duration_text()} "
+
+        # Формируем футер с найденными делами (если есть)
+        sources_footer = ""
+        if rag_fragments and practice_mode:
+            sources_lines = ["\n\n📚 <b>Использованные дела из базы:</b>"]
+            for idx, fragment in enumerate(rag_fragments[:5], start=1):
+                header = fragment.header or f"Дело #{idx}"
+                sources_lines.append(f"{idx}. {header}")
+            sources_footer = "\n".join(sources_lines)
+
         if USE_STREAMING and had_stream_content and stream_manager is not None:
             final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
-            combined_stream_text = (final_stream_text.rstrip() + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
+            combined_stream_text = (final_stream_text.rstrip() + sources_footer + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
             final_answer_text = combined_stream_text
             await stream_manager.finalize(combined_stream_text)
         else:
             text_to_send = (isinstance(result, dict) and (result.get("text") or "")) or ""
             if text_to_send:
-                combined_text = f"{text_to_send.rstrip()}\n\n{time_footer_raw}"
+                combined_text = f"{text_to_send.rstrip()}{sources_footer}\n\n{time_footer_raw}"
                 final_answer_text = combined_text
                 await send_html_text(
                     bot=message.bot,
