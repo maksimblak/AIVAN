@@ -20,8 +20,17 @@ logger = logging.getLogger(__name__)
 
 _SETTINGS: AppSettings = get_settings()
 
+
 MODEL_CAPABILITIES: dict[str, dict[str, bool]] = {}
 _VALIDATED_MODELS: set[str] = set()
+
+
+def _infer_model_caps(model: str) -> dict[str, bool]:
+    lower = model.lower()
+    caps: dict[str, bool] = {}
+    if lower.startswith('gpt-5') or (lower.startswith('o') and not lower.startswith('omni')):
+        caps['supports_sampling'] = False
+    return caps
 
 StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
@@ -56,6 +65,22 @@ def _get_env_int(name: str, default: int) -> int:
         return default
 
 
+
+
+def _get_env_non_negative_int(name: str, default: int) -> int:
+    raw = _SETTINGS.get_str(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+        if value < 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
+        return default
+
+
 def _resolve_proxy_url() -> str | None:
     proxy = _SETTINGS.get_str("OPENAI_HTTP_PROXY") or _SETTINGS.get_str("OPENAI_PROXY")
     if not proxy:
@@ -78,7 +103,7 @@ def _resolve_proxy_url() -> str | None:
 
 
 def _build_http_client() -> httpx.AsyncClient:
-    timeout_total = _get_env_float("OPENAI_HTTP_TIMEOUT", 45.0)
+    timeout_total = _get_env_float("OPENAI_HTTP_TIMEOUT", 90.0)
     connect_timeout = _get_env_float("OPENAI_HTTP_CONNECT_TIMEOUT", min(timeout_total, 10.0))
     read_timeout = _get_env_float("OPENAI_HTTP_READ_TIMEOUT", timeout_total)
     write_timeout = _get_env_float("OPENAI_HTTP_WRITE_TIMEOUT", timeout_total)
@@ -134,9 +159,11 @@ async def _make_async_client() -> AsyncOpenAI:
     project = _SETTINGS.get_str("OPENAI_PROJECT")
 
     http_client = _build_http_client()
+    max_retries = _get_env_non_negative_int("OPENAI_MAX_RETRIES", 1)
     client_kwargs: dict[str, Any] = {
         'api_key': api_key,
         'http_client': http_client,
+        'max_retries': max_retries,
     }
     if base_url:
         client_kwargs['base_url'] = base_url.rstrip('/')
@@ -496,6 +523,9 @@ async def _ask_legal_internal(
     sampling_payload = {"temperature": temperature, "top_p": top_p}
 
     model_caps = MODEL_CAPABILITIES.setdefault(model, {})
+    inferred_caps = _infer_model_caps(model)
+    for key, value in inferred_caps.items():
+        model_caps.setdefault(key, value)
     include_sampling = model_caps.get("supports_sampling", True)
 
     if not _SETTINGS.get_bool("DISABLE_WEB", False):
