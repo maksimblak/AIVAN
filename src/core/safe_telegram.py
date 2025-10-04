@@ -33,64 +33,94 @@ def format_safe_html(raw_text: str) -> str:
 
 
 def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
-    """
-    Режем уже безопасный HTML на части ≤ hard_limit.
-    Приоритет: абзацы (<br><br>) → строки (<br>) → предложения (.?! ) → жёсткая нарезка.
-    """
+    """Split HTML into Telegram-sized chunks preserving balanced tags."""
     if not html:
         return ["—"]
 
-    # нормализуем переносы
-    text = re.sub(r"<br\s*/?>", "<br>", html, flags=re.IGNORECASE)
+    token_re = re.compile(r"<[^>]+>|[^<]+")
+    tag_re = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>")
+    self_closing = {"br"}
+
     chunks: list[str] = []
+    open_stack: list[tuple[str, str, str]] = []
+    current_parts: list[str] = []
+    current_len = 0
 
-    def pack(parts: list[str], sep: str) -> list[str]:
-        out, cur, ln = [], [], 0
-        for p in parts:
-            add = p
-            sep_len = len(sep) if cur else 0
-            if ln + sep_len + len(add) <= hard_limit:
-                if cur:
-                    cur.append(sep)
-                cur.append(add)
-                ln += sep_len + len(add)
+    def append_token(token: str) -> None:
+        nonlocal current_len
+        current_parts.append(token)
+        current_len += len(token)
+
+    def reopen_prefix() -> str:
+        return "".join(info[1] for info in open_stack)
+
+    def append_closings() -> str:
+        return "".join(info[2] for info in reversed(open_stack))
+
+    def flush_chunk() -> None:
+        nonlocal current_parts, current_len
+        if not current_parts and not open_stack:
+            return
+        chunk_body = "".join(current_parts)
+        chunk_body += append_closings()
+        chunks.append(chunk_body if chunk_body.strip() else "—")
+        prefix = reopen_prefix()
+        current_parts = [prefix] if prefix else []
+        current_len = len(prefix)
+
+    for match in token_re.finditer(html):
+        token = match.group(0)
+        tag_match = tag_re.fullmatch(token)
+        if tag_match:
+            is_closing = bool(tag_match.group(1))
+            tag_name_raw = tag_match.group(2)
+            tag_name = tag_name_raw.lower()
+
+            if not is_closing:
+                if tag_name in self_closing:
+                    if current_len + len(token) > hard_limit:
+                        flush_chunk()
+                    append_token(token)
+                    continue
+
+                close_token = f"</{tag_name_raw}>"
+                open_stack.append((tag_name, token, close_token))
+                if current_len + len(token) > hard_limit:
+                    flush_chunk()
+                append_token(token)
             else:
-                if cur:
-                    out.append("".join(cur))
-                cur, ln = [add], len(add)
-        if cur:
-            out.append("".join(cur))
-        return out
-
-    # 1) по абзацам
-    paras = re.split(r"(?:<br>\s*){2,}", text)
-    stage1 = pack(paras, "<br><br>")
-
-    # 2) по строкам
-    stage2: list[str] = []
-    for block in stage1:
-        if len(block) <= hard_limit:
-            stage2.append(block)
-            continue
-        lines = block.split("<br>")
-        stage2.extend(pack(lines, "<br>"))
-
-    # 3) по предложениям
-    final: list[str] = []
-    sent_re = re.compile(r"(?<=[\.\!\?])\s+")
-    for block in stage2:
-        if len(block) <= hard_limit:
-            final.append(block)
-            continue
-        sentences = sent_re.split(block)
-        if len(sentences) > 1:
-            final.extend(pack(sentences, " "))
+                if current_len + len(token) > hard_limit:
+                    flush_chunk()
+                append_token(token)
+                for idx in range(len(open_stack) - 1, -1, -1):
+                    if open_stack[idx][0] == tag_name:
+                        open_stack.pop(idx)
+                        break
         else:
-            # 4) жёсткая нарезка
-            for i in range(0, len(block), hard_limit):
-                final.append(block[i : i + hard_limit])
+            text_chunk = token
+            while text_chunk:
+                space_left = hard_limit - current_len
+                if space_left <= 0:
+                    flush_chunk()
+                    space_left = hard_limit - current_len
+                if len(text_chunk) <= space_left:
+                    append_token(text_chunk)
+                    text_chunk = ""
+                else:
+                    slice_len = space_left
+                    slice_part = text_chunk[:slice_len]
+                    split_at = slice_part.rfind(" ")
+                    if 0 < split_at < slice_len:
+                        slice_len = split_at + 1
+                        slice_part = text_chunk[:slice_len]
+                    append_token(slice_part)
+                    text_chunk = text_chunk[slice_len:]
+                    flush_chunk()
 
-    return [b.strip() for b in final if b.strip()] or ["—"]
+    flush_chunk()
+
+    return chunks or ["—"]
+
 
 
 def _plain(text: str) -> str:

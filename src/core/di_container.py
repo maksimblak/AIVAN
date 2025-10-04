@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import inspect
 import logging
@@ -126,6 +126,7 @@ def create_container(settings: AppSettings) -> DIContainer:
     from src.core.audio_service import AudioService
     from src.core.session_store import SessionStore
     from src.core.payments import CryptoPayProvider
+    from src.core.rag.judicial_rag import JudicialPracticeRAG
     from src.telegram_legal_bot.ratelimit import RateLimiter
 
     container.register_factory(
@@ -182,6 +183,11 @@ def create_container(settings: AppSettings) -> DIContainer:
         lambda: CryptoPayProvider(asset=settings.crypto_asset, settings=settings),
     )
 
+    container.register_factory(
+        JudicialPracticeRAG,
+        lambda: JudicialPracticeRAG(settings=settings),
+    )
+
     container.register_config("subscription_price_rub", settings.subscription_price_rub)
     container.register_config("subscription_price_xtr", settings.subscription_price_xtr)
 
@@ -213,3 +219,7 @@ def reset_container() -> None:
     """Reset cached container (used by tests)."""
     global _container
     _container = None
+
+
+
+

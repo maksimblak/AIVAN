@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from pathlib import Path
@@ -9,6 +9,7 @@ from src.core.payments import convert_rub_to_xtr
 from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
 from src.core.subscription_plans import get_default_subscription_plans
 from src.core.settings import AppSettings
+from src.core.rag.judicial_rag import JudicialPracticeRAG
 
 
 def _discover_welcome_media() -> WelcomeMedia | None:
@@ -93,6 +94,13 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
     runtime.rate_limiter = container.get(RateLimiter)
     runtime.session_store = container.get(SessionStore)
     runtime.crypto_provider = container.get(CryptoPayProvider)
+
+    try:
+        rag_service = container.get(JudicialPracticeRAG)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Judicial RAG service unavailable: %s", exc)
+        rag_service = None
+    runtime.set_dependency("judicial_rag", rag_service)
 
     runtime.set_dependency("container", container)
     return runtime, container
