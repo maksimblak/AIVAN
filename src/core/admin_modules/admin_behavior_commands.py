@@ -397,3 +397,18 @@ async def back_to_behavior_menu(callback: CallbackQuery, db, admin_ids: set[int]
 
     await render_dashboard(build_dashboard, callback)
     await callback.answer()
+
+
+__all__ = (
+    "behavior_router",
+    "cmd_behavior",
+    "handle_popular_features",
+    "handle_friction_points",
+    "handle_engagement",
+    "handle_underutilized",
+    "handle_peak_hours",
+    "handle_feature_feedback",
+    "handle_user_journey",
+    "cmd_user_journey",
+    "back_to_behavior_menu",
+)

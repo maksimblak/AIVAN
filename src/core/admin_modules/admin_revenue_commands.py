@@ -303,3 +303,16 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
 
     await render_dashboard(build_dashboard, callback)
     await callback.answer()
+
+
+__all__ = (
+    "revenue_router",
+    "cmd_revenue",
+    "handle_revenue_refresh",
+    "handle_mrr_history",
+    "handle_revenue_forecast",
+    "handle_runway_calculator",
+    "cmd_runway",
+    "handle_unit_economics",
+    "handle_back_to_main",
+)

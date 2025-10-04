@@ -1529,3 +1529,21 @@ class DatabaseAdvanced:
 
         await self.pool.close()
         logger.info("Advanced database closed")
+
+# Hints for static analyzers
+_UNUSED_USER_RECORD_FIELDS = (
+    "UserRecord.successful_requests",
+    "UserRecord.last_request_at",
+    "UserRecord.referred_by",
+    "UserRecord.subscription_last_purchase_at",
+    "TransactionRecord.updated_at",
+    "TransactionStatus.PENDING",
+)
+
+__all__ = (
+    "UserRecord",
+    "TransactionRecord",
+    "RequestRecord",
+    "TransactionStatus",
+    "DatabaseAdvanced",
+)

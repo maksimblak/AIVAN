@@ -414,3 +414,16 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
+
+
+__all__ = (
+    "pmf_router",
+    "cmd_pmf",
+    "handle_pmf_refresh",
+    "handle_nps_details",
+    "handle_feature_pmf",
+    "handle_feature_details",
+    "handle_send_survey",
+    "handle_survey_segment",
+    "handle_back_to_main",
+)

@@ -532,3 +532,21 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
         dp.include_router(router)
 
     logger.info(f" �����-������� ���������������� ��� {len(admin_ids)} �������")
+
+
+__all__ = (
+    "admin_router",
+    "cmd_admin",
+    "handle_admin_menu_analytics",
+    "handle_admin_menu_refresh",
+    "handle_admin_menu_back",
+    "handle_segment_view",
+    "handle_conversion_stats",
+    "handle_daily_stats",
+    "handle_refresh",
+    "cmd_export_users",
+    "cmd_broadcast",
+    "handle_broadcast_confirm",
+    "handle_broadcast_cancel",
+    "setup_admin_commands",
+)

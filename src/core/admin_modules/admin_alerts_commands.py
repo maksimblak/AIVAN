@@ -252,3 +252,15 @@ async def cmd_daily_digest(message: Message, db, bot, admin_ids: list[int]):
     alert_system = AutomatedAlerts(db, bot, admin_ids)
     await message.answer("📊 Генерирую ежедневный дайджест...")
     await alert_system.send_daily_digest()
+
+
+__all__ = (
+    "alerts_router",
+    "cmd_alerts",
+    "handle_alerts_refresh",
+    "handle_alerts_by_category",
+    "handle_category_alerts",
+    "handle_alerts_config",
+    "handle_back_to_alerts",
+    "cmd_daily_digest",
+)

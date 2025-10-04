@@ -483,3 +483,15 @@ async def back_to_retention_menu(callback: CallbackQuery, db, admin_ids: set[int
     if callback.message:
         await edit_or_answer(callback, summary, create_retention_menu())
     await callback.answer()
+
+
+__all__ = (
+    "retention_router",
+    "cmd_retention",
+    "handle_retained_users",
+    "handle_churned_users",
+    "handle_compare_groups",
+    "handle_deep_dive",
+    "cmd_deep_dive_user",
+    "back_to_retention_menu",
+)

@@ -502,3 +502,9 @@ async def start_monitoring(db, bot, admin_chat_ids: list[int], config: AlertConf
     """
     alert_system = AutomatedAlerts(db, bot, admin_chat_ids, config)
     await alert_system.monitoring_loop()
+
+__all__ = (
+    "AutomatedAlerts",
+    "retention_analytics",
+    "start_monitoring",
+)

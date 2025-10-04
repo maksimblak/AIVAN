@@ -733,3 +733,7 @@ class RetentionAnalytics:
                 distribution["low"] += 1
 
         return distribution
+
+__all__ = (
+    "session_duration_avg_minutes",
+)

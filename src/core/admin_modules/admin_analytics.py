@@ -565,3 +565,16 @@ class AdminAnalytics:
 
         return summary
 
+
+# Static analysis hint: preserve dataclass field names used dynamically
+_CHURN_METRIC_FIELDS = (
+    ChurnMetrics.__annotations__["avg_requests_before_churn"],
+    ChurnMetrics.__annotations__["churn_by_usage"],
+)
+
+__all__ = (
+    "UserSegment",
+    "ConversionMetrics",
+    "ChurnMetrics",
+    "AdminAnalytics",
+)

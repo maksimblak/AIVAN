@@ -302,3 +302,16 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
+
+
+__all__ = (
+    "cohort_router",
+    "cmd_cohort",
+    "handle_cohort_refresh",
+    "handle_select_month",
+    "handle_cohort_details",
+    "handle_feature_adoption",
+    "handle_feature_details",
+    "handle_retention_curves",
+    "handle_back_to_main",
+)
