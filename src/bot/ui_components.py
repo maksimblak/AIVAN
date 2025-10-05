@@ -160,17 +160,19 @@ def escape_markdown_v2(text: str) -> str:
 ALLOWED_TAGS = {"b","strong","i","em","u","ins","s","strike","del","code","pre","a","br","tg-spoiler","blockquote"}
 
 
+
+
 def sanitize_telegram_html(html: str) -> str:
-    """
-    Sanitize Telegram HTML: allow a limited subset of tags and normalise broken markup.
-    """
+    """Sanitize Telegram HTML while keeping allowed markup balanced."""
     if not html:
         return ""
 
-    allowed_pattern = "|".join(ALLOWED_TAGS)
-    html = re.sub(f"<(?!/?(?:{allowed_pattern})\b)", "&lt;", html)
+    tag_re = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>", re.IGNORECASE)
+    href_re = re.compile(
+        r"href\s*=\s*(\"([^\"]*)\"|'([^']*)'|([^\s\"'=`<>]+))",
+        re.IGNORECASE,
+    )
 
-    tag_re = re.compile(r"</?([a-zA-Z0-9-]+)(\s[^>]*)?>", re.IGNORECASE)
     simple_tags = {
         "b",
         "strong",
@@ -186,51 +188,82 @@ def sanitize_telegram_html(html: str) -> str:
         "tg-spoiler",
         "blockquote",
     }
-    open_tags: list[str] = []
 
-    def _pop_open(tag: str) -> bool:
-        for idx in range(len(open_tags) - 1, -1, -1):
-            if open_tags[idx] == tag:
-                open_tags.pop(idx)
-                return True
-        return False
+    parts: list[str] = []
+    open_stack: list[str] = []
+    ignored_open_counts: dict[str, int] = {}
+    cursor = 0
 
-    def _clean_tag(match: re.Match[str]) -> str:
-        full = match.group(0)
-        name = (match.group(1) or "").lower()
-        attrs = match.group(2) or ""
-        is_closing = full.startswith("</")
+    def _append_text(segment: str) -> None:
+        if segment:
+            parts.append(html_escape(segment))
+
+    def _escape_tag(token: str) -> str:
+        return token.replace('&', '&amp;').replace('<', '&lt;')
+
+
+    for match in tag_re.finditer(html):
+        start_pos, end_pos = match.span()
+        _append_text(html[cursor:start_pos])
+
+        slash, name_raw, attrs = match.groups()
+        name = (name_raw or "").lower()
+        is_closing = bool(slash)
+        raw = match.group(0)
 
         if name not in ALLOWED_TAGS:
-            return html_escape(full)
+            parts.append(_escape_tag(raw))
+            ignored_open_counts[name] = ignored_open_counts.get(name, 0) + 1
+            cursor = end_pos
+            continue
 
-        if name == "br":
-            return "" if is_closing else "<br>"
+        if not is_closing:
+            if name == "br":
+                parts.append("<br>")
+            elif name == "a":
+                href_value = ""
+                if attrs:
+                    href_match = href_re.search(attrs)
+                    if href_match:
+                        href_candidate = next(
+                            (group for group in href_match.groups()[1:] if group),
+                            "",
+                        )
+                        if href_candidate.lower().startswith(("http://", "https://")):
+                            href_value = html_escape(href_candidate, quote=True)
+                if href_value:
+                    parts.append(f'<a href="{href_value}">')
+                    open_stack.append("a")
+                else:
+                    parts.append(_escape_tag(raw))
+                    ignored_open_counts[name] = ignored_open_counts.get(name, 0) + 1
+            else:
+                parts.append(f"<{name}>")
+                open_stack.append(name)
+        else:
+            if name not in open_stack:
+                count = ignored_open_counts.get(name, 0)
+                if count > 0:
+                    parts.append(_escape_tag(raw))
+                    if count == 1:
+                        ignored_open_counts.pop(name, None)
+                    else:
+                        ignored_open_counts[name] = count - 1
+                cursor = end_pos
+                continue
 
-        if is_closing:
-            if _pop_open(name):
-                return f"</{name}>"
-            return html_escape(full)
+            while open_stack:
+                top = open_stack.pop()
+                parts.append(f"</{top}>")
+                if top == name:
+                    break
 
-        if name in simple_tags:
-            open_tags.append(name)
-            return f"<{name}>"
+        cursor = end_pos
 
-        if name == "a":
-            href = ""
-            if attrs:
-                m = re.search(r'href\s*=\s*"(.*?)"', attrs, re.IGNORECASE)
-                if not m:
-                    m = re.search(r"href\s*=\s*'([^']*)'", attrs, re.IGNORECASE)
-                if m:
-                    cand = (m.group(1) or "").strip()
-                    if cand.lower().startswith(("http://", "https://")):
-                        href = html_escape(cand, quote=True)
-            if href:
-                open_tags.append("a")
-                return f'<a href="{href}">'
-            return html_escape(full)
+    _append_text(html[cursor:])
 
-        return html_escape(full)
+    while open_stack:
+        parts.append(f"</{open_stack.pop()}>")
 
-    return tag_re.sub(_clean_tag, html)
+    return "".join(parts)
+
