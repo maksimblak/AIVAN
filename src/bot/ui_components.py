@@ -159,49 +159,66 @@ def escape_markdown_v2(text: str) -> str:
 # --- Telegram HTML sanitizer (allowlist) ---
 ALLOWED_TAGS = {"b","strong","i","em","u","ins","s","strike","del","code","pre","a","br","tg-spoiler","blockquote"}
 
+
 def sanitize_telegram_html(html: str) -> str:
     """
-    Пропускает только безопасные теги: b,i,u,s,code,pre,a(href=http/https),br.
-    У всех остальных тегов — экранирует угловые скобки.
-    У <a> оставляет только допустимый href, прочие атрибуты выкидывает.
+    Sanitize Telegram HTML: allow a limited subset of tags and normalise broken markup.
     """
     if not html:
         return ""
 
-    # Экранируем угловые скобки, которые не похожи на валидный тег
-    # Используем ALLOWED_TAGS для консистентности
     allowed_pattern = "|".join(ALLOWED_TAGS)
-    html = re.sub(f"<(?!/?(?:{allowed_pattern})\\b)", "&lt;", html)
+    html = re.sub(f"<(?!/?(?:{allowed_pattern})\b)", "&lt;", html)
 
-    tag_re = re.compile(r"</?([a-zA-Z0-9]+)(\s[^>]*)?>", re.IGNORECASE)
+    tag_re = re.compile(r"</?([a-zA-Z0-9-]+)(\s[^>]*)?>", re.IGNORECASE)
+    simple_tags = {
+        "b",
+        "strong",
+        "i",
+        "em",
+        "u",
+        "ins",
+        "s",
+        "strike",
+        "del",
+        "code",
+        "pre",
+        "tg-spoiler",
+        "blockquote",
+    }
+    open_tags: list[str] = []
 
-    def _clean_tag(match: re.Match) -> str:
+    def _pop_open(tag: str) -> bool:
+        for idx in range(len(open_tags) - 1, -1, -1):
+            if open_tags[idx] == tag:
+                open_tags.pop(idx)
+                return True
+        return False
+
+    def _clean_tag(match: re.Match[str]) -> str:
         full = match.group(0)
         name = (match.group(1) or "").lower()
         attrs = match.group(2) or ""
         is_closing = full.startswith("</")
 
-        # Неизвестные теги — экранируем полностью
         if name not in ALLOWED_TAGS:
             return html_escape(full)
 
-        # <br> допускается без атрибутов; закрывающего нет
         if name == "br":
             return "" if is_closing else "<br>"
 
-        # Закрывающие теги
         if is_closing:
-            return f"</{name}>"
+            if _pop_open(name):
+                return f"</{name}>"
+            return html_escape(full)
 
-        # Открывающие простые теги без атрибутов (кроме <a>)
-        if name in {"b", "strong", "i", "em", "u", "s", "del", "code", "pre"}:
+        if name in simple_tags:
+            open_tags.append(name)
             return f"<{name}>"
 
-        # Специальная обработка <a ...>
         if name == "a":
             href = ""
             if attrs:
-                # href="..." или href='...'
                 m = re.search(r'href\s*=\s*"(.*?)"', attrs, re.IGNORECASE)
                 if not m:
                     m = re.search(r"href\s*=\s*'([^']*)'", attrs, re.IGNORECASE)
@@ -209,10 +226,11 @@ def sanitize_telegram_html(html: str) -> str:
                     cand = (m.group(1) or "").strip()
                     if cand.lower().startswith(("http://", "https://")):
                         href = html_escape(cand, quote=True)
-            # если href валидный — оставляем ссылку; иначе экранируем оригинал тега
-            return f'<a href="{href}">' if href else html_escape(full)
+            if href:
+                open_tags.append("a")
+                return f'<a href="{href}">'
+            return html_escape(full)
 
-        # На всякий случай
         return html_escape(full)
 
     return tag_re.sub(_clean_tag, html)

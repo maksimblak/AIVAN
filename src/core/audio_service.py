@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+from contextlib import suppress
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from openai import AsyncOpenAI
 
@@ -21,6 +22,7 @@ _TTS_FORMAT_ALIASES = {
     "oga": ("opus", "ogg"),
 }
 _DEFAULT_TTS_FORMAT = ("mp3", "mp3")
+_DEFAULT_TTS_CHUNK_CHAR_LIMIT = 6000
 
 
 async def _acquire_client() -> AsyncOpenAI:
@@ -42,6 +44,7 @@ class AudioService:
         *,
         max_duration_seconds: int = 120,
         tts_voice_male: Optional[str] = None,
+        tts_chunk_char_limit: int = _DEFAULT_TTS_CHUNK_CHAR_LIMIT,
     ) -> None:
         self.stt_model = stt_model
         self.tts_model = tts_model
@@ -49,6 +52,7 @@ class AudioService:
         self.tts_voice_male = tts_voice_male or tts_voice
         self.tts_format = tts_format
         self.max_duration_seconds = max_duration_seconds
+        self.tts_chunk_char_limit = max(int(tts_chunk_char_limit), 0)
 
     def _resolve_tts_format(self) -> tuple[str, str]:
         """Normalize configured TTS format for the OpenAI API and local files."""
@@ -92,50 +96,126 @@ class AudioService:
         *,
         prefer_male: bool = False,
         voice_override: Optional[str] = None,
-    ) -> Path:
-        """Generate speech file from text and return path to audio file."""
+    ) -> list[Path]:
+        """Generate speech files from text and return list of audio file paths."""
+        slices = self._split_text_into_chunks(text)
+        if not slices:
+            raise ValueError("Text-to-speech received empty input")
+
         client = await _acquire_client()
         api_format, file_extension = self._resolve_tts_format()
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=f".{file_extension}", delete=False
-        )
-        tmp_path = Path(tmp.name)
-        tmp.close()
         voice_to_use = voice_override or (
             self.tts_voice_male if prefer_male and self.tts_voice_male else self.tts_voice
         )
+
+        paths: list[Path] = []
         async with client as oai:
             try:
-                speech = await oai.audio.speech.create(
-                    model=self.tts_model,
-                    voice=voice_to_use,
-                    input=text,
-                    format=api_format,
-                )
-            except TypeError:
-                # Older client versions use response_format instead of format
-                speech = await oai.audio.speech.create(
-                    model=self.tts_model,
-                    voice=voice_to_use,
-                    input=text,
-                    response_format=api_format,
-                )
-            if hasattr(speech, "stream_to_file"):
-                await speech.stream_to_file(tmp_path)
+                for chunk in slices:
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=f".{file_extension}", delete=False
+                    )
+                    tmp_path = Path(tmp.name)
+                    tmp.close()
+                    speech = await self._create_speech_payload(
+                        oai=oai,
+                        text=chunk,
+                        voice=voice_to_use,
+                        api_format=api_format,
+                    )
+                    await self._store_speech_response(speech, tmp_path)
+                    paths.append(tmp_path)
+            except Exception:
+                for path in paths:
+                    with suppress(Exception):
+                        path.unlink()
+                raise
+
+        if len(paths) > 1:
+            logger.info(
+                "TTS input split into %s chunks (limit=%s chars)",
+                len(paths),
+                self.tts_chunk_char_limit,
+            )
+
+        return paths
+
+    async def _create_speech_payload(
+        self,
+        oai: AsyncOpenAI,
+        text: str,
+        voice: str,
+        api_format: str,
+    ) -> Any:
+        try:
+            return await oai.audio.speech.create(
+                model=self.tts_model,
+                voice=voice,
+                input=text,
+                format=api_format,
+            )
+        except TypeError:
+            return await oai.audio.speech.create(
+                model=self.tts_model,
+                voice=voice,
+                input=text,
+                response_format=api_format,
+            )
+
+    async def _store_speech_response(self, speech: Any, target_path: Path) -> None:
+        if hasattr(speech, "stream_to_file"):
+            await speech.stream_to_file(target_path)
+            return
+        data = None
+        if hasattr(speech, "read"):
+            maybe = speech.read()  # type: ignore[attr-defined]
+            if asyncio.iscoroutine(maybe):
+                data = await maybe
             else:
-                data = None
-                if hasattr(speech, "read"):
-                    maybe = speech.read()  # type: ignore[attr-defined]
-                    if asyncio.iscoroutine(maybe):
-                        data = await maybe
-                    else:
-                        data = maybe  # type: ignore[assignment]
-                elif isinstance(speech, (bytes, bytearray)):
-                    data = bytes(speech)
-                if data is None:
-                    raise RuntimeError("Unsupported speech response payload")
-                tmp_path.write_bytes(data)
-        return tmp_path
+                data = maybe  # type: ignore[assignment]
+        elif isinstance(speech, (bytes, bytearray)):
+            data = bytes(speech)
+        if data is None:
+            raise RuntimeError("Unsupported speech response payload")
+        target_path.write_bytes(data)
+
+    def _split_text_into_chunks(self, text: str) -> list[str]:
+        normalized = (text or "").strip()
+        if not normalized:
+            return []
+        limit = max(self.tts_chunk_char_limit, 0)
+        if limit <= 0 or len(normalized) <= limit:
+            return [normalized]
+
+        chunks: list[str] = []
+        remaining = normalized
+        while remaining:
+            if len(remaining) <= limit:
+                chunk = remaining.rstrip()
+                if chunk:
+                    chunks.append(chunk)
+                break
+            cut = self._find_split_index(remaining, limit)
+            if cut <= 0:
+                cut = limit
+            chunk = remaining[:cut].rstrip()
+            if chunk:
+                chunks.append(chunk)
+            remaining = remaining[cut:].lstrip()
+            if not remaining:
+                break
+        return chunks
+
+    @staticmethod
+    def _find_split_index(text: str, limit: int) -> int:
+        for delimiter in ("\n\n", "\n", ". ", "! ", "? ", "; "):
+            idx = text.rfind(delimiter, 0, limit)
+            if idx > 0:
+                return idx + len(delimiter)
+        idx = text.rfind(" ", 0, limit)
+        if idx > 0:
+            return idx + 1
+        return limit
 
     async def ensure_short_enough(self, duration_seconds: Optional[int]) -> None:
         """Raise if voice message is too long."""

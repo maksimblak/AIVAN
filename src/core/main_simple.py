@@ -110,6 +110,7 @@ BOT_TOKEN = ""
 BOT_USERNAME = ""
 USE_ANIMATION = True
 USE_STREAMING = True
+config: Any | None = None
 MAX_MESSAGE_LENGTH = 4000
 DB_PATH = ""
 TRIAL_REQUESTS = 0
@@ -1715,7 +1716,12 @@ async def process_voice_message(message: Message):
     if not message.voice:
         return
 
-    if audio_service is None or not settings().voice_mode_enabled:
+    try:
+        voice_enabled = settings().voice_mode_enabled
+    except RuntimeError:
+        voice_enabled = bool(getattr(config, "voice_mode_enabled", False))
+
+    if audio_service is None or not voice_enabled:
         await message.answer("Voice mode is currently unavailable. Please send text.")
         return
 
@@ -1724,7 +1730,7 @@ async def process_voice_message(message: Message):
         return
 
     temp_voice_path: Path | None = None
-    tts_path: Path | None = None
+    tts_paths: list[Path] = []
 
     try:
         await audio_service.ensure_short_enough(message.voice.duration)
@@ -1745,15 +1751,20 @@ async def process_voice_message(message: Message):
             return
 
         try:
-            tts_path = await audio_service.synthesize(response_text, prefer_male=True)
+            tts_paths = await audio_service.synthesize(response_text, prefer_male=True)
         except Exception as tts_error:
             logger.warning("Text-to-speech failed: %s", tts_error)
             return
 
-        await message.answer_voice(
-            FSInputFile(tts_path),
-            caption=f"{Emoji.ROBOT} Voice reply",
-        )
+        if not tts_paths:
+            logger.warning("Text-to-speech returned no audio chunks")
+            return
+
+        for idx, generated_path in enumerate(tts_paths):
+            await message.answer_voice(
+                FSInputFile(generated_path),
+                caption=(f"{Emoji.ROBOT} Voice reply" if idx == 0 else None),
+            )
 
     except ValueError as duration_error:
         logger.warning("Voice message duration exceeded: %s", duration_error)
@@ -1772,8 +1783,8 @@ async def process_voice_message(message: Message):
             if temp_voice_path:
                 temp_voice_path.unlink()
         with suppress(Exception):
-            if tts_path:
-                tts_path.unlink()
+            for generated_path in tts_paths:
+                generated_path.unlink()
 
 
 # ============ СИСТЕМА РЕЙТИНГА ============
@@ -3763,15 +3774,17 @@ async def run_bot() -> None:
             tts_format=cfg.voice_tts_format,
             max_duration_seconds=cfg.voice_max_duration_seconds,
             tts_voice_male=cfg.voice_tts_voice_male,
+            tts_chunk_char_limit=cfg.voice_tts_chunk_char_limit,
         )
         ctx.audio_service = audio_service
         logger.info(
-            "Voice mode enabled (stt=%s, tts=%s, voice=%s, male_voice=%s, format=%s)",
+            "Voice mode enabled (stt=%s, tts=%s, voice=%s, male_voice=%s, format=%s, chunk_limit=%s)",
             cfg.voice_stt_model,
             cfg.voice_tts_model,
             cfg.voice_tts_voice,
             cfg.voice_tts_voice_male,
             cfg.voice_tts_format,
+            cfg.voice_tts_chunk_char_limit,
         )
     else:
         audio_service = None

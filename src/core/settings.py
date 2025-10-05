@@ -47,6 +47,7 @@ class AppSettings(BaseModel):
     voice_tts_voice: str = Field(default="alloy", alias="VOICE_TTS_VOICE")
     voice_tts_voice_male: str | None = Field(default=None, alias="VOICE_TTS_VOICE_MALE")
     voice_tts_format: str = Field(default="ogg", alias="VOICE_TTS_FORMAT")
+    voice_tts_chunk_char_limit: int = Field(default=6000, alias="VOICE_TTS_CHUNK_CHAR_LIMIT")
     voice_max_duration_seconds: int = Field(default=120, alias="VOICE_MAX_DURATION_SECONDS")
 
     telegram_proxy_url: str | None = Field(default=None, alias="TELEGRAM_PROXY_URL")

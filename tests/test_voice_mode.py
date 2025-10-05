@@ -23,10 +23,16 @@ class DummyAudioService:
         assert self.transcribe_path.exists()
         return self.transcript
 
-    async def synthesize(self, text: str) -> Path:
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        prefer_male: bool = False,
+        voice_override: str | None = None,
+    ) -> list[Path]:
         assert text
         self.output_path.write_bytes(b"fake-voice")
-        return self.output_path
+        return [self.output_path]
 
 
 class DummyVoice:
