@@ -531,7 +531,7 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
 
         dp.include_router(router)
 
-    logger.info(f" �����-������� ���������������� ��� {len(admin_ids)} �������")
+    logger.info(f"Супер-админы авторизованы для {len(admin_ids)} команд")
 
 
 __all__ = (

@@ -208,6 +208,8 @@ async def tg_send_html(
     """
     for attempt in range(max_retries):
         try:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("sending telegram chunk (len=%s): %s", len(html), html[:200])
             await bot.send_message(
                 chat_id=chat_id,
                 text=html,
