@@ -22,6 +22,7 @@ def format_safe_html(raw_text: str) -> str:
     normalized = (raw_text or "").replace("\r\n", "\n")
     normalized = normalized.replace('\\n', '\n')
     normalized = normalized.replace(' ', ' ').replace('‑', '-')
+    normalized = re.sub(r'<br\s*/?>', '\n', normalized, flags=re.IGNORECASE)
 
     def _convert_markdown_link(match: re.Match[str]) -> str:
         text_part = html_escape(match.group(1).strip())
@@ -40,7 +41,7 @@ def format_safe_html(raw_text: str) -> str:
     except Exception as e:
         logger.warning("sanitize_telegram_html failed: %s", e)
         safe_html = normalized or "-"
-    return safe_html.replace("\n", "<br>")
+    return safe_html
 
 
 
