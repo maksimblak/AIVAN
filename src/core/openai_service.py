@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Sequence
 
 try:
     # базовый запрос (обязателен)
@@ -18,6 +18,7 @@ except Exception:  # noqa: BLE001
     oai_ask_legal_stream = None  # type: ignore
 
 from src.bot.openai_gateway import format_legal_response_text
+from src.core.attachments import QuestionAttachment
 
 from .cache import ResponseCache
 
@@ -71,13 +72,16 @@ class OpenAIService:
         self,
         system_prompt: str,
         user_text: str,
+        *,
+        attachments: Sequence[QuestionAttachment] | None = None,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         """Запрос к OpenAI с кэшированием и обработкой ошибок."""
         self.total_requests += 1
 
-        # кэш
-        if self.cache and self.enable_cache and not force_refresh:
+        use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
+
+        if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
                     system_prompt=system_prompt, user_text=user_text
@@ -91,10 +95,10 @@ class OpenAIService:
 
         # сеть
         try:
-            response = await oai_ask_legal(system_prompt, user_text)
+            response = await oai_ask_legal(system_prompt, user_text, attachments=attachments)
 
             # кэшируем только успешный и непустой ответ
-            if self.cache and self.enable_cache and response.get("ok") and response.get("text"):
+            if use_cache and response.get("ok") and response.get("text"):
                 try:
                     await self.cache.cache_response(
                         system_prompt=system_prompt, user_text=user_text, response=response

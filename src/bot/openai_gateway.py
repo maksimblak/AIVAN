@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from src.core.app_context import get_settings
@@ -10,13 +11,45 @@ import html
 from html.parser import HTMLParser
 import inspect
 import re
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 import httpx
 from openai import AsyncOpenAI
+from src.core.attachments import QuestionAttachment
 
 logger = logging.getLogger(__name__)
+
+
+def _build_user_message_content(user_text: str, attachments: Sequence[QuestionAttachment] | None) -> Any:
+    if not attachments:
+        return user_text
+
+    content: list[dict[str, Any]] = []
+    base_text = (user_text or "").strip()
+    if base_text:
+        content.append({"type": "text", "text": base_text})
+
+    for item in attachments:
+        if not item or not getattr(item, "data", b""):
+            continue
+        mime = (item.mime_type or "application/octet-stream").lower()
+        encoded = base64.b64encode(item.data).decode("ascii")
+        if mime.startswith("image/"):
+            data_url = f"data:{mime};base64,{encoded}"
+            content.append({"type": "input_image", "image_url": {"url": data_url}})
+        else:
+            details = (
+                f"Attached file: {item.filename or 'file'}\n"
+                f"MIME type: {item.mime_type}\n"
+                f"Size: {item.size} bytes\n"
+            )
+            chunk = f"{details}Base64 contents:\n{encoded}"
+            content.append({"type": "text", "text": chunk})
+
+    if not content:
+        return base_text or user_text
+    return content
 
 _SETTINGS: AppSettings = get_settings()
 
@@ -259,18 +292,27 @@ async def _make_async_client() -> AsyncOpenAI:
 
 
 
-async def ask_legal(system_prompt: str, user_text: str) -> dict[str, Any]:
+async def ask_legal(
+    system_prompt: str,
+    user_text: str,
+    *,
+    attachments: Sequence[QuestionAttachment] | None = None,
+) -> dict[str, Any]:
     """Public wrapper used by OpenAIService for non-streaming replies."""
-    return await _ask_legal_internal(system_prompt, user_text, stream=False)
+    return await _ask_legal_internal(system_prompt, user_text, stream=False, attachments=attachments)
 
 
 async def ask_legal_stream(
     system_prompt: str,
     user_text: str,
     callback: StreamCallback | None = None,
+    *,
+    attachments: Sequence[QuestionAttachment] | None = None,
 ) -> dict[str, Any]:
     """Public wrapper that enables streaming responses through a callback."""
-    return await _ask_legal_internal(system_prompt, user_text, stream=True, callback=callback)
+    return await _ask_legal_internal(
+        system_prompt, user_text, stream=True, callback=callback, attachments=attachments
+    )
 
 
 LEGAL_RESPONSE_SCHEMA = {
@@ -579,7 +621,11 @@ def format_legal_response_text(raw: str) -> str:
 
 
 async def _ask_legal_internal(
-    system_prompt: str, user_text: str, stream: bool = False, callback=None
+    system_prompt: str,
+    user_text: str,
+    stream: bool = False,
+    callback=None,
+    attachments: Sequence[QuestionAttachment] | None = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
     model = (_SETTINGS.get_str("OPENAI_MODEL") or "gpt-5").strip()
@@ -589,11 +635,13 @@ async def _ask_legal_internal(
     temperature = _SETTINGS.get_float("OPENAI_TEMPERATURE", 0.15)
     top_p = _SETTINGS.get_float("OPENAI_TOP_P", 0.3)
 
+    user_message = _build_user_message_content(user_text, attachments)
+
     base_core: dict[str, Any] = {
         "model": model,
         "input": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": user_message},
         ],
         "text": {"verbosity": verb},
         "reasoning": {"effort": effort},
