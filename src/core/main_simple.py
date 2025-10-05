@@ -924,10 +924,12 @@ async def process_question(
                 f"{idx}. {item.filename} ({item.mime_type}, {size_kb} KB)"
             )
         request_text = (
-            f"{question_text}\n\n[Вложения]\n" + "\n".join(attachment_lines)
+            f"{question_text}\n\n[Attachments]\n" + "\n".join(attachment_lines)
         )
 
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
+    timer = ResponseTimer()
+    timer.start()
     use_streaming = USE_STREAMING and not attachments_list
 
     # Прогресс-бар

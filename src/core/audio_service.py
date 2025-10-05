@@ -164,7 +164,9 @@ class AudioService:
 
     async def _store_speech_response(self, speech: Any, target_path: Path) -> None:
         if hasattr(speech, "stream_to_file"):
-            await speech.stream_to_file(target_path)
+            result = speech.stream_to_file(target_path)
+            if asyncio.iscoroutine(result):
+                await result
             return
         data = None
         if hasattr(speech, "read"):
