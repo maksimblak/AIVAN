@@ -182,11 +182,11 @@ def _resolve_proxy_url() -> str | None:
 
 
 def _build_http_client() -> httpx.AsyncClient:
-    timeout_total = _get_env_float("OPENAI_HTTP_TIMEOUT", 300.0)
-    connect_timeout = _get_env_float("OPENAI_HTTP_CONNECT_TIMEOUT", min(timeout_total, 10.0))
+    timeout_total = _get_env_float("OPENAI_HTTP_TIMEOUT", 600.0)
+    connect_timeout = _get_env_float("OPENAI_HTTP_CONNECT_TIMEOUT", min(timeout_total, 15.0))
     read_timeout = _get_env_float("OPENAI_HTTP_READ_TIMEOUT", timeout_total)
     write_timeout = _get_env_float("OPENAI_HTTP_WRITE_TIMEOUT", timeout_total)
-    pool_timeout = _get_env_float("OPENAI_HTTP_POOL_TIMEOUT", min(connect_timeout, 5.0))
+    pool_timeout = _get_env_float("OPENAI_HTTP_POOL_TIMEOUT", min(connect_timeout, 10.0))
 
     timeout = httpx.Timeout(
         timeout_total,
