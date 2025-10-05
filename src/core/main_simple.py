@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
@@ -57,6 +57,7 @@ from src.bot.status_manager import ProgressStatus, progress_router
 
 from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, sanitize_telegram_html
+from src.core.attachments import QuestionAttachment
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
@@ -86,7 +87,8 @@ from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
 from src.telegram_legal_bot.ratelimit import RateLimiter
 
-SAFE_LIMIT = 3900  # чуть меньше телеграмного 4096 (запас на теги)
+SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
+QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
 
 def _format_user_display(user: User | None) -> str:
     if user is None:
@@ -507,6 +509,67 @@ def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
     return [b.strip() for b in final if b.strip()]
 
 
+
+
+async def _download_telegram_file(bot: Bot, file_id: str) -> bytes:
+    file_info = await bot.get_file(file_id)
+    file_path = getattr(file_info, "file_path", None)
+    if not file_path:
+        raise ValueError("Не удалось получить путь к файлу в Telegram.")
+    file_content = await bot.download_file(file_path)
+    return file_content.read()
+
+
+async def _collect_question_attachments(message: Message) -> list[QuestionAttachment]:
+    bot = message.bot
+    if bot is None:
+        raise ValueError("Бот временно недоступен. Попробуйте ещё раз немного позже.")
+
+    if message.media_group_id:
+        raise ValueError("Сейчас можно отправить только один файл вместе с вопросом.")
+
+    attachments: list[QuestionAttachment] = []
+    size_limit_mb = max(1, QUESTION_ATTACHMENT_MAX_BYTES // (1024 * 1024))
+
+    if message.document:
+        document = message.document
+        declared_size = document.file_size or 0
+        if declared_size > QUESTION_ATTACHMENT_MAX_BYTES:
+            raise ValueError(
+                f"Файл '{document.file_name or document.file_unique_id}' больше {size_limit_mb} МБ."
+            )
+        data = await _download_telegram_file(bot, document.file_id)
+        if len(data) > QUESTION_ATTACHMENT_MAX_BYTES:
+            raise ValueError(
+                f"Файл '{document.file_name or document.file_unique_id}' больше {size_limit_mb} МБ."
+            )
+        attachments.append(
+            QuestionAttachment(
+                filename=document.file_name or f"document_{document.file_unique_id}",
+                mime_type=document.mime_type or "application/octet-stream",
+                data=data,
+            )
+        )
+        return attachments
+
+    if message.photo:
+        photo = message.photo[-1]
+        declared_size = photo.file_size or 0
+        if declared_size > QUESTION_ATTACHMENT_MAX_BYTES:
+            raise ValueError(f"Фото больше {size_limit_mb} МБ.")
+        data = await _download_telegram_file(bot, photo.file_id)
+        if len(data) > QUESTION_ATTACHMENT_MAX_BYTES:
+            raise ValueError(f"Фото больше {size_limit_mb} МБ.")
+        attachments.append(
+            QuestionAttachment(
+                filename=f"photo_{photo.file_unique_id}.jpg",
+                mime_type="image/jpeg",
+                data=data,
+            )
+        )
+    return attachments
+
+
 async def _validate_question_or_reply(message: Message, text: str, user_id: int) -> str | None:
     result = InputValidator.validate_question(text, user_id)
     if not result.is_valid:
@@ -638,6 +701,7 @@ async def send_rating_request(message: Message, request_id: int):
     if not message.from_user:
         return
 
+
     try:
         user_id = _ensure_valid_user_id(message.from_user.id, context="send_rating_request")
     except ValidationException as exc:
@@ -764,7 +828,41 @@ async def cmd_start(message: Message):
     logger.info("User %s started bot", message.from_user.id)
 
 
-async def process_question(message: Message, *, text_override: str | None = None):
+
+
+async def process_question_with_attachments(message: Message) -> None:
+    caption = (message.caption or "").strip()
+    if not caption:
+        warning_msg = "\n\n".join([
+            f"{Emoji.WARNING} <b>Добавьте текст вопроса</b>",
+            "Напишите короткое описание ситуации в подписи к файлу и отправьте снова.",
+        ])
+        await message.answer(warning_msg, parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        attachments = await _collect_question_attachments(message)
+    except ValueError as exc:
+        error_msg = "\n\n".join([
+            f"{Emoji.WARNING} <b>Не удалось обработать вложение</b>",
+            html_escape(str(exc)),
+        ])
+        await message.answer(error_msg, parse_mode=ParseMode.HTML)
+        return
+
+    if not attachments:
+        await process_question(message, text_override=caption)
+        return
+
+    await process_question(message, text_override=caption, attachments=attachments)
+
+
+async def process_question(
+    message: Message,
+    *,
+    text_override: str | None = None,
+    attachments: Sequence[QuestionAttachment] | None = None,
+):
     """Главный обработчик юридических вопросов"""
     if not message.from_user:
         return
@@ -795,6 +893,7 @@ async def process_question(message: Message, *, text_override: str | None = None
 
     user_session = get_user_session(user_id)
     question_text = ((text_override if text_override is not None else (message.text or ""))).strip()
+    attachments_list = list(attachments or [])
     quota_msg_to_send: str | None = None
 
     # Если ждём текстовый комментарий к рейтингу — обрабатываем его
@@ -816,11 +915,33 @@ async def process_question(message: Message, *, text_override: str | None = None
         return
     question_text = cleaned
 
-    # Таймер ответа
-    timer = ResponseTimer()
-    timer.start()
+    request_text = question_text
+    if attachments_list:
+        attachment_lines = []
+        for idx, item in enumerate(attachments_list, start=1):
+            size_kb = max(1, item.size // 1024)
+            attachment_lines.append(
+                f"{idx}. {item.filename} ({item.mime_type}, {size_kb} KB)"
+            )
+        request_text = (
+            f"{question_text}\n\n[Вложения]\n" + "\n".join(attachment_lines)
+        )
 
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
+    use_streaming = USE_STREAMING and not attachments_list
+
+    # Прогресс-бар
+    status = await _start_status_indicator(message)
+
+    ok_flag = False
+    request_error_type = None
+    stream_manager: StreamManager | None = None
+    had_stream_content = False
+    stream_final_text: str | None = None
+    final_answer_text: str | None = None
+    result: dict[str, Any] = {}
+    request_start_time = time.time()
+    request_record_id: int | None = None
 
     try:
         # Rate limit
@@ -933,7 +1054,7 @@ async def process_question(message: Message, *, text_override: str | None = None
             if openai_service is None:
                 raise SystemException("OpenAI service not initialized", error_context)
 
-            if USE_STREAMING and message.bot:
+            if use_streaming and message.bot:
                 stream_manager = StreamManager(
                     bot=message.bot,
                     chat_id=message.chat.id,
@@ -946,7 +1067,7 @@ async def process_question(message: Message, *, text_override: str | None = None
                 try:
                     # 1) Стриминговый запрос
                     result = await openai_service.ask_legal_stream(
-                        selected_prompt, question_text, callback=callback
+                        selected_prompt, request_text, callback=callback
                     )
                     had_stream_content = bool((stream_manager.pending_text or "").strip())
                     if had_stream_content:
@@ -961,7 +1082,11 @@ async def process_question(message: Message, *, text_override: str | None = None
                             await stream_manager.stop()
                             if stream_manager.message and message.bot:
                                 await message.bot.delete_message(message.chat.id, stream_manager.message.message_id)
-                        result = await openai_service.ask_legal(selected_prompt, question_text)
+                        result = await openai_service.ask_legal(
+                            selected_prompt,
+                            request_text,
+                            attachments=attachments_list or None,
+                        )
                         ok_flag = bool(result.get("ok"))
 
                 except Exception as e:
@@ -984,7 +1109,11 @@ async def process_question(message: Message, *, text_override: str | None = None
                             raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
             else:
                 # Нестриминговый путь
-                result = await openai_service.ask_legal(selected_prompt, question_text)
+                result = await openai_service.ask_legal(
+                    selected_prompt,
+                    request_text,
+                    attachments=attachments_list or None,
+                )
                 ok_flag = bool(result.get("ok"))
 
         except Exception as e:
@@ -1027,7 +1156,7 @@ async def process_question(message: Message, *, text_override: str | None = None
                 sources_lines.append(f"{idx}. {header}")
             sources_footer = "\n".join(sources_lines)
 
-        if USE_STREAMING and had_stream_content and stream_manager is not None:
+        if use_streaming and had_stream_content and stream_manager is not None:
             final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
             combined_stream_text = (final_stream_text.rstrip() + sources_footer + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
             final_answer_text = combined_stream_text
@@ -1045,10 +1174,6 @@ async def process_question(message: Message, *, text_override: str | None = None
                 )
 
         # Сообщения про квоту/подписку
-        if final_answer_text:
-            user_session.last_answer_snapshot = final_answer_text
-
-        if quota_text and not quota_is_trial:
             with suppress(Exception):
                 await message.answer(quota_text, parse_mode=ParseMode.HTML)
         if quota_msg_to_send:
@@ -3996,6 +4121,7 @@ async def run_bot() -> None:
 
     dp.message.register(on_successful_payment, F.successful_payment)
     dp.pre_checkout_query.register(pre_checkout)
+    dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
 
     # Глобальный обработчик ошибок aiogram (с интеграцией ErrorHandler при наличии)
