@@ -100,10 +100,11 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
                     append_token(token)
                     continue
 
-                close_token = f"</{tag_name_raw}>"
-                open_stack.append((tag_name, token, close_token))
                 if current_len + len(token) > hard_limit:
                     flush_chunk()
+
+                close_token = f"</{tag_name_raw}>"
+                open_stack.append((tag_name, token, close_token))
                 append_token(token)
             else:
                 if current_len + len(token) > hard_limit:
