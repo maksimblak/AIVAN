@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import re
 import tempfile
 from contextlib import suppress
+
+import httpx
 from pathlib import Path
 from typing import Any, Optional
 
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 
 try:
     from src.bot.openai_gateway import _make_async_client as _gateway_make_async_client  # type: ignore
@@ -23,6 +27,9 @@ _TTS_FORMAT_ALIASES = {
 }
 _DEFAULT_TTS_FORMAT = ("mp3", "mp3")
 _DEFAULT_TTS_CHUNK_CHAR_LIMIT = 6000
+
+
+_KWARG_ERROR_RE = re.compile(r"unexpected keyword argument '([^']+)'")
 
 
 async def _acquire_client() -> AsyncOpenAI:
@@ -45,6 +52,9 @@ class AudioService:
         max_duration_seconds: int = 120,
         tts_voice_male: Optional[str] = None,
         tts_chunk_char_limit: int = _DEFAULT_TTS_CHUNK_CHAR_LIMIT,
+        tts_speed: Optional[float] = None,
+        tts_style: Optional[str] = None,
+        tts_sample_rate: Optional[int] = None,
     ) -> None:
         self.stt_model = stt_model
         self.tts_model = tts_model
@@ -53,6 +63,9 @@ class AudioService:
         self.tts_format = tts_format
         self.max_duration_seconds = max_duration_seconds
         self.tts_chunk_char_limit = max(int(tts_chunk_char_limit), 0)
+        self.tts_speed = tts_speed
+        self.tts_style = tts_style
+        self.tts_sample_rate = tts_sample_rate
 
     def _resolve_tts_format(self) -> tuple[str, str]:
         """Normalize configured TTS format for the OpenAI API and local files."""
@@ -147,20 +160,170 @@ class AudioService:
         voice: str,
         api_format: str,
     ) -> Any:
+        base_kwargs: dict[str, Any] = {
+            "model": self.tts_model,
+            "voice": voice,
+            "input": text,
+        }
+        optional_kwargs: dict[str, Any] = {}
+        if self.tts_speed is not None:
+            optional_kwargs["speed"] = self.tts_speed
+        if self.tts_style:
+            optional_kwargs["style"] = self.tts_style
+        if self.tts_sample_rate is not None:
+            optional_kwargs["sample_rate"] = self.tts_sample_rate
+
+        last_error: Exception | None = None
+        for format_key in ("format", "response_format"):
+            kwargs = {**base_kwargs, format_key: api_format, **optional_kwargs}
+            try:
+                return await self._invoke_tts(
+                    oai=oai, kwargs=kwargs, optional_keys=optional_kwargs.keys()
+                )
+            except TypeError as error:
+                last_error = error
+            except APIStatusError as api_error:
+                if self._should_try_responses_api(api_error):
+                    return await self._create_speech_via_responses(
+                        oai=oai,
+                        text=text,
+                        voice=voice,
+                        api_format=api_format,
+                        optional_kwargs=optional_kwargs,
+                    )
+                last_error = api_error
+            except httpx.HTTPStatusError as http_error:
+                if self._should_try_responses_api(http_error):
+                    return await self._create_speech_via_responses(
+                        oai=oai,
+                        text=text,
+                        voice=voice,
+                        api_format=api_format,
+                        optional_kwargs=optional_kwargs,
+                    )
+                last_error = http_error
+        if self._should_try_responses_api(last_error):
+            return await self._create_speech_via_responses(
+                oai=oai,
+                text=text,
+                voice=voice,
+                api_format=api_format,
+                optional_kwargs=optional_kwargs,
+            )
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Unexpected failure in text-to-speech payload creation")
+
+    async def _invoke_tts(
+        self,
+        *,
+        oai: AsyncOpenAI,
+        kwargs: dict[str, Any],
+        optional_keys: Any,
+    ) -> Any:
+        mutable_kwargs = dict(kwargs)
+        optional = {key for key in optional_keys}
+        while True:
+            try:
+                return await oai.audio.speech.create(**mutable_kwargs)
+            except TypeError as err:
+                match = _KWARG_ERROR_RE.search(str(err))
+                if not match:
+                    raise
+                bad_key = match.group(1)
+                if bad_key not in mutable_kwargs or bad_key not in optional:
+                    raise
+                mutable_kwargs.pop(bad_key, None)
+                optional.discard(bad_key)
+
+    def _should_try_responses_api(self, error: Exception | None = None) -> bool:
+        model_name = (self.tts_model or "").lower()
+        if "audio-preview" in model_name or "realtime" in model_name:
+            return True
+        if isinstance(error, APIStatusError) and error.status_code in {404, 405}:
+            return True
+        if isinstance(error, httpx.HTTPStatusError) and error.response.status_code in {404, 405}:
+            return True
+        return False
+
+    async def _create_speech_via_responses(
+        self,
+        *,
+        oai: AsyncOpenAI,
+        text: str,
+        voice: str,
+        api_format: str,
+        optional_kwargs: dict[str, Any],
+    ) -> bytes:
+        audio_payload: dict[str, Any] = {
+            "voice": voice,
+            "format": api_format,
+        }
+        for key in ("speed", "style", "sample_rate"):
+            if key in optional_kwargs and optional_kwargs[key] is not None:
+                audio_payload[key] = optional_kwargs[key]
+
+        optional_keys = [key for key in audio_payload if key not in {"voice", "format"}]
+        while True:
+            try:
+                response = await oai.responses.create(
+                    model=self.tts_model,
+                    input=text,
+                    modalities=["audio"],
+                    audio=audio_payload,
+                )
+                break
+            except APIStatusError:
+                if not optional_keys:
+                    raise
+                removed = optional_keys.pop()
+                audio_payload.pop(removed, None)
+                continue
+            except httpx.HTTPStatusError as http_error:
+                if not optional_keys or http_error.response.status_code not in {400, 422}:
+                    raise
+                removed = optional_keys.pop()
+                audio_payload.pop(removed, None)
+                continue
+
+        payload = self._to_plain_data(response)
+        audio_b64 = self._extract_audio_base64(payload)
+        if not audio_b64:
+            raise RuntimeError("Responses API did not provide audio content")
         try:
-            return await oai.audio.speech.create(
-                model=self.tts_model,
-                voice=voice,
-                input=text,
-                format=api_format,
-            )
-        except TypeError:
-            return await oai.audio.speech.create(
-                model=self.tts_model,
-                voice=voice,
-                input=text,
-                response_format=api_format,
-            )
+            return base64.b64decode(audio_b64)
+        except Exception as decode_error:  # noqa: BLE001
+            raise RuntimeError("Failed to decode audio payload from responses API") from decode_error
+
+    @staticmethod
+    def _to_plain_data(obj: Any) -> Any:
+        for attr in ("model_dump", "dict"):
+            candidate = getattr(obj, attr, None)
+            if callable(candidate):
+                try:
+                    return candidate()
+                except Exception:  # noqa: BLE001
+                    continue
+        return obj
+
+    def _extract_audio_base64(self, payload: Any) -> str | None:
+        if isinstance(payload, dict):
+            audio_section = payload.get("audio")
+            if isinstance(audio_section, dict):
+                for key in ("data", "b64", "base64"):
+                    value = audio_section.get(key)
+                    if isinstance(value, str):
+                        return value
+            for value in payload.values():
+                found = self._extract_audio_base64(value)
+                if found:
+                    return found
+        elif isinstance(payload, list):
+            for item in payload:
+                found = self._extract_audio_base64(item)
+                if found:
+                    return found
+        return None
 
     async def _store_speech_response(self, speech: Any, target_path: Path) -> None:
         if hasattr(speech, "stream_to_file"):

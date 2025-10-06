@@ -159,6 +159,9 @@ def create_container(settings: AppSettings) -> DIContainer:
             max_duration_seconds=settings.voice_max_duration_seconds,
             tts_voice_male=settings.voice_tts_voice_male,
             tts_chunk_char_limit=settings.voice_tts_chunk_char_limit,
+            tts_speed=settings.voice_tts_speed,
+            tts_style=settings.voice_tts_style,
+            tts_sample_rate=settings.voice_tts_sample_rate,
         ),
     )
 

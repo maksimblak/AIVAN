@@ -3909,6 +3909,9 @@ async def run_bot() -> None:
             max_duration_seconds=cfg.voice_max_duration_seconds,
             tts_voice_male=cfg.voice_tts_voice_male,
             tts_chunk_char_limit=cfg.voice_tts_chunk_char_limit,
+            tts_speed=cfg.voice_tts_speed,
+            tts_style=cfg.voice_tts_style,
+            tts_sample_rate=cfg.voice_tts_sample_rate,
         )
         ctx.audio_service = audio_service
         logger.info(

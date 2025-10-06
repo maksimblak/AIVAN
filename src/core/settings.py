@@ -45,9 +45,12 @@ class AppSettings(BaseModel):
     voice_stt_model: str = Field(default="gpt-4o-mini-transcribe", alias="VOICE_STT_MODEL")
     voice_tts_model: str = Field(default="gpt-4o-mini-tts", alias="VOICE_TTS_MODEL")
     voice_tts_voice: str = Field(default="alloy", alias="VOICE_TTS_VOICE")
-    voice_tts_voice_male: str | None = Field(default=None, alias="VOICE_TTS_VOICE_MALE")
+    voice_tts_voice_male: str | None = Field(default="verse", alias="VOICE_TTS_VOICE_MALE")
     voice_tts_format: str = Field(default="ogg", alias="VOICE_TTS_FORMAT")
     voice_tts_chunk_char_limit: int = Field(default=6000, alias="VOICE_TTS_CHUNK_CHAR_LIMIT")
+    voice_tts_speed: float | None = Field(default=0.95, alias="VOICE_TTS_SPEED")
+    voice_tts_style: str | None = Field(default="formal", alias="VOICE_TTS_STYLE")
+    voice_tts_sample_rate: int | None = Field(default=None, alias="VOICE_TTS_SAMPLE_RATE")
     voice_max_duration_seconds: int = Field(default=120, alias="VOICE_MAX_DURATION_SECONDS")
 
     telegram_proxy_url: str | None = Field(default=None, alias="TELEGRAM_PROXY_URL")
@@ -154,6 +157,13 @@ class AppSettings(BaseModel):
     def _fill_voice_defaults(self) -> "AppSettings":
         if not self.voice_tts_voice_male:
             self.voice_tts_voice_male = self.voice_tts_voice
+        if self.voice_tts_speed is not None and self.voice_tts_speed <= 0:
+            self.voice_tts_speed = None
+        if self.voice_tts_style:
+            stripped = self.voice_tts_style.strip()
+            self.voice_tts_style = stripped or None
+        if self.voice_tts_sample_rate is not None and self.voice_tts_sample_rate <= 0:
+            self.voice_tts_sample_rate = None
         return self
 
     @classmethod
