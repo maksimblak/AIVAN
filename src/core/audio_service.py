@@ -274,6 +274,26 @@ class AudioService:
             return True
         return False
 
+    @staticmethod
+    def _is_unknown_parameter_error(error: Exception, parameter: str) -> bool:
+        message = ""
+        if isinstance(error, APIStatusError):
+            message = getattr(error, "message", "") or ""
+            response = getattr(error, "response", None)
+            if response is not None:
+                with suppress(Exception):
+                    data = response.json()
+                    message = data.get("error", {}).get("message", "") or message
+        elif isinstance(error, httpx.HTTPStatusError):
+            try:
+                data = error.response.json()
+                message = data.get("error", {}).get("message", "")
+            except Exception:
+                message = error.response.text or ""
+        if not message:
+            message = str(error)
+        return parameter.lower() in message.lower()
+
     async def _create_speech_via_responses(
         self,
         *,
@@ -292,24 +312,31 @@ class AudioService:
                 audio_payload[key] = optional_kwargs[key]
 
         optional_keys = [key for key in audio_payload if key not in {"voice", "format"}]
+        include_modalities = True
         while True:
+            extra_body: dict[str, Any] = {"audio": audio_payload}
+            if include_modalities:
+                extra_body["modalities"] = ["text", "audio"]
             try:
                 response = await oai.responses.create(
                     model=self.tts_model,
                     input=text,
-                    extra_body={
-                        "modalities": ["text", "audio"],
-                        "audio": audio_payload,
-                    },
+                    extra_body=extra_body,
                 )
                 break
-            except APIStatusError:
+            except APIStatusError as api_error:
+                if include_modalities and self._is_unknown_parameter_error(api_error, "modalities"):
+                    include_modalities = False
+                    continue
                 if not optional_keys:
                     raise
                 removed = optional_keys.pop()
                 audio_payload.pop(removed, None)
                 continue
             except httpx.HTTPStatusError as http_error:
+                if include_modalities and self._is_unknown_parameter_error(http_error, "modalities"):
+                    include_modalities = False
+                    continue
                 if not optional_keys or http_error.response.status_code not in {400, 422}:
                     raise
                 removed = optional_keys.pop()
