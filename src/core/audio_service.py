@@ -297,7 +297,10 @@ class AudioService:
                 response = await oai.responses.create(
                     model=self.tts_model,
                     input=text,
-                    audio=audio_payload,
+                    extra_body={
+                        "modalities": ["text", "audio"],
+                        "audio": audio_payload,
+                    },
                 )
                 break
             except APIStatusError:
