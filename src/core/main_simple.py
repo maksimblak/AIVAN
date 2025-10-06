@@ -3912,6 +3912,7 @@ async def run_bot() -> None:
             tts_speed=cfg.voice_tts_speed,
             tts_style=cfg.voice_tts_style,
             tts_sample_rate=cfg.voice_tts_sample_rate,
+            tts_backend=cfg.voice_tts_backend,
         )
         ctx.audio_service = audio_service
         logger.info(

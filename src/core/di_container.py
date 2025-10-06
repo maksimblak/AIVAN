@@ -162,6 +162,7 @@ def create_container(settings: AppSettings) -> DIContainer:
             tts_speed=settings.voice_tts_speed,
             tts_style=settings.voice_tts_style,
             tts_sample_rate=settings.voice_tts_sample_rate,
+            tts_backend=settings.voice_tts_backend,
         ),
     )
 

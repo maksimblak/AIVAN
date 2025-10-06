@@ -20,6 +20,7 @@ The service auto-falls back to the Responses API for preview models like gpt-4o-
    VOICE_TTS_SPEED=0.95
    VOICE_TTS_STYLE=formal
    VOICE_TTS_FORMAT=ogg
+   VOICE_TTS_BACKEND=auto
    VOICE_MAX_DURATION_SECONDS=120
    `
 
@@ -30,6 +31,7 @@ The service auto-falls back to the Responses API for preview models like gpt-4o-
    - VOICE_TTS_SPEED and VOICE_TTS_STYLE help tune delivery (0.95 + formal suits the legal persona).
    - Set VOICE_TTS_FORMAT=mp3 if you prefer classic audio files (the bot still uses send_voice).
    - Use VOICE_TTS_SAMPLE_RATE=24000 for richer timbre; Telegram re-encodes to Opus but the input stays cleaner.
+   - VOICE_TTS_BACKEND can be set to 'speech', 'responses', or 'auto' (default). Auto picks Responses API for preview/realtime models automatically.
 
 4. **Operational notes**
    - Long recordings are rejected with a friendly warning (VOICE_MAX_DURATION_SECONDS).

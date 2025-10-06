@@ -51,6 +51,7 @@ class AppSettings(BaseModel):
     voice_tts_speed: float | None = Field(default=0.95, alias="VOICE_TTS_SPEED")
     voice_tts_style: str | None = Field(default="formal", alias="VOICE_TTS_STYLE")
     voice_tts_sample_rate: int | None = Field(default=None, alias="VOICE_TTS_SAMPLE_RATE")
+    voice_tts_backend: str = Field(default="auto", alias="VOICE_TTS_BACKEND")
     voice_max_duration_seconds: int = Field(default=120, alias="VOICE_MAX_DURATION_SECONDS")
 
     telegram_proxy_url: str | None = Field(default=None, alias="TELEGRAM_PROXY_URL")
@@ -164,6 +165,10 @@ class AppSettings(BaseModel):
             self.voice_tts_style = stripped or None
         if self.voice_tts_sample_rate is not None and self.voice_tts_sample_rate <= 0:
             self.voice_tts_sample_rate = None
+        backend = (self.voice_tts_backend or "auto").strip().lower()
+        if backend not in {"auto", "speech", "responses"}:
+            backend = "auto"
+        self.voice_tts_backend = backend
         return self
 
     @classmethod

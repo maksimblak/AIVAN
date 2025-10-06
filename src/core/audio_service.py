@@ -55,6 +55,7 @@ class AudioService:
         tts_speed: Optional[float] = None,
         tts_style: Optional[str] = None,
         tts_sample_rate: Optional[int] = None,
+        tts_backend: str = "auto",
     ) -> None:
         self.stt_model = stt_model
         self.tts_model = tts_model
@@ -66,6 +67,18 @@ class AudioService:
         self.tts_speed = tts_speed
         self.tts_style = tts_style
         self.tts_sample_rate = tts_sample_rate
+        self._backend_config = (tts_backend or "auto").strip().lower() or "auto"
+        if self._backend_config not in {"auto", "speech", "responses"}:
+            logger.warning("Unsupported TTS backend '%s'; falling back to 'auto'", tts_backend)
+            self._backend_config = "auto"
+
+    def _decide_backend(self) -> str:
+        if self._backend_config == "auto":
+            model_name = (self.tts_model or "").lower()
+            if "audio-preview" in model_name or "realtime" in model_name:
+                return "responses"
+            return "speech"
+        return self._backend_config
 
     def _resolve_tts_format(self) -> tuple[str, str]:
         """Normalize configured TTS format for the OpenAI API and local files."""
@@ -173,6 +186,18 @@ class AudioService:
         if self.tts_sample_rate is not None:
             optional_kwargs["sample_rate"] = self.tts_sample_rate
 
+        backend = self._decide_backend()
+        allow_fallback = self._backend_config == "auto"
+
+        if backend == "responses":
+            return await self._create_speech_via_responses(
+                oai=oai,
+                text=text,
+                voice=voice,
+                api_format=api_format,
+                optional_kwargs=optional_kwargs,
+            )
+
         last_error: Exception | None = None
         for format_key in ("format", "response_format"):
             kwargs = {**base_kwargs, format_key: api_format, **optional_kwargs}
@@ -183,7 +208,7 @@ class AudioService:
             except TypeError as error:
                 last_error = error
             except APIStatusError as api_error:
-                if self._should_try_responses_api(api_error):
+                if allow_fallback and self._should_try_responses_api(api_error):
                     return await self._create_speech_via_responses(
                         oai=oai,
                         text=text,
@@ -193,7 +218,7 @@ class AudioService:
                     )
                 last_error = api_error
             except httpx.HTTPStatusError as http_error:
-                if self._should_try_responses_api(http_error):
+                if allow_fallback and self._should_try_responses_api(http_error):
                     return await self._create_speech_via_responses(
                         oai=oai,
                         text=text,
@@ -202,7 +227,7 @@ class AudioService:
                         optional_kwargs=optional_kwargs,
                     )
                 last_error = http_error
-        if self._should_try_responses_api(last_error):
+        if allow_fallback and self._should_try_responses_api(last_error):
             return await self._create_speech_via_responses(
                 oai=oai,
                 text=text,
@@ -213,6 +238,7 @@ class AudioService:
         if last_error is not None:
             raise last_error
         raise RuntimeError("Unexpected failure in text-to-speech payload creation")
+
 
     async def _invoke_tts(
         self,
@@ -237,6 +263,8 @@ class AudioService:
                 optional.discard(bad_key)
 
     def _should_try_responses_api(self, error: Exception | None = None) -> bool:
+        if self._backend_config != "auto":
+            return False
         model_name = (self.tts_model or "").lower()
         if "audio-preview" in model_name or "realtime" in model_name:
             return True
@@ -269,7 +297,6 @@ class AudioService:
                 response = await oai.responses.create(
                     model=self.tts_model,
                     input=text,
-                    modalities=["audio"],
                     audio=audio_payload,
                 )
                 break
