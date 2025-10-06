@@ -75,7 +75,7 @@ class AudioService:
     def _decide_backend(self) -> str:
         if self._backend_config == "auto":
             model_name = (self.tts_model or "").lower()
-            if "audio-preview" in model_name or "realtime" in model_name:
+            if "realtime" in model_name:
                 return "responses"
             return "speech"
         return self._backend_config
@@ -266,7 +266,7 @@ class AudioService:
         if self._backend_config != "auto":
             return False
         model_name = (self.tts_model or "").lower()
-        if "audio-preview" in model_name or "realtime" in model_name:
+        if "realtime" in model_name:
             return True
         if isinstance(error, APIStatusError) and error.status_code in {404, 405}:
             return True

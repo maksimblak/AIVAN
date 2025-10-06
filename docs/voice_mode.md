@@ -2,7 +2,7 @@
 
 Voice interaction lets the bot accept Telegram voice messages, convert them to text, process the request, and answer back with both text and a synthesized male voice reply.
 Default presets now keep the delivery calm and formal, matching the "consulting lawyer" persona.
-The service auto-falls back to the Responses API for preview models like gpt-4o-audio-preview, so richer voices work out of the box.
+The service now uses the Speech API with gpt-4o-mini-tts, keeping delivery consistent and low-latency.
 
 ## Enablement Checklist
 
@@ -31,7 +31,7 @@ The service auto-falls back to the Responses API for preview models like gpt-4o-
    - VOICE_TTS_SPEED and VOICE_TTS_STYLE help tune delivery (0.95 + formal suits the legal persona).
    - Set VOICE_TTS_FORMAT=mp3 if you prefer classic audio files (the bot still uses send_voice).
    - Use VOICE_TTS_SAMPLE_RATE=24000 for richer timbre; Telegram re-encodes to Opus but the input stays cleaner.
-   - VOICE_TTS_BACKEND can be set to 'speech', 'responses', or 'auto' (default). Auto picks Responses API for preview/realtime models automatically.
+   - VOICE_TTS_BACKEND can be set to 'speech', 'responses', or 'auto' (default). Auto defaults to Speech API for the standard mini-tts voice.
 
 4. **Operational notes**
    - Long recordings are rejected with a friendly warning (VOICE_MAX_DURATION_SECONDS).
