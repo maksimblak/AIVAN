@@ -61,8 +61,8 @@ class DummyMessage:
     async def answer(self, text: str, *, parse_mode=None):
         self._answers.append((text, parse_mode))
 
-    async def answer_voice(self, fs_input_file, *, caption=None):
-        self._voice_answers.append((fs_input_file, caption))
+    async def answer_voice(self, fs_input_file, *, caption=None, parse_mode=None):
+        self._voice_answers.append((fs_input_file, caption, parse_mode))
 
 
 @pytest.mark.asyncio
@@ -100,8 +100,9 @@ async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
 
         # Проверяем, что ответ озвучен
         assert message._voice_answers, "expected voice reply"
-        fs_input, caption = message._voice_answers[0]
-        assert caption == f"{ms.Emoji.ROBOT} Voice reply"
+        fs_input, caption, parse_mode = message._voice_answers[0]
+        assert caption == ms.VOICE_REPLY_CAPTION
+        assert parse_mode == ms.ParseMode.HTML
         assert Path(fs_input.path) == tts_file
 
         # Исходный voice временный файл должен быть удален

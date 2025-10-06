@@ -90,6 +90,11 @@ from src.telegram_legal_bot.ratelimit import RateLimiter
 SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
 
+VOICE_REPLY_CAPTION = (
+    f"{Emoji.MICROPHONE} <b>Голосовой ответ готов</b>"
+    f"\n{Emoji.INFO} Нажмите, чтобы прослушать."
+)
+
 def _format_user_display(user: User | None) -> str:
     if user is None:
         return ""
@@ -933,7 +938,7 @@ async def process_question(
     use_streaming = USE_STREAMING and not attachments_list
 
     # Прогресс-бар
-    status = await _start_status_indicator(message)
+    status: ProgressStatus | None = None
 
     ok_flag = False
     request_error_type = None
@@ -1888,9 +1893,11 @@ async def process_voice_message(message: Message):
             return
 
         for idx, generated_path in enumerate(tts_paths):
+            caption = VOICE_REPLY_CAPTION if idx == 0 else None
             await message.answer_voice(
                 FSInputFile(generated_path),
-                caption=(f"{Emoji.ROBOT} Voice reply" if idx == 0 else None),
+                caption=caption,
+                parse_mode=ParseMode.HTML if caption else None,
             )
 
     except ValueError as duration_error:

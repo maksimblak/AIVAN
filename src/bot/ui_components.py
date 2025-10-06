@@ -23,6 +23,7 @@ class Emoji:
     LOADING = "⏳"
     STAR = "⭐"
     MAGIC = "✨"
+    MICROPHONE = "🎙️"
 
     CIVIL = "📘"
     CRIMINAL = "🧑‍⚖️"
