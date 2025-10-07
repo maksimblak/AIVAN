@@ -10,7 +10,6 @@ import logging
 import time
 import tempfile
 from contextlib import suppress
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import uuid
@@ -85,7 +84,7 @@ from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing
 from src.core.settings import AppSettings
 from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
-from src.telegram_legal_bot.ratelimit import RateLimiter
+from src.bot.ratelimit import RateLimiter
 
 SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)

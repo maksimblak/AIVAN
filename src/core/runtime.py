@@ -18,7 +18,7 @@ if False:  # pragma: no cover - hints only
     from src.core.openai_service import OpenAIService
     from src.core.session_store import SessionStore
     from src.documents.document_manager import DocumentManager
-    from src.telegram_legal_bot.ratelimit import RateLimiter
+    from src.bot.ratelimit import RateLimiter
     from src.core.background_tasks import BackgroundTaskManager
     from src.core.health import HealthChecker
     from src.core.metrics import MetricsCollector

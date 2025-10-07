@@ -127,7 +127,7 @@ def create_container(settings: AppSettings) -> DIContainer:
     from src.core.session_store import SessionStore
     from src.core.payments import CryptoPayProvider
     from src.core.rag.judicial_rag import JudicialPracticeRAG
-    from src.telegram_legal_bot.ratelimit import RateLimiter
+    from src.bot.ratelimit import RateLimiter
 
     container.register_factory(
         DatabaseAdvanced,

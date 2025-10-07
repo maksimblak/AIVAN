@@ -85,7 +85,7 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
     from src.core.openai_service import OpenAIService
     from src.core.payments import CryptoPayProvider
     from src.core.session_store import SessionStore
-    from src.telegram_legal_bot.ratelimit import RateLimiter
+    from src.bot.ratelimit import RateLimiter
 
     runtime.db = container.get(DatabaseAdvanced)
     runtime.access_service = container.get(AccessService)
