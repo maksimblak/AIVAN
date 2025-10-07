@@ -125,7 +125,7 @@ def create_container(settings: AppSettings) -> DIContainer:
     from src.core.openai_service import OpenAIService
     from src.core.audio_service import AudioService
     from src.core.session_store import SessionStore
-    from src.core.payments import CryptoPayProvider
+    from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
     from src.core.rag.judicial_rag import JudicialPracticeRAG
     from src.bot.ratelimit import RateLimiter
 
@@ -189,6 +189,16 @@ def create_container(settings: AppSettings) -> DIContainer:
     )
 
     container.register_factory(
+        RoboKassaProvider,
+        lambda: RoboKassaProvider(settings=settings),
+    )
+
+    container.register_factory(
+        YooKassaProvider,
+        lambda: YooKassaProvider(settings=settings),
+    )
+
+    container.register_factory(
         JudicialPracticeRAG,
         lambda: JudicialPracticeRAG(settings=settings),
     )
@@ -224,7 +234,6 @@ def reset_container() -> None:
     """Reset cached container (used by tests)."""
     global _container
     _container = None
-
 
 
 

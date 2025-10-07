@@ -33,6 +33,18 @@ class AppSettings(BaseModel):
 
     admin_ids: list[int] = Field(default_factory=list, alias="ADMIN_IDS")
 
+    robokassa_merchant_login: str = Field(default="", alias="ROBOKASSA_MERCHANT_LOGIN")
+    robokassa_password1: str = Field(default="", alias="ROBOKASSA_PASSWORD1")
+    robokassa_password2: str = Field(default="", alias="ROBOKASSA_PASSWORD2")
+    robokassa_is_test: bool = Field(default=False, alias="ROBOKASSA_IS_TEST")
+    robokassa_result_url: str | None = Field(default=None, alias="ROBOKASSA_RESULT_URL")
+    robokassa_success_url: str | None = Field(default=None, alias="ROBOKASSA_SUCCESS_URL")
+    robokassa_fail_url: str | None = Field(default=None, alias="ROBOKASSA_FAIL_URL")
+
+    yookassa_shop_id: str = Field(default="", alias="YOOKASSA_SHOP_ID")
+    yookassa_secret_key: str = Field(default="", alias="YOOKASSA_SECRET_KEY")
+    yookassa_return_url: str | None = Field(default=None, alias="YOOKASSA_RETURN_URL")
+
     user_sessions_max: int = Field(default=10_000, alias="USER_SESSIONS_MAX")
     user_session_ttl_seconds: int = Field(default=3600, alias="USER_SESSION_TTL_SECONDS")
 
@@ -140,7 +152,17 @@ class AppSettings(BaseModel):
             return parsed
         return [int(value)]
 
-    @field_validator("redis_url", "telegram_proxy_url", "telegram_proxy_user", "telegram_proxy_pass", mode="before")
+    @field_validator(
+        "redis_url",
+        "telegram_proxy_url",
+        "telegram_proxy_user",
+        "telegram_proxy_pass",
+        "robokassa_result_url",
+        "robokassa_success_url",
+        "robokassa_fail_url",
+        "yookassa_return_url",
+        mode="before",
+    )
     @classmethod
     def _empty_string_to_none(cls, value: Any) -> Any:
         if isinstance(value, str) and value.strip() == "":

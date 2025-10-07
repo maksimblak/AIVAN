@@ -168,6 +168,16 @@ RUB_PER_XTR=3.5
 ADMIN_IDS=your_user_id
 TELEGRAM_PROVIDER_TOKEN_STARS=STARS
 CRYPTO_PAY_TOKEN=your_crypto_pay_token
+ROBOKASSA_MERCHANT_LOGIN=demo
+ROBOKASSA_PASSWORD1=your_password1
+ROBOKASSA_PASSWORD2=your_password2
+ROBOKASSA_IS_TEST=1
+ROBOKASSA_RESULT_URL=https://example.com/api/robokassa/result
+ROBOKASSA_SUCCESS_URL=https://t.me/your_bot
+ROBOKASSA_FAIL_URL=https://t.me/your_bot
+YOOKASSA_SHOP_ID=your_shop_id
+YOOKASSA_SECRET_KEY=your_secret_key
+YOOKASSA_RETURN_URL=https://example.com/payments/yookassa/return
 
 # Прокси (опционально)
 TELEGRAM_PROXY_URL=http://proxy:port

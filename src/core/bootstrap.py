@@ -83,7 +83,7 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
     from src.core.access import AccessService
     from src.core.audio_service import AudioService
     from src.core.openai_service import OpenAIService
-    from src.core.payments import CryptoPayProvider
+    from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
     from src.core.session_store import SessionStore
     from src.bot.ratelimit import RateLimiter
 
@@ -94,6 +94,8 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
     runtime.rate_limiter = container.get(RateLimiter)
     runtime.session_store = container.get(SessionStore)
     runtime.crypto_provider = container.get(CryptoPayProvider)
+    runtime.robokassa_provider = container.get(RoboKassaProvider)
+    runtime.yookassa_provider = container.get(YooKassaProvider)
 
     try:
         rag_service = container.get(JudicialPracticeRAG)

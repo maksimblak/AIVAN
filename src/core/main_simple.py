@@ -142,6 +142,8 @@ openai_service = None
 audio_service = None
 session_store = None
 crypto_provider = None
+robokassa_provider = None
+yookassa_provider = None
 error_handler = None
 document_manager = None
 response_cache = None
@@ -234,6 +236,8 @@ def _sync_runtime_globals() -> None:
         'audio_service': _runtime.audio_service,
         'session_store': _runtime.session_store,
         'crypto_provider': _runtime.crypto_provider,
+        'robokassa_provider': _runtime.robokassa_provider,
+        'yookassa_provider': _runtime.yookassa_provider,
         'error_handler': _runtime.error_handler,
         'document_manager': _runtime.document_manager,
         'response_cache': _runtime.response_cache,
@@ -1485,6 +1489,195 @@ async def _send_stars_invoice(message: Message, plan_info: SubscriptionPlanPrici
     )
 
 
+async def _record_pending_transaction(
+    *,
+    user_id: int,
+    provider: str,
+    amount_minor_units: int,
+    payload: str,
+    provider_payment_charge_id: str | None = None,
+) -> int:
+    if db is None:
+        raise RuntimeError("Database not initialized")
+    return await db.record_transaction(
+        user_id=user_id,
+        provider=provider,
+        currency="RUB",
+        amount=amount_minor_units,
+        amount_minor_units=amount_minor_units,
+        payload=payload,
+        status=TransactionStatus.PENDING,
+        provider_payment_charge_id=provider_payment_charge_id,
+    )
+
+
+def _external_payment_keyboard(provider: str, payment_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Проверить оплату",
+                    callback_data=f"verify_payment:{provider}:{payment_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{Emoji.BACK} Назад к тарифам",
+                    callback_data="buy_catalog",
+                )
+            ],
+        ]
+    )
+
+
+async def _send_robokassa_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
+    if robokassa_provider is None or not getattr(robokassa_provider, "is_available", False):
+        await message.answer(
+            f"{Emoji.WARNING} Оплата через RoboKassa временно недоступна.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    amount_minor = plan_info.price_rub_kopeks
+    payload = build_subscription_payload(plan_info.plan.plan_id, "robokassa", user_id)
+    try:
+        transaction_id = await _record_pending_transaction(
+            user_id=user_id,
+            provider="robokassa",
+            amount_minor_units=amount_minor,
+            payload=payload,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to record RoboKassa transaction: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} Не удалось начать оплату. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        creation = await robokassa_provider.create_invoice(
+            amount_rub=float(plan_info.plan.price_rub),
+            description=f"Подписка {plan_info.plan.name} на {plan_info.plan.duration_days} дн.",
+            payload=payload,
+            invoice_id=transaction_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("RoboKassa invoice error: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} Не удалось создать счет RoboKassa.",
+            parse_mode=ParseMode.HTML,
+        )
+        with suppress(Exception):
+            await db.update_transaction(transaction_id, status=TransactionStatus.FAILED)
+        return
+
+    if not creation.ok or not creation.url or not creation.payment_id:
+        logger.warning("RoboKassa invoice creation failed: %s", creation.error or creation.raw)
+        await message.answer(
+            f"{Emoji.WARNING} Оплата через RoboKassa временно недоступна.",
+            parse_mode=ParseMode.HTML,
+        )
+        with suppress(Exception):
+            await db.update_transaction(transaction_id, status=TransactionStatus.FAILED)
+        return
+
+    with suppress(Exception):
+        await db.update_transaction(
+            transaction_id,
+            provider_payment_charge_id=str(creation.payment_id),
+        )
+
+    payment_text = (
+        f"🏦 <b>RoboKassa</b>\n\n"
+        f"1. Нажмите на ссылку и оплатите счет картой или через СБП.\n"
+        f"2. После оплаты вернитесь и нажмите кнопку \"Проверить оплату\".\n\n"
+        f"{creation.url}"
+    )
+    await message.answer(
+        payment_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=_external_payment_keyboard("robokassa", str(creation.payment_id)),
+        disable_web_page_preview=True,
+    )
+
+
+async def _send_yookassa_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
+    if yookassa_provider is None or not getattr(yookassa_provider, "is_available", False):
+        await message.answer(
+            f"{Emoji.WARNING} Оплата через YooKassa временно недоступна.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    amount_minor = plan_info.price_rub_kopeks
+    payload = build_subscription_payload(plan_info.plan.plan_id, "yookassa", user_id)
+    try:
+        transaction_id = await _record_pending_transaction(
+            user_id=user_id,
+            provider="yookassa",
+            amount_minor_units=amount_minor,
+            payload=payload,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to record YooKassa transaction: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} Не удалось начать оплату. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        creation = await yookassa_provider.create_invoice(
+            amount_rub=float(plan_info.plan.price_rub),
+            description=f"Подписка {plan_info.plan.name} на {plan_info.plan.duration_days} дн.",
+            payload=payload,
+            metadata={"transaction_id": transaction_id, "plan_id": plan_info.plan.plan_id},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("YooKassa invoice error: %s", exc)
+        await message.answer(
+            f"{Emoji.WARNING} Не удалось создать счет YooKassa.",
+            parse_mode=ParseMode.HTML,
+        )
+        with suppress(Exception):
+            await db.update_transaction(transaction_id, status=TransactionStatus.FAILED)
+        return
+
+    if not creation.ok or not creation.url or not creation.payment_id:
+        logger.warning("YooKassa invoice creation failed: %s", creation.error or creation.raw)
+        await message.answer(
+            f"{Emoji.WARNING} Оплата через YooKassa временно недоступна.",
+            parse_mode=ParseMode.HTML,
+        )
+        with suppress(Exception):
+            await db.update_transaction(transaction_id, status=TransactionStatus.FAILED)
+        return
+
+    with suppress(Exception):
+        await db.update_transaction(
+            transaction_id,
+            provider_payment_charge_id=str(creation.payment_id),
+        )
+
+    payment_text = (
+        f"💳 <b>YooKassa</b>\n\n"
+        f"1. Оплатите подписку на защищенной странице YooKassa.\n"
+        f"2. После оплаты вернитесь и нажмите кнопку \"Проверить оплату\".\n\n"
+        f"{creation.url}"
+    )
+    await message.answer(
+        payment_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=_external_payment_keyboard("yookassa", str(creation.payment_id)),
+        disable_web_page_preview=True,
+    )
+
+
 async def _send_crypto_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
     if crypto_provider is None:
         await message.answer(
@@ -1562,6 +1755,28 @@ def _plan_details_keyboard(plan_info: SubscriptionPlanPricing) -> tuple[InlineKe
         )
     else:
         unavailable.append("🪙 Криптовалюта — временно недоступна")
+
+    robo_label = f"🏦 RoboKassa • {_format_rub(plan_info.plan.price_rub)} ₽"
+    if robokassa_provider is not None and getattr(robokassa_provider, "is_available", False):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=robo_label,
+                    callback_data=f"pay_plan:{plan_info.plan.plan_id}:robokassa",
+                )
+            ]
+        )
+
+    yk_label = f"💳 YooKassa • {_format_rub(plan_info.plan.price_rub)} ₽"
+    if yookassa_provider is not None and getattr(yookassa_provider, "is_available", False):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=yk_label,
+                    callback_data=f"pay_plan:{plan_info.plan.plan_id}:yookassa",
+                )
+            ]
+        )
 
     rows.append(
         [
@@ -1651,8 +1866,173 @@ async def handle_pay_plan_callback(callback: CallbackQuery):
         await _send_stars_invoice(callback.message, plan_info, user_id)
     elif method == "crypto":
         await _send_crypto_invoice(callback.message, plan_info, user_id)
+    elif method == "robokassa":
+        await _send_robokassa_invoice(callback.message, plan_info, user_id)
+    elif method == "yookassa":
+        await _send_yookassa_invoice(callback.message, plan_info, user_id)
     else:
         await callback.message.answer("❌ Этот способ оплаты не поддерживается")
+
+
+async def handle_verify_payment_callback(callback: CallbackQuery):
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+
+    data = callback.data or ""
+    parts = data.split(":")
+    if len(parts) != 3:
+        await callback.answer("❌ Некорректные параметры", show_alert=True)
+        return
+
+    _, provider_code, payment_id = parts
+    provider_code = provider_code.lower()
+    payment_id = payment_id.strip()
+    await callback.answer()
+
+    if not payment_id:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Платеж не найден. Попробуйте ещё раз.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    provider_obj = None
+    if provider_code == "robokassa":
+        provider_obj = robokassa_provider
+    elif provider_code == "yookassa":
+        provider_obj = yookassa_provider
+
+    if provider_obj is None:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Этот способ оплаты недоступен.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if db is None:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Сервис временно недоступен. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        transaction = await db.get_transaction_by_provider_charge_id(provider_code, payment_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to load transaction for provider %s: %s", provider_code, exc)
+        transaction = None
+
+    if transaction is None:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Платеж не найден. Убедитесь, что вы использовали последнюю ссылку оплаты.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if transaction.user_id != callback.from_user.id:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Проверка доступна только владельцу платежа.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    current_status = TransactionStatus.from_value(transaction.status)
+    if current_status == TransactionStatus.COMPLETED:
+        await callback.message.answer(
+            f"{Emoji.SUCCESS} Платёж уже подтвержден. Статус подписки можно посмотреть через /status.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    poll_method = getattr(provider_obj, "poll_payment", None)
+    if poll_method is None:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Проверка оплаты для этого провайдера пока не реализована.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        result = await poll_method(payment_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Payment polling failed (%s): %s", provider_code, exc)
+        await callback.message.answer(
+            f"{Emoji.WARNING} Не удалось проверить оплату. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if result.status == TransactionStatus.PENDING:
+        await callback.message.answer(
+            f"{Emoji.WARNING} Платёж ещё обрабатывается. Попробуйте снова через минуту.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if result.status in {TransactionStatus.CANCELLED, TransactionStatus.FAILED}:
+        await db.update_transaction(transaction.id, status=result.status)
+        reason = result.description or "Провайдер сообщил об отмене"
+        await callback.message.answer(
+            f"{Emoji.ERROR} Оплата не прошла: {html_escape(reason)}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    payload_raw = transaction.payload or ""
+    try:
+        payload = parse_subscription_payload(payload_raw)
+    except SubscriptionPayloadError as exc:
+        logger.error("Failed to parse payload for transaction %s: %s", transaction.id, exc)
+        await callback.message.answer(
+            f"{Emoji.ERROR} Ошибка обработки платежа. Свяжитесь с поддержкой.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    plan_info = _get_plan_pricing(payload.plan_id) if payload.plan_id else DEFAULT_SUBSCRIPTION_PLAN
+    if plan_info is None:
+        await callback.message.answer(
+            f"{Emoji.ERROR} Не удалось определить тариф. Свяжитесь с поддержкой.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    expected_amount = transaction.amount
+    if result.paid_amount is not None and expected_amount not in (0, result.paid_amount):
+        logger.warning(
+            "Paid amount mismatch for transaction %s: expected %s, got %s",
+            transaction.id,
+            expected_amount,
+            result.paid_amount,
+        )
+
+    try:
+        await db.update_transaction(transaction.id, status=TransactionStatus.COMPLETED)
+        new_until, new_balance = await db.apply_subscription_purchase(
+            user_id=transaction.user_id,
+            plan_id=plan_info.plan.plan_id,
+            duration_days=plan_info.plan.duration_days,
+            request_quota=plan_info.plan.request_quota,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to finalize subscription for transaction %s: %s", transaction.id, exc)
+        await callback.message.answer(
+            f"{Emoji.ERROR} Не удалось активировать подписку, напишите поддержке.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    until_dt = datetime.fromtimestamp(new_until)
+    balance_text = f"Остаток запросов: {max(0, new_balance)}" if plan_info.plan.request_quota else "Безлимит"
+    success_text = (
+        f"{Emoji.SUCCESS} Оплата подтверждена!\n\n"
+        f"План: {plan_info.plan.name}\n"
+        f"Доступ до: {until_dt:%d.%m.%Y %H:%M}\n"
+        f"{balance_text}"
+    )
+    await callback.message.answer(success_text, parse_mode=ParseMode.HTML)
+
 async def cmd_status(message: Message):
     if db is None:
         await message.answer("Статус временно недоступен")
@@ -4092,12 +4472,13 @@ async def run_bot() -> None:
     dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
     dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
     dp.callback_query.register(handle_my_profile_callback, F.data == "my_profile")
-
+    
     # Обработчики профиля
     dp.callback_query.register(handle_my_stats_callback, F.data == "my_stats")
     dp.callback_query.register(handle_subscription_status_callback, F.data == "subscription_status")
     dp.callback_query.register(handle_get_subscription_callback, F.data == "get_subscription")
     dp.callback_query.register(handle_buy_catalog_callback, F.data == "buy_catalog")
+    dp.callback_query.register(handle_verify_payment_callback, F.data.startswith("verify_payment:"))
     dp.callback_query.register(handle_select_plan_callback, F.data.startswith("select_plan:"))
     dp.callback_query.register(handle_pay_plan_callback, F.data.startswith("pay_plan:"))
     dp.callback_query.register(handle_payment_history_callback, F.data == "payment_history")
@@ -4225,4 +4606,3 @@ async def run_bot() -> None:
                 logger.error(f"❌ Error closing {service_name}: {e}")
 
         logger.info("👋 AI-Ivan shutdown complete")
-

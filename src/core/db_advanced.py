@@ -968,6 +968,103 @@ class DatabaseAdvanced:
                     f"Database error in transaction_exists_by_telegram_charge_id: {str(e)}"
                 )
 
+    async def get_transaction_by_id(self, transaction_id: int) -> TransactionRecord | None:
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, user_id, provider, currency, amount, amount_minor_units, payload,
+                           status, telegram_payment_charge_id, provider_payment_charge_id,
+                           created_at, updated_at
+                    FROM transactions
+                    WHERE id = ?
+                    """,
+                    (transaction_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+                if not row:
+                    return None
+                return TransactionRecord(*row)
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in get_transaction_by_id: {str(e)}")
+
+    async def get_transaction_by_provider_charge_id(
+        self, provider: str, provider_payment_charge_id: str
+    ) -> TransactionRecord | None:
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, user_id, provider, currency, amount, amount_minor_units, payload,
+                           status, telegram_payment_charge_id, provider_payment_charge_id,
+                           created_at, updated_at
+                    FROM transactions
+                    WHERE provider = ? AND provider_payment_charge_id = ?
+                    """,
+                    (provider, provider_payment_charge_id),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+                if not row:
+                    return None
+                return TransactionRecord(*row)
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(
+                    f"Database error in get_transaction_by_provider_charge_id: {str(e)}"
+                )
+
+    async def update_transaction(
+        self,
+        transaction_id: int,
+        *,
+        status: TransactionStatus | str | None = None,
+        provider_payment_charge_id: str | None = None,
+        telegram_payment_charge_id: str | None = None,
+    ) -> None:
+        """Обновление полей транзакции."""
+        updates: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            try:
+                normalized_status = TransactionStatus.from_value(status)
+            except ValueError as exc:
+                raise DatabaseException(f"Unsupported transaction status: {status!r}") from exc
+            updates.append("status = ?")
+            params.append(normalized_status.value)
+        if provider_payment_charge_id is not None:
+            updates.append("provider_payment_charge_id = ?")
+            params.append(provider_payment_charge_id)
+        if telegram_payment_charge_id is not None:
+            updates.append("telegram_payment_charge_id = ?")
+            params.append(telegram_payment_charge_id)
+
+        if not updates:
+            return
+
+        updates.append("updated_at = ?")
+        params.append(int(time.time()))
+        params.append(transaction_id)
+
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    f"""
+                    UPDATE transactions
+                    SET {', '.join(updates)}
+                    WHERE id = ?
+                    """,
+                    params,
+                )
+                self.query_count += 1 if self.enable_metrics else 0
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in update_transaction: {str(e)}")
+
     # ============ Методы для работы со статистикой запросов ============
 
     async def record_request(

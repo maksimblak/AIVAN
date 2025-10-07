@@ -22,7 +22,7 @@ if False:  # pragma: no cover - hints only
     from src.core.background_tasks import BackgroundTaskManager
     from src.core.health import HealthChecker
     from src.core.metrics import MetricsCollector
-    from src.core.payments import CryptoPayProvider
+    from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,8 @@ class AppRuntime:
     audio_service: "AudioService" | None = None
     session_store: "SessionStore" | None = None
     crypto_provider: "CryptoPayProvider" | None = None
+    robokassa_provider: "RoboKassaProvider" | None = None
+    yookassa_provider: "YooKassaProvider" | None = None
     error_handler: "ErrorHandler" | None = None
     document_manager: "DocumentManager" | None = None
     response_cache: "ResponseCache" | None = None
