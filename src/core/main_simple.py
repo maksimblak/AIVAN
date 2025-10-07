@@ -98,6 +98,16 @@ VOICE_REPLY_CAPTION = (
 
 PERIOD_OPTIONS = (7, 30, 90)
 PROGRESS_BAR_LENGTH = 10
+FEATURE_LABELS = {
+    "legal_question": "Юридические вопросы",
+    "document_processing": "Обработка документов",
+    "judicial_practice": "Судебная практика",
+    "document_draft": "Составление документов",
+    "voice_message": "Голосовые сообщения",
+    "ocr_processing": "OCR распознавание",
+    "document_chat": "Чат с документом",
+}
+
 DAY_NAMES = {
     "0": "Вс",
     "1": "Пн",
@@ -750,14 +760,15 @@ def _normalize_stats_period(days: int) -> int:
 
 def _build_progress_bar(used: int, total: int) -> str:
     if total is None or total <= 0:
-        return "Безлимит"
+        return "<code>[██████████]</code> ∞ / <b>Безлимит</b>"
 
     total = max(total, 0)
     used = max(0, min(used, total))
 
     ratio = used / total if total else 0.0
     filled = min(PROGRESS_BAR_LENGTH, max(0, int(round(ratio * PROGRESS_BAR_LENGTH))))
-    bar = "█" * filled + "░" * (PROGRESS_BAR_LENGTH - filled)
+    bar = f"[{'█' * filled}{'░' * (PROGRESS_BAR_LENGTH - filled)}]"
+    bar_markup = f"<code>{bar}</code>"
 
     remaining = max(0, total - used)
     if total:
@@ -765,11 +776,51 @@ def _build_progress_bar(used: int, total: int) -> str:
     else:
         remaining_pct = 0
 
-    return f"{bar} {used}/{total} | осталось {remaining} ({remaining_pct}%)"
+    return f"{bar_markup} {used}/{total} • осталось <b>{remaining}</b> ({remaining_pct}%)"
+
 
 def _progress_line(label: str, used: int, total: int) -> str:
     return f"• {label}: {_build_progress_bar(used, total)}"
 
+
+def _format_stat_row(label: str, value: str) -> str:
+    return f"• <b>{label}:</b> {value}"
+
+
+def _success_badge(rate: float) -> str:
+    if rate >= 90:
+        return "🟢"
+    if rate >= 60:
+        return "🟡"
+    return "🔴"
+
+
+def _peak_summary(
+    counts: dict[str, int],
+    *,
+    mapping: dict[str, str] | None = None,
+    formatter: Callable[[str], str] | None = None,
+    secondary_limit: int = 3,
+) -> tuple[str, str]:
+    if not counts:
+        return "—", ""
+
+    sorted_items = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+
+    def _render(raw_key: str) -> str:
+        label = mapping.get(raw_key, raw_key) if mapping else raw_key
+        return formatter(label) if formatter else label
+
+    primary_key, primary_count = sorted_items[0]
+    primary_label = _render(str(primary_key))
+    primary = f"{primary_label} ({primary_count})"
+
+    secondary_parts: list[str] = []
+    for key, count in sorted_items[1:secondary_limit]:
+        secondary_parts.append(f"{_render(str(key))} {count}")
+
+    secondary = ", ".join(secondary_parts)
+    return primary, secondary
 
 def _top_labels(
     counts: dict[str, int],
@@ -1617,10 +1668,16 @@ async def _generate_user_stats_response(
     avg_response_time_ms = int(stats.get("avg_response_time_ms", 0) or 0)
 
     success_rate = (period_successful / period_requests * 100) if period_requests else 0.0
+    success_badge = _success_badge(success_rate)
 
     day_counts = stats.get("day_of_week_counts") or {}
     hour_counts = stats.get("hour_of_day_counts") or {}
     type_stats = stats.get("request_types") or {}
+
+    day_primary, day_secondary = _peak_summary(day_counts, mapping=DAY_NAMES)
+    hour_primary, hour_secondary = _peak_summary(
+        hour_counts, formatter=_format_hour_label
+    )
 
     last_transaction = stats.get("last_transaction")
 
@@ -1633,21 +1690,29 @@ async def _generate_user_stats_response(
         subscription_balance_raw = getattr(user, "subscription_requests_balance", None)
     subscription_balance = int(subscription_balance_raw or 0)
 
+    divider = "──────────"
+
+    recommendations = _build_recommendations(
+        trial_remaining=trial_remaining,
+        has_subscription=has_subscription,
+        subscription_days_left=subscription_days_left,
+        period_requests=period_requests,
+        previous_requests=previous_requests,
+    )
+
     lines = [
         f"{Emoji.STATS} <b>Моя статистика — {normalized_days} дн.</b>",
-        "",
+        divider,
         "👤 <b>Профиль</b>",
-        f"• ID: <code>{user_id}</code>",
-        f"• Статус: {'🛡️ Администратор' if stats.get('is_admin') else '👤 Пользователь'}",
-        f"• Создан: {_format_datetime(created_at_ts)}",
-        f"• Обновлён: {_format_datetime(updated_at_ts)}",
-        f"• Последний запрос: {_format_datetime(last_request_ts)}",
-        f"• Подписка: {subscription_status_text}",
-        f"• План: {plan_label}",
+        _format_stat_row("Создан", _format_datetime(created_at_ts)),
+        _format_stat_row("Обновлён", _format_datetime(updated_at_ts)),
+        _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("Подписка", subscription_status_text),
+        _format_stat_row("План", plan_label),
+        divider,
+        "🔋 <b>Лимиты</b>",
     ]
 
-    lines.append("")
-    lines.append("🔋 <b>Лимиты</b>")
     if TRIAL_REQUESTS > 0:
         trial_used = max(0, TRIAL_REQUESTS - trial_remaining)
         lines.append(_progress_line("Триал", trial_used, TRIAL_REQUESTS))
@@ -1662,63 +1727,63 @@ async def _generate_user_stats_response(
     else:
         lines.append("• Подписка не активна")
 
-    lines.append("")
-    lines.append("📈 <b>Активность</b>")
-    lines.append(f"• Запросов: {_format_trend_value(period_requests, previous_requests)}")
-    lines.append(f"• Успешных: {_format_trend_value(period_successful, previous_successful)}")
-    lines.append(f"• Успешность: {success_rate:.0f}%")
-    lines.append(f"• Ср. время ответа: {_format_response_time(avg_response_time_ms)}")
+    lines.extend([
+        divider,
+        "📈 <b>Активность</b>",
+        _format_stat_row("Запросов", _format_trend_value(period_requests, previous_requests)),
+        _format_stat_row("Успешных", _format_trend_value(period_successful, previous_successful)),
+        _format_stat_row("Успешность", f"{success_badge} {success_rate:.0f}%"),
+        _format_stat_row("Ср. ответ", _format_response_time(avg_response_time_ms)),
+    ])
     if period_tokens:
-        lines.append(f"• Токены: {_format_number(period_tokens)}")
+        lines.append(_format_stat_row("Токены", _format_number(period_tokens)))
 
-    lines.append("")
+    lines.append(divider)
     lines.append("🗓 <b>Когда обращаются</b>")
-    lines.append(f"• Дни: {_top_labels(day_counts, mapping=DAY_NAMES, limit=3)}")
-    lines.append(
-        f"• Часы: {_top_labels(hour_counts, formatter=_format_hour_label, limit=3)}"
-    )
+    if day_primary != "—":
+        lines.append(_format_stat_row("Пик день", day_primary))
+        if day_secondary:
+            lines.append(_format_stat_row("Также дни", day_secondary))
+    else:
+        lines.append("• Нет данных по дням")
 
-    lines.append("")
+    if hour_primary != "—":
+        lines.append(_format_stat_row("Пик час", hour_primary))
+        if hour_secondary:
+            lines.append(_format_stat_row("Также часы", hour_secondary))
+    else:
+        lines.append("• Нет данных по часам")
+
+    lines.append(divider)
     lines.append("📋 <b>Типы запросов</b>")
     if type_stats:
         top_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)[:5]
         for req_type, count in top_types:
             emoji = Emoji.LAW if req_type == "legal_question" else Emoji.INFO
-            lines.append(f"• {emoji} {req_type}: {count}")
+            share_pct = (count / period_requests * 100) if period_requests else 0.0
+            label = FEATURE_LABELS.get(req_type, req_type)
+            lines.append(f"• {emoji} {label}: {count} ({share_pct:.0f}%)")
     else:
         lines.append("• Нет данных")
 
     if last_transaction:
-        lines.append("")
+        lines.append(divider)
         lines.append("💳 <b>Последний платёж</b>")
         currency = last_transaction.get("currency", "RUB") or "RUB"
         amount_minor = last_transaction.get("amount_minor_units")
         if amount_minor is None:
             amount_minor = last_transaction.get("amount")
-        lines.append(f"• Сумма: {_format_currency(amount_minor, currency)}")
-        lines.append(f"• Статус: {last_transaction.get('status', 'unknown')}")
-        lines.append(f"• Дата: {_format_datetime(last_transaction.get('created_at'))}")
+        lines.append(_format_stat_row("Сумма", _format_currency(amount_minor, currency)))
+        lines.append(_format_stat_row("Статус", last_transaction.get("status", "unknown")))
+        lines.append(_format_stat_row("Дата", _format_datetime(last_transaction.get("created_at"))))
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
-                    lines.append(f"• Оплачен тариф: {payload.plan_id}")
+                    lines.append(_format_stat_row("Тариф", payload.plan_id))
             except SubscriptionPayloadError:
                 pass
-
-    recommendations = _build_recommendations(
-        trial_remaining=trial_remaining,
-        has_subscription=has_subscription,
-        subscription_days_left=subscription_days_left,
-        period_requests=period_requests,
-        previous_requests=previous_requests,
-    )
-    if recommendations:
-        lines.append("")
-        lines.append("💡 <b>Рекомендации</b>")
-        for tip in recommendations:
-            lines.append(f"• {tip}")
 
     text = "\n".join(lines)
     keyboard = _build_stats_keyboard(normalized_days, has_subscription)
@@ -2954,20 +3019,21 @@ async def handle_my_stats_callback(callback: CallbackQuery):
             await callback.message.answer("Статистика временно недоступна")
             return
 
-        def generate_activity_graph(daily_data: Sequence[int]) -> str:
+        def generate_activity_graph(daily_data: Sequence[int]) -> tuple[str, int]:
             window = list(daily_data)[-7:]
             if not window:
-                return ""
+                return "", 0
             max_val = max(window)
             if max_val <= 0:
-                return "▁" * len(window)
+                return "▁" * len(window), sum(window)
             bars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-            return "".join(
+            graph = "".join(
                 bars[min(int((value / max_val) * (len(bars) - 1)), len(bars) - 1)]
                 if value > 0
                 else bars[0]
                 for value in window
             )
+            return graph, sum(window)
 
         def format_feature_name(feature: str | None) -> str:
             feature_names = {
@@ -2984,17 +3050,22 @@ async def handle_my_stats_callback(callback: CallbackQuery):
             return feature_names.get(feature, feature)
 
         extra_sections: list[str] = []
+        divider = "──────────"
+
+        def append_section(title: str) -> None:
+            if not extra_sections:
+                extra_sections.append(divider)
+            extra_sections.append(title)
 
         daily_activity = stats.get("daily_activity") or []
-        activity_graph = generate_activity_graph(daily_activity)
+        activity_graph, activity_total = generate_activity_graph(daily_activity)
         if activity_graph:
-            extra_sections.append("📊 <b>Активность (7 дн.)</b>")
-            extra_sections.append(f"• {activity_graph}")
+            append_section("📊 <b>Активность (7 дн.)</b>")
+            extra_sections.append(f"• <code>{activity_graph}</code> — {activity_total} запросов")
 
         feature_stats = stats.get("feature_stats") or []
         if feature_stats:
-            extra_sections.append("")
-            extra_sections.append("🎯 <b>Популярные функции</b>")
+            append_section("🎯 <b>Популярные функции</b>")
             for feature_data in feature_stats[:5]:
                 feature_name = format_feature_name(feature_data.get("feature"))
                 count = feature_data.get("count", 0)
