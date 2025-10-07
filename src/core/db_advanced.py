@@ -1336,6 +1336,8 @@ class DatabaseAdvanced:
                 if not user_row:
                     return {"error": "User not found"}
 
+                previous_period_start = period_start - (days * 86400)
+
                 # Статистика за период
                 period_cursor = await conn.execute(
                     """SELECT 
@@ -1350,6 +1352,19 @@ class DatabaseAdvanced:
                 period_row = await period_cursor.fetchone()
                 await period_cursor.close()
 
+                prev_cursor = await conn.execute(
+                    """SELECT 
+                       COUNT(*) as prev_requests,
+                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as prev_successful,
+                       SUM(tokens_used) as prev_tokens,
+                       AVG(response_time_ms) as prev_avg_response_time
+                       FROM requests 
+                       WHERE user_id = ? AND created_at >= ? AND created_at < ?""",
+                    (user_id, previous_period_start, period_start),
+                )
+                prev_row = await prev_cursor.fetchone()
+                await prev_cursor.close()
+
                 # Статистика по типам запросов за период
                 types_cursor = await conn.execute(
                     """SELECT request_type, COUNT(*) as count
@@ -1361,7 +1376,38 @@ class DatabaseAdvanced:
                 types_rows = await types_cursor.fetchall()
                 await types_cursor.close()
 
-                self.query_count += 3 if self.enable_metrics else 0
+                dow_cursor = await conn.execute(
+                    """SELECT strftime('%w', created_at, 'unixepoch') as dow, COUNT(*)
+                        FROM requests
+                        WHERE user_id = ? AND created_at >= ?
+                        GROUP BY dow""",
+                    (user_id, period_start),
+                )
+                dow_rows = await dow_cursor.fetchall()
+                await dow_cursor.close()
+
+                hour_cursor = await conn.execute(
+                    """SELECT strftime('%H', created_at, 'unixepoch') as hour, COUNT(*)
+                        FROM requests
+                        WHERE user_id = ? AND created_at >= ?
+                        GROUP BY hour""",
+                    (user_id, period_start),
+                )
+                hour_rows = await hour_cursor.fetchall()
+                await hour_cursor.close()
+
+                tx_cursor = await conn.execute(
+                    """SELECT provider, currency, amount, amount_minor_units, status, created_at, payload
+                        FROM transactions
+                        WHERE user_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT 1""",
+                    (user_id,),
+                )
+                tx_row = await tx_cursor.fetchone()
+                await tx_cursor.close()
+
+                self.query_count += 7 if self.enable_metrics else 0
 
                 types_dict = {row[0]: int(row[1]) for row in types_rows} if types_rows else {}
 
@@ -1379,6 +1425,28 @@ class DatabaseAdvanced:
                 avg_response_time = (
                     round(period_row[3]) if period_row and period_row[3] is not None else 0
                 )
+
+                prev_requests = int((prev_row[0] if prev_row else 0) or 0)
+                prev_successful = int((prev_row[1] if prev_row else 0) or 0)
+                prev_tokens = int((prev_row[2] if prev_row else 0) or 0)
+                prev_avg_response_time = (
+                    round(prev_row[3]) if prev_row and prev_row[3] is not None else 0
+                )
+
+                dow_counts = {row[0]: int(row[1]) for row in dow_rows} if dow_rows else {}
+                hour_counts = {row[0]: int(row[1]) for row in hour_rows} if hour_rows else {}
+
+                last_transaction = None
+                if tx_row:
+                    last_transaction = {
+                        "provider": tx_row[0],
+                        "currency": tx_row[1],
+                        "amount": tx_row[2],
+                        "amount_minor_units": tx_row[3],
+                        "status": tx_row[4],
+                        "created_at": tx_row[5],
+                        "payload": tx_row[6],
+                    }
 
                 return {
                     "user_id": user_id,
@@ -1400,6 +1468,15 @@ class DatabaseAdvanced:
                     "period_tokens": period_tokens,
                     "avg_response_time_ms": avg_response_time,
                     "request_types": types_dict,
+                    "previous_period_requests": prev_requests,
+                    "previous_period_successful": prev_successful,
+                    "previous_period_tokens": prev_tokens,
+                    "previous_avg_response_time_ms": prev_avg_response_time,
+                    "day_of_week_counts": dow_counts,
+                    "hour_of_day_counts": hour_counts,
+                    "last_transaction": last_transaction,
+                    "recent_requests": period_requests,
+                    "recent_successful": period_successful,
                 }
 
             except Exception as e:
