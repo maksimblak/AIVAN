@@ -787,14 +787,6 @@ def _format_stat_row(label: str, value: str) -> str:
     return f"• <b>{label}:</b> {value}"
 
 
-def _success_badge(rate: float) -> str:
-    if rate >= 90:
-        return "🟢"
-    if rate >= 60:
-        return "🟡"
-    return "🔴"
-
-
 def _peak_summary(
     counts: dict[str, int],
     *,
@@ -1650,7 +1642,6 @@ async def _generate_user_stats_response(
         max(0, math.ceil((subscription_until_ts - now_ts) / 86400)) if has_subscription else 0
     )
 
-    plan_label = plan_info.plan.name if plan_info else (plan_id or "—")
     subscription_status_text = "❌ Не активна"
     if has_subscription:
         until_text = _format_datetime(subscription_until_ts, default="—")
@@ -1660,6 +1651,15 @@ async def _generate_user_stats_response(
         subscription_status_text = f"⏰ Истекла {until_text}"
 
     trial_remaining = int(stats.get("trial_remaining", getattr(user, "trial_remaining", 0)) or 0)
+
+    if plan_info:
+        plan_label = plan_info.plan.name
+    elif plan_id:
+        plan_label = plan_id
+    elif trial_remaining > 0:
+        plan_label = "Триал"
+    else:
+        plan_label = "—"
     period_requests = int(stats.get("period_requests", 0) or 0)
     previous_requests = int(stats.get("previous_period_requests", 0) or 0)
     period_successful = int(stats.get("period_successful", 0) or 0)
@@ -1668,7 +1668,6 @@ async def _generate_user_stats_response(
     avg_response_time_ms = int(stats.get("avg_response_time_ms", 0) or 0)
 
     success_rate = (period_successful / period_requests * 100) if period_requests else 0.0
-    success_badge = _success_badge(success_rate)
 
     day_counts = stats.get("day_of_week_counts") or {}
     hour_counts = stats.get("hour_of_day_counts") or {}
@@ -1690,30 +1689,30 @@ async def _generate_user_stats_response(
         subscription_balance_raw = getattr(user, "subscription_requests_balance", None)
     subscription_balance = int(subscription_balance_raw or 0)
 
-    divider = "<code>━━━━━━━━━━━━━━━━</code>"
+    divider = "──────────"
 
     lines = [
         f"{Emoji.STATS} <b>Моя статистика — {normalized_days} дн.</b>",
         divider,
-        "👤 <b>Профиль</b>",
-        _format_stat_row("🗓️ Создан", _format_datetime(created_at_ts)),
-        _format_stat_row("♻️ Обновлён", _format_datetime(updated_at_ts)),
-        _format_stat_row("⏱️ Последний запрос", _format_datetime(last_request_ts)),
-        _format_stat_row("⭐ Подписка", subscription_status_text),
-        _format_stat_row("📦 План", plan_label),
+        "Профиль",
+        _format_stat_row("Создан", _format_datetime(created_at_ts)),
+        _format_stat_row("Обновлён", _format_datetime(updated_at_ts)),
+        _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("Подписка", subscription_status_text),
+        _format_stat_row("План", plan_label),
         divider,
-        "🔋 <b>Лимиты</b>",
+        "Лимиты",
     ]
 
     if TRIAL_REQUESTS > 0:
         trial_used = max(0, TRIAL_REQUESTS - trial_remaining)
-        lines.append(_progress_line("🧪 Триал", trial_used, TRIAL_REQUESTS))
+        lines.append(_progress_line("Триал", trial_used, TRIAL_REQUESTS))
     else:
         lines.append("• Триал недоступен")
 
     if plan_info and plan_info.plan.request_quota > 0:
         used = max(0, plan_info.plan.request_quota - subscription_balance)
-        lines.append(_progress_line("📥 Подписка", used, plan_info.plan.request_quota))
+        lines.append(_progress_line("Подписка", used, plan_info.plan.request_quota))
     elif has_subscription:
         lines.append("• Подписка: безлимит")
     else:
@@ -1721,62 +1720,60 @@ async def _generate_user_stats_response(
 
     lines.extend([
         divider,
-        "📈 <b>Активность</b>",
-        _format_stat_row("📨 Запросов", _format_trend_value(period_requests, previous_requests)),
-        _format_stat_row("✅ Успешных", _format_trend_value(period_successful, previous_successful)),
-        _format_stat_row("🎯 Успешность", f"{success_badge} {success_rate:.0f}%"),
-        _format_stat_row("⚡ Среднее время", _format_response_time(avg_response_time_ms)),
+        "Активность",
+        _format_stat_row("Запросов", _format_trend_value(period_requests, previous_requests)),
+        _format_stat_row("Успешных", _format_trend_value(period_successful, previous_successful)),
+        _format_stat_row("Успешность", f"{success_rate:.0f}%"),
+        _format_stat_row("Среднее время", _format_response_time(avg_response_time_ms)),
     ])
     if period_tokens:
-        lines.append(_format_stat_row("🧮 Токены", _format_number(period_tokens)))
+        lines.append(_format_stat_row("Токены", _format_number(period_tokens)))
 
     lines.append(divider)
-    lines.append("🕒 <b>Когда обращаются</b>")
+    lines.append("Когда обращаются")
     if day_primary != "—":
-        lines.append(_format_stat_row("📅 Пик день", day_primary))
+        lines.append(_format_stat_row("Пиковый день", day_primary))
         if day_secondary:
-            lines.append(_format_stat_row("📅 Также дни", day_secondary))
+            lines.append(_format_stat_row("Также дни", day_secondary))
     else:
         lines.append("• Нет данных по дням")
 
     if hour_primary != "—":
-        lines.append(_format_stat_row("🕘 Пик час", hour_primary))
+        lines.append(_format_stat_row("Пиковый час", hour_primary))
         if hour_secondary:
-            lines.append(_format_stat_row("🕘 Также часы", hour_secondary))
+            lines.append(_format_stat_row("Также часы", hour_secondary))
     else:
         lines.append("• Нет данных по часам")
 
     lines.append(divider)
-    lines.append("📋 <b>Типы запросов</b>")
+    lines.append("Типы запросов")
     if type_stats:
         top_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)[:5]
         for req_type, count in top_types:
-            emoji = Emoji.LAW if req_type == "legal_question" else Emoji.INFO
             share_pct = (count / period_requests * 100) if period_requests else 0.0
             label = FEATURE_LABELS.get(req_type, req_type)
-            lines.append(f"• {emoji} <b>{label}</b>: {count} ({share_pct:.0f}%)")
+            lines.append(f"• {label}: {count} ({share_pct:.0f}%)")
     else:
         lines.append("• Нет данных")
 
     if last_transaction:
         lines.append(divider)
-        lines.append("💳 <b>Последний платёж</b>")
+        lines.append("Последний платёж")
         currency = last_transaction.get("currency", "RUB") or "RUB"
         amount_minor = last_transaction.get("amount_minor_units")
         if amount_minor is None:
             amount_minor = last_transaction.get("amount")
-        lines.append(_format_stat_row("💰 Сумма", _format_currency(amount_minor, currency)))
-        lines.append(_format_stat_row("📌 Статус", last_transaction.get("status", "unknown")))
-        lines.append(_format_stat_row("🗓️ Дата", _format_datetime(last_transaction.get("created_at"))))
+        lines.append(_format_stat_row("Сумма", _format_currency(amount_minor, currency)))
+        lines.append(_format_stat_row("Статус", last_transaction.get("status", "unknown")))
+        lines.append(_format_stat_row("Дата", _format_datetime(last_transaction.get("created_at"))))
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
-                    lines.append(_format_stat_row("📦 Тариф", payload.plan_id))
+                    lines.append(_format_stat_row("Тариф", payload.plan_id))
             except SubscriptionPayloadError:
                 pass
-
     text = "\n".join(lines)
     keyboard = _build_stats_keyboard(normalized_days, has_subscription)
     return text, keyboard
@@ -3052,12 +3049,12 @@ async def handle_my_stats_callback(callback: CallbackQuery):
         daily_activity = stats.get("daily_activity") or []
         activity_graph, activity_total = generate_activity_graph(daily_activity)
         if activity_graph:
-            append_section("📊 <b>Активность (7 дн.)</b>")
-            extra_sections.append(f"• <code>{activity_graph}</code> — {activity_total} запросов")
+            append_section("Активность (7 дн.)")
+            extra_sections.append(f"• {activity_graph} — {activity_total} запросов")
 
         feature_stats = stats.get("feature_stats") or []
         if feature_stats:
-            append_section("🎯 <b>Популярные функции</b>")
+            append_section("Популярные функции")
             for feature_data in feature_stats[:5]:
                 feature_name = format_feature_name(feature_data.get("feature"))
                 count = feature_data.get("count", 0)
