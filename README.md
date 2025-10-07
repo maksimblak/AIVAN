@@ -178,6 +178,12 @@ ROBOKASSA_FAIL_URL=https://t.me/your_bot
 YOOKASSA_SHOP_ID=your_shop_id
 YOOKASSA_SECRET_KEY=your_secret_key
 YOOKASSA_RETURN_URL=https://example.com/payments/yookassa/return
+YOOKASSA_REQUIRE_EMAIL=1
+YOOKASSA_REQUIRE_PHONE=0
+YOOKASSA_TAX_SYSTEM_CODE=1
+YOOKASSA_VAT_CODE=1
+YOOKASSA_PAYMENT_MODE=full_payment
+YOOKASSA_PAYMENT_SUBJECT=service
 
 # Прокси (опционально)
 TELEGRAM_PROXY_URL=http://proxy:port

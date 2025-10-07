@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import tempfile
@@ -1433,6 +1434,30 @@ async def _send_rub_invoice(message: Message, plan_info: SubscriptionPlanPricing
         )
         return
     payload = build_subscription_payload(plan_info.plan.plan_id, "rub", user_id)
+    cfg = settings()
+    amount_value = f"{float(plan_info.plan.price_rub):.2f}"
+    receipt_item: dict[str, Any] = {
+        "description": plan_info.plan.name[:128],
+        "quantity": 1,
+        "amount": {
+            "value": amount_value,
+            "currency": "RUB",
+        },
+    }
+    if cfg.yookassa_vat_code is not None:
+        receipt_item["vat_code"] = int(cfg.yookassa_vat_code)
+    if cfg.yookassa_payment_mode:
+        receipt_item["payment_mode"] = cfg.yookassa_payment_mode
+    if cfg.yookassa_payment_subject:
+        receipt_item["payment_subject"] = cfg.yookassa_payment_subject
+
+    receipt: dict[str, Any] = {
+        "items": [receipt_item],
+    }
+    if cfg.yookassa_tax_system_code is not None:
+        receipt["tax_system_code"] = int(cfg.yookassa_tax_system_code)
+
+    provider_data = json.dumps({"receipt": receipt}, ensure_ascii=False)
     prices = [
         LabeledPrice(
             label=f"{plan_info.plan.name}",
@@ -1452,6 +1477,11 @@ async def _send_rub_invoice(message: Message, plan_info: SubscriptionPlanPricing
         currency="RUB",
         prices=prices,
         is_flexible=False,
+        need_email=cfg.yookassa_require_email,
+        need_phone_number=cfg.yookassa_require_phone,
+        send_email_to_provider=cfg.yookassa_require_email,
+        send_phone_number_to_provider=cfg.yookassa_require_phone,
+        provider_data=provider_data,
     )
 
 

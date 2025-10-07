@@ -44,6 +44,12 @@ class AppSettings(BaseModel):
     yookassa_shop_id: str = Field(default="", alias="YOOKASSA_SHOP_ID")
     yookassa_secret_key: str = Field(default="", alias="YOOKASSA_SECRET_KEY")
     yookassa_return_url: str | None = Field(default=None, alias="YOOKASSA_RETURN_URL")
+    yookassa_require_email: bool = Field(default=True, alias="YOOKASSA_REQUIRE_EMAIL")
+    yookassa_require_phone: bool = Field(default=False, alias="YOOKASSA_REQUIRE_PHONE")
+    yookassa_tax_system_code: int | None = Field(default=None, alias="YOOKASSA_TAX_SYSTEM_CODE")
+    yookassa_vat_code: int | None = Field(default=None, alias="YOOKASSA_VAT_CODE")
+    yookassa_payment_mode: str | None = Field(default="full_payment", alias="YOOKASSA_PAYMENT_MODE")
+    yookassa_payment_subject: str | None = Field(default="service", alias="YOOKASSA_PAYMENT_SUBJECT")
 
     user_sessions_max: int = Field(default=10_000, alias="USER_SESSIONS_MAX")
     user_session_ttl_seconds: int = Field(default=3600, alias="USER_SESSION_TTL_SECONDS")
@@ -161,6 +167,8 @@ class AppSettings(BaseModel):
         "robokassa_success_url",
         "robokassa_fail_url",
         "yookassa_return_url",
+        "yookassa_payment_mode",
+        "yookassa_payment_subject",
         mode="before",
     )
     @classmethod
@@ -169,7 +177,13 @@ class AppSettings(BaseModel):
             return None
         return value
 
-    @field_validator("prometheus_port", "rub_per_xtr", mode="before")
+    @field_validator(
+        "prometheus_port",
+        "rub_per_xtr",
+        "yookassa_tax_system_code",
+        "yookassa_vat_code",
+        mode="before",
+    )
     @classmethod
     def _convert_optional_numbers(cls, value: Any) -> Any:
         if value in (None, ""):
