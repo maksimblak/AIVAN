@@ -11,9 +11,12 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Добавляем путь к проекту
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Добавляем путь к проекту до импорта внутренних модулей
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from pydantic import ValidationError
 
 from src.core.settings import AppSettings
 from src.core.rag.judicial_rag import JudicialPracticeRAG
@@ -26,8 +29,15 @@ async def test_rag(query: str) -> None:
     print(f"Тестирование RAG поиска")
     print(f"{'='*60}\n")
 
-    # Инициализация
-    settings = AppSettings()
+    # Инициализация настроек
+    try:
+        settings = AppSettings.load()
+    except ValidationError as exc:
+        print("❌ Не удалось загрузить настройки приложения")
+        print(f"Причина: {exc}")
+        print("\nУбедитесь, что заданы переменные окружения TELEGRAM_BOT_TOKEN и OPENAI_API_KEY")
+        return
+
     rag = JudicialPracticeRAG(settings)
 
     if not rag.enabled:

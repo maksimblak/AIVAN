@@ -1,10 +1,13 @@
-"""
-Тесты для DI контейнера
-"""
+"""Тесты для DI контейнера"""
+
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from unittest.mock import Mock, AsyncMock
+
 from src.core.di_container import DIContainer, create_container, get_container, reset_container
+from src.core.settings import AppSettings
 
 
 class MockService:
@@ -19,6 +22,16 @@ class MockService:
 class MockDependency:
     def __init__(self):
         self.value = "mock_dependency"
+
+
+def _make_settings(tmp_path: Path | None = None) -> AppSettings:
+    db_path = tmp_path / "test.db" if tmp_path else Path("test.db")
+    env = {
+        "TELEGRAM_BOT_TOKEN": "test-token",
+        "OPENAI_API_KEY": "test-key",
+        "DB_PATH": str(db_path),
+    }
+    return AppSettings.load(env)
 
 
 class TestDIContainer:
@@ -115,32 +128,39 @@ class TestDIContainer:
 
 class TestContainerFactory:
 
-    def test_create_container(self):
-        # Act
-        container = create_container()
-
-        # Assert
-        assert isinstance(container, DIContainer)
-        assert container.get_config("db_path") is not None
-
-    def test_get_container_singleton(self):
-        # Arrange
+    def teardown_method(self):
         reset_container()
 
-        # Act
-        container1 = get_container()
+    def test_create_container(self, tmp_path: Path):
+        settings = _make_settings(tmp_path)
+
+        container = create_container(settings)
+
+        assert isinstance(container, DIContainer)
+        assert container.get(AppSettings) is settings
+        assert container.get_config("subscription_price_rub") == settings.subscription_price_rub
+
+        asyncio.run(container.cleanup())
+
+    def test_get_container_singleton(self, tmp_path: Path):
+        reset_container()
+        settings = _make_settings(tmp_path)
+
+        container1 = get_container(settings)
         container2 = get_container()
 
-        # Assert
         assert container1 is container2
 
-    def test_reset_container(self):
-        # Arrange
-        container1 = get_container()
+        asyncio.run(container1.cleanup())
 
-        # Act
+    def test_reset_container(self, tmp_path: Path):
+        settings = _make_settings(tmp_path)
+        container1 = get_container(settings)
+
         reset_container()
-        container2 = get_container()
+        container2 = get_container(settings)
 
-        # Assert
         assert container1 is not container2
+
+        asyncio.run(container1.cleanup())
+        asyncio.run(container2.cleanup())

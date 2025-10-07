@@ -8,12 +8,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 # Добавляем корень проекта в PYTHONPATH
 project_root = Path(__file__).parent.parent
 os.environ["PYTHONPATH"] = str(project_root)
 
 
-def run_command(command, description):
+def run_command(command: str, description: str) -> bool:
     """Выполнение команды с выводом результата"""
     print(f"\n🔍 {description}")
     print("-" * 50)
@@ -53,26 +54,32 @@ def main():
     success_count = 0
     total_count = 0
 
-    # Список тестов для выполнения
-    test_commands = [
-        ("poetry check", "Проверка корректности pyproject.toml"),
-        ("python -m pytest tests/unit/ -v", "Unit тесты"),
-        ("python -m pytest tests/integration/ -v", "Интеграционные тесты (если есть)"),
-        ("python -m pytest --cov=src --cov-report=term-missing", "Тесты с покрытием кода"),
-        ("python -m ruff check src/", "Проверка стиля кода (Ruff)"),
-        ("python -m black --check src/", "Проверка форматирования (Black)"),
-        ("python -m mypy src/ --ignore-missing-imports", "Проверка типов (MyPy)"),
-    ]
+    has_tests = (project_root / "tests").exists()
+    commands = []
 
-    for command, description in test_commands:
+    if (project_root / "pyproject.toml").exists():
+        commands.append(("poetry check", "Проверка корректности pyproject.toml"))
+
+    if has_tests:
+        commands.append(("poetry run pytest tests -v", "Запуск pytest"))
+        commands.append(("poetry run pytest --cov=src --cov-report=term-missing", "Отчет о покрытии"))
+
+    if (project_root / "src").exists():
+        commands.append(("poetry run ruff check src tests", "Проверка стиля кода (Ruff)"))
+        commands.append(("poetry run black --check src tests", "Проверка форматирования (Black)"))
+        commands.append(("poetry run mypy src", "Проверка типов (MyPy)"))
+
+    for command, description in commands:
         total_count += 1
         if run_command(command, description):
             success_count += 1
 
     # Дополнительная проверка - запуск валидации проекта
-    total_count += 1
-    if run_command("python scripts/validate_project.py", "Валидация проекта"):
-        success_count += 1
+    validation_cmd = "poetry run python scripts/validate_project.py"
+    if (project_root / "scripts" / "validate_project.py").exists():
+        total_count += 1
+        if run_command(validation_cmd, "Валидация проекта"):
+            success_count += 1
 
     # Итоги
     print("\n" + "=" * 50)

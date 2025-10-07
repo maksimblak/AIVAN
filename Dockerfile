@@ -49,7 +49,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 # Копирование исходного кода
 COPY --chown=aivan:aivan src/ ./src/
-COPY --chown=aivan:aivan razmetka.py ./
 
 # Создание директорий для данных
 RUN mkdir -p /app/data /app/logs && chown -R aivan:aivan /app/data /app/logs
