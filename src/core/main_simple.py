@@ -1690,38 +1690,30 @@ async def _generate_user_stats_response(
         subscription_balance_raw = getattr(user, "subscription_requests_balance", None)
     subscription_balance = int(subscription_balance_raw or 0)
 
-    divider = "──────────"
-
-    recommendations = _build_recommendations(
-        trial_remaining=trial_remaining,
-        has_subscription=has_subscription,
-        subscription_days_left=subscription_days_left,
-        period_requests=period_requests,
-        previous_requests=previous_requests,
-    )
+    divider = "<code>━━━━━━━━━━━━━━━━</code>"
 
     lines = [
         f"{Emoji.STATS} <b>Моя статистика — {normalized_days} дн.</b>",
         divider,
         "👤 <b>Профиль</b>",
-        _format_stat_row("Создан", _format_datetime(created_at_ts)),
-        _format_stat_row("Обновлён", _format_datetime(updated_at_ts)),
-        _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
-        _format_stat_row("Подписка", subscription_status_text),
-        _format_stat_row("План", plan_label),
+        _format_stat_row("🗓️ Создан", _format_datetime(created_at_ts)),
+        _format_stat_row("♻️ Обновлён", _format_datetime(updated_at_ts)),
+        _format_stat_row("⏱️ Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("⭐ Подписка", subscription_status_text),
+        _format_stat_row("📦 План", plan_label),
         divider,
         "🔋 <b>Лимиты</b>",
     ]
 
     if TRIAL_REQUESTS > 0:
         trial_used = max(0, TRIAL_REQUESTS - trial_remaining)
-        lines.append(_progress_line("Триал", trial_used, TRIAL_REQUESTS))
+        lines.append(_progress_line("🧪 Триал", trial_used, TRIAL_REQUESTS))
     else:
         lines.append("• Триал недоступен")
 
     if plan_info and plan_info.plan.request_quota > 0:
         used = max(0, plan_info.plan.request_quota - subscription_balance)
-        lines.append(_progress_line("Подписка", used, plan_info.plan.request_quota))
+        lines.append(_progress_line("📥 Подписка", used, plan_info.plan.request_quota))
     elif has_subscription:
         lines.append("• Подписка: безлимит")
     else:
@@ -1730,27 +1722,27 @@ async def _generate_user_stats_response(
     lines.extend([
         divider,
         "📈 <b>Активность</b>",
-        _format_stat_row("Запросов", _format_trend_value(period_requests, previous_requests)),
-        _format_stat_row("Успешных", _format_trend_value(period_successful, previous_successful)),
-        _format_stat_row("Успешность", f"{success_badge} {success_rate:.0f}%"),
-        _format_stat_row("Ср. ответ", _format_response_time(avg_response_time_ms)),
+        _format_stat_row("📨 Запросов", _format_trend_value(period_requests, previous_requests)),
+        _format_stat_row("✅ Успешных", _format_trend_value(period_successful, previous_successful)),
+        _format_stat_row("🎯 Успешность", f"{success_badge} {success_rate:.0f}%"),
+        _format_stat_row("⚡ Среднее время", _format_response_time(avg_response_time_ms)),
     ])
     if period_tokens:
-        lines.append(_format_stat_row("Токены", _format_number(period_tokens)))
+        lines.append(_format_stat_row("🧮 Токены", _format_number(period_tokens)))
 
     lines.append(divider)
-    lines.append("🗓 <b>Когда обращаются</b>")
+    lines.append("🕒 <b>Когда обращаются</b>")
     if day_primary != "—":
-        lines.append(_format_stat_row("Пик день", day_primary))
+        lines.append(_format_stat_row("📅 Пик день", day_primary))
         if day_secondary:
-            lines.append(_format_stat_row("Также дни", day_secondary))
+            lines.append(_format_stat_row("📅 Также дни", day_secondary))
     else:
         lines.append("• Нет данных по дням")
 
     if hour_primary != "—":
-        lines.append(_format_stat_row("Пик час", hour_primary))
+        lines.append(_format_stat_row("🕘 Пик час", hour_primary))
         if hour_secondary:
-            lines.append(_format_stat_row("Также часы", hour_secondary))
+            lines.append(_format_stat_row("🕘 Также часы", hour_secondary))
     else:
         lines.append("• Нет данных по часам")
 
@@ -1762,7 +1754,7 @@ async def _generate_user_stats_response(
             emoji = Emoji.LAW if req_type == "legal_question" else Emoji.INFO
             share_pct = (count / period_requests * 100) if period_requests else 0.0
             label = FEATURE_LABELS.get(req_type, req_type)
-            lines.append(f"• {emoji} {label}: {count} ({share_pct:.0f}%)")
+            lines.append(f"• {emoji} <b>{label}</b>: {count} ({share_pct:.0f}%)")
     else:
         lines.append("• Нет данных")
 
@@ -1773,15 +1765,15 @@ async def _generate_user_stats_response(
         amount_minor = last_transaction.get("amount_minor_units")
         if amount_minor is None:
             amount_minor = last_transaction.get("amount")
-        lines.append(_format_stat_row("Сумма", _format_currency(amount_minor, currency)))
-        lines.append(_format_stat_row("Статус", last_transaction.get("status", "unknown")))
-        lines.append(_format_stat_row("Дата", _format_datetime(last_transaction.get("created_at"))))
+        lines.append(_format_stat_row("💰 Сумма", _format_currency(amount_minor, currency)))
+        lines.append(_format_stat_row("📌 Статус", last_transaction.get("status", "unknown")))
+        lines.append(_format_stat_row("🗓️ Дата", _format_datetime(last_transaction.get("created_at"))))
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
-                    lines.append(_format_stat_row("Тариф", payload.plan_id))
+                    lines.append(_format_stat_row("📦 Тариф", payload.plan_id))
             except SubscriptionPayloadError:
                 pass
 
