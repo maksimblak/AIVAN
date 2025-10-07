@@ -1362,6 +1362,23 @@ class DatabaseAdvanced:
 
                 self.query_count += 3 if self.enable_metrics else 0
 
+                types_dict = {row[0]: int(row[1]) for row in types_rows} if types_rows else {}
+
+                raw_period_requests = period_row[0] if period_row else 0
+                period_requests = int(raw_period_requests or 0)
+                if period_requests == 0 and types_dict:
+                    period_requests = sum(types_dict.values())
+
+                raw_period_successful = period_row[1] if period_row else 0
+                period_successful = int(raw_period_successful or 0)
+
+                raw_period_tokens = period_row[2] if period_row else 0
+                period_tokens = int(raw_period_tokens or 0)
+
+                avg_response_time = (
+                    round(period_row[3]) if period_row and period_row[3] is not None else 0
+                )
+
                 return {
                     "user_id": user_id,
                     "total_requests": user_row[0],
@@ -1375,13 +1392,11 @@ class DatabaseAdvanced:
                     "subscription_last_purchase_at": user_row[9],
                     "is_admin": bool(user_row[6]),
                     "period_days": days,
-                    "period_requests": period_row[0] if period_row else 0,
-                    "period_successful": period_row[1] if period_row else 0,
-                    "period_tokens": period_row[2] if period_row else 0,
-                    "avg_response_time_ms": (
-                        round(period_row[3]) if period_row and period_row[3] else 0
-                    ),
-                    "request_types": {row[0]: row[1] for row in types_rows} if types_rows else {},
+                    "period_requests": period_requests,
+                    "period_successful": period_successful,
+                    "period_tokens": period_tokens,
+                    "avg_response_time_ms": avg_response_time,
+                    "request_types": types_dict,
                 }
 
             except Exception as e:
