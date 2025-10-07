@@ -1325,7 +1325,8 @@ class DatabaseAdvanced:
                 user_cursor = await conn.execute(
                     """SELECT total_requests, successful_requests, failed_requests, last_request_at,
                        trial_remaining, subscription_until, is_admin,
-                       subscription_plan, subscription_requests_balance, subscription_last_purchase_at 
+                       subscription_plan, subscription_requests_balance, subscription_last_purchase_at,
+                       created_at, updated_at
                        FROM users WHERE user_id = ?""",
                     (user_id,),
                 )
@@ -1391,6 +1392,8 @@ class DatabaseAdvanced:
                     "subscription_requests_balance": user_row[8],
                     "subscription_last_purchase_at": user_row[9],
                     "is_admin": bool(user_row[6]),
+                    "created_at": user_row[10],
+                    "updated_at": user_row[11],
                     "period_days": days,
                     "period_requests": period_requests,
                     "period_successful": period_successful,
