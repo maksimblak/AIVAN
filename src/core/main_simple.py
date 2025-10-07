@@ -749,15 +749,23 @@ def _normalize_stats_period(days: int) -> int:
 
 
 def _build_progress_bar(used: int, total: int) -> str:
-    if total <= 0:
-        return "безлимит"
+    if total is None or total <= 0:
+        return "Безлимит"
+
+    total = max(total, 0)
     used = max(0, min(used, total))
-    ratio = used / total if total else 0
+
+    ratio = used / total if total else 0.0
     filled = min(PROGRESS_BAR_LENGTH, max(0, int(round(ratio * PROGRESS_BAR_LENGTH))))
     bar = "█" * filled + "░" * (PROGRESS_BAR_LENGTH - filled)
-    remaining = max(0, total - used)
-    return f"{bar} {used}/{total} (осталось {remaining})"
 
+    remaining = max(0, total - used)
+    if total:
+        remaining_pct = max(0, min(100, int(round((remaining / total) * 100))))
+    else:
+        remaining_pct = 0
+
+    return f"{bar} {used}/{total} | осталось {remaining} ({remaining_pct}%)"
 
 def _progress_line(label: str, used: int, total: int) -> str:
     return f"• {label}: {_build_progress_bar(used, total)}"
