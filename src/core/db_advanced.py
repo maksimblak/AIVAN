@@ -1407,7 +1407,33 @@ class DatabaseAdvanced:
                 tx_row = await tx_cursor.fetchone()
                 await tx_cursor.close()
 
-                self.query_count += 7 if self.enable_metrics else 0
+                # Популярные функции (из behavior_events)
+                features_cursor = await conn.execute(
+                    """SELECT feature, COUNT(*) as count,
+                       MAX(timestamp) as last_used
+                       FROM behavior_events
+                       WHERE user_id = ? AND timestamp >= ?
+                       GROUP BY feature
+                       ORDER BY count DESC
+                       LIMIT 10""",
+                    (user_id, period_start),
+                )
+                features_rows = await features_cursor.fetchall()
+                await features_cursor.close()
+
+                # Ежедневная активность для графика (последние 7 дней)
+                daily_cursor = await conn.execute(
+                    """SELECT date(created_at, 'unixepoch') as day, COUNT(*) as count
+                       FROM requests
+                       WHERE user_id = ? AND created_at >= ?
+                       GROUP BY day
+                       ORDER BY day ASC""",
+                    (user_id, now - (7 * 86400)),
+                )
+                daily_rows = await daily_cursor.fetchall()
+                await daily_cursor.close()
+
+                self.query_count += 9 if self.enable_metrics else 0
 
                 types_dict = {row[0]: int(row[1]) for row in types_rows} if types_rows else {}
 
@@ -1448,6 +1474,19 @@ class DatabaseAdvanced:
                         "payload": tx_row[6],
                     }
 
+                # Обработка популярных функций
+                feature_stats = [
+                    {
+                        "feature": row[0],
+                        "count": int(row[1]),
+                        "last_used": int(row[2]) if row[2] else 0
+                    }
+                    for row in features_rows
+                ] if features_rows else []
+
+                # Обработка ежедневной активности для графика
+                daily_activity = [int(row[1]) for row in daily_rows] if daily_rows else []
+
                 return {
                     "user_id": user_id,
                     "total_requests": user_row[0],
@@ -1477,6 +1516,9 @@ class DatabaseAdvanced:
                     "last_transaction": last_transaction,
                     "recent_requests": period_requests,
                     "recent_successful": period_successful,
+                    # Новые поля
+                    "feature_stats": feature_stats,
+                    "daily_activity": daily_activity,
                 }
 
             except Exception as e:

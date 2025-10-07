@@ -1568,16 +1568,24 @@ def _build_stats_keyboard(selected_days: int, has_subscription: bool) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _generate_user_stats_response(user_id: int, days: int) -> tuple[str, InlineKeyboardMarkup]:
+async def _generate_user_stats_response(
+    user_id: int,
+    days: int,
+    *,
+    stats: dict[str, Any] | None = None,
+    user: Any | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
     if db is None:
         raise RuntimeError("Database is not available")
 
     normalized_days = _normalize_stats_period(days)
-    user = await db.ensure_user(
-        user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
-    )
+    if user is None:
+        user = await db.ensure_user(
+            user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
+        )
 
-    stats = await db.get_user_statistics(user_id, days=normalized_days)
+    if stats is None:
+        stats = await db.get_user_statistics(user_id, days=normalized_days)
     if stats.get("error"):
         raise RuntimeError(stats.get("error"))
 
@@ -2917,14 +2925,13 @@ async def handle_my_profile_callback(callback: CallbackQuery):
 
 async def handle_my_stats_callback(callback: CallbackQuery):
     """Обработчик кнопки 'Моя статистика'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
+    if not callback.from_user or callback.message is None:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
         return
 
     try:
         await callback.answer()
 
-        # Используем существующую логику из cmd_mystats
         if db is None:
             await callback.message.answer("Статистика временно недоступна")
             return
@@ -2933,62 +2940,73 @@ async def handle_my_stats_callback(callback: CallbackQuery):
         user = await db.ensure_user(
             user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
         )
-
-        # Получаем детальную статистику
         stats = await db.get_user_statistics(user_id, days=30)
 
-        # Форматируем даты
-        def format_timestamp(ts):
-            if not ts or ts == 0:
-                return "Никогда"
-            return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+        try:
+            status_text, keyboard = await _generate_user_stats_response(
+                user_id,
+                days=30,
+                stats=stats,
+                user=user,
+            )
+        except RuntimeError as stats_error:
+            logger.error("Failed to build user stats: %s", stats_error)
+            await callback.message.answer("Статистика временно недоступна")
+            return
 
-        def format_subscription_status(until_ts):
-            if not until_ts or until_ts == 0:
-                return "❌ Не активна"
-            now = int(time.time())
-            if until_ts > now:
-                dt = datetime.fromtimestamp(until_ts)
-                return f"✅ До {dt.strftime('%d.%m.%Y')}"
-            else:
-                return "⏰ Истекла"
+        def generate_activity_graph(daily_data: Sequence[int]) -> str:
+            window = list(daily_data)[-7:]
+            if not window:
+                return ""
+            max_val = max(window)
+            if max_val <= 0:
+                return "▁" * len(window)
+            bars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+            return "".join(
+                bars[min(int((value / max_val) * (len(bars) - 1)), len(bars) - 1)]
+                if value > 0
+                else bars[0]
+                for value in window
+            )
 
-        status_text = f"""📊 <b>Моя статистика</b>
+        def format_feature_name(feature: str | None) -> str:
+            feature_names = {
+                "legal_question": "⚖️ Юридические вопросы",
+                "document_processing": "📄 Обработка документов",
+                "judicial_practice": "📚 Судебная практика",
+                "document_draft": "📝 Составление документов",
+                "voice_message": "🎙️ Голосовые сообщения",
+                "ocr_processing": "🔍 OCR распознавание",
+                "document_chat": "💬 Чат с документом",
+            }
+            if not feature:
+                return "Другие функции"
+            return feature_names.get(feature, feature)
 
-👤 <b>Профиль</b>
-• ID: {user_id}
-• Триал: {stats.get('trial_remaining', 0)} запросов
-• Админ: {"✅" if stats.get('is_admin', False) else "❌"}
-• Создан: {format_timestamp(stats.get('created_at', 0))}
-• Обновлён: {format_timestamp(stats.get('updated_at', 0))}
-• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}
+        extra_sections: list[str] = []
 
-📈 <b>Общая статистика</b>
-• Всего запросов: {stats.get('total_requests', 0)}
-• За 30 дней: {stats.get('recent_requests', 0)}
-• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}
+        daily_activity = stats.get("daily_activity") or []
+        activity_graph = generate_activity_graph(daily_activity)
+        if activity_graph:
+            extra_sections.append("📊 <b>Активность (7 дн.)</b>")
+            extra_sections.append(f"• {activity_graph}")
 
-📋 <b>По типам запросов (30 дней)</b>"""
+        feature_stats = stats.get("feature_stats") or []
+        if feature_stats:
+            extra_sections.append("")
+            extra_sections.append("🎯 <b>Популярные функции</b>")
+            for feature_data in feature_stats[:5]:
+                feature_name = format_feature_name(feature_data.get("feature"))
+                count = feature_data.get("count", 0)
+                extra_sections.append(f"• {feature_name}: {count}")
 
-        # Добавляем статистику по типам
-        type_stats = stats.get('request_types', {})
-        if type_stats:
-            for req_type, count in type_stats.items():
-                status_text += f"\n• {req_type}: {count}"
-        else:
-            status_text += "\n• Нет данных"
-
-        # Добавляем кнопку "Назад"
-        back_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")],
-            ]
-        )
+        if extra_sections:
+            status_text = f"{status_text}\n\n" + "\n".join(extra_sections)
 
         await callback.message.answer(
             status_text,
             parse_mode=ParseMode.HTML,
-            reply_markup=back_keyboard
+            reply_markup=keyboard,
         )
 
     except Exception as e:
