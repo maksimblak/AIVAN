@@ -3856,7 +3856,7 @@ async def handle_doc_draft_request(
         return
 
     # Показываем индикатор "печатает"
-
+    from src.bot.typing_indicator import send_typing_once
     await send_typing_once(message.bot, message.chat.id, "typing")
 
     status_msg = await message.answer(f"{Emoji.LOADING} Анализирую запрос…")
@@ -3890,7 +3890,11 @@ async def handle_doc_draft_request(
 
     if plan.questions:
         await state.set_state(DocumentDraftStates.asking_details)
-        await _send_next_question(message, state, prefix="Вопрос")
+        await _send_questions_prompt(
+            message,
+            plan.questions,
+            title="Вопросы для подготовки документа",
+        )
     else:
         await state.set_state(DocumentDraftStates.generating)
         await message.answer(f"{Emoji.LOADING} Деталей достаточно, формирую документ…")
@@ -3943,7 +3947,13 @@ async def handle_doc_draft_answer(
 
             await state.update_data(draft_answers=answers, current_question_index=index)
             if index < len(questions):
-                await _send_next_question(message, state, prefix="Вопрос")
+                missing_numbers = ", ".join(str(i) for i in range(index + 1, len(questions) + 1))
+                await message.answer(
+                    f"{Emoji.WARNING} Ответы получены не полностью. Остались вопросы: {missing_numbers}.\n"
+                    "Отправьте оставшиеся ответы одним сообщением, пронумеровав их, например:\n"
+                    "3) ...",
+                    parse_mode=ParseMode.HTML,
+                )
             else:
                 await state.set_state(DocumentDraftStates.generating)
                 await message.answer(f"{Emoji.LOADING} Спасибо! Формирую документ…")
@@ -3951,17 +3961,12 @@ async def handle_doc_draft_answer(
             return
         # если не удалось сопоставить ни одного ответа — переходим к обычной обработке
 
-    answers.append({"question": questions[index]["text"], "answer": answer_text})
-    index += 1
-
-    await state.update_data(draft_answers=answers, current_question_index=index)
-
-    if index < len(questions):
-        await _send_next_question(message, state, prefix="Вопрос")
-    else:
-        await state.set_state(DocumentDraftStates.generating)
-        await message.answer(f"{Emoji.LOADING} Спасибо! Формирую документ…")
-        await _finalize_draft(message, state)
+    await message.answer(
+        f"{Emoji.WARNING} Пожалуйста, отправьте ответы одним сообщением и пронумеруйте их, например:\n"
+        "1) Ответ на первый вопрос\n"
+        "2) Ответ на второй вопрос",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 
@@ -4068,24 +4073,31 @@ def _extract_numbered_answers(answer_text: str) -> list[str] | None:
 
     return answers if len(answers) > 1 else None
 
-async def _send_next_question(message: Message, state: FSMContext, *, prefix: str) -> None:
-    data = await state.get_data()
-    plan = data.get("draft_plan") or {}
-    questions = plan.get("questions") or []
-    index = data.get("current_question_index", 0)
-
-    if index >= len(questions):
+async def _send_questions_prompt(
+    message: Message,
+    questions: list[dict[str, Any]],
+    *,
+    title: str,
+) -> None:
+    if not questions:
         return
 
-    question = questions[index]
-    purpose = question.get("purpose")
-    text = question.get("text", "")
-    parts = [f"{Emoji.MAGIC} {prefix} {index + 1}: {text}"]
-    if purpose:
-        parts.append(f"<i>Цель: {purpose}</i>")
-    if index == 0 and len(questions) > 1:
-        parts.append("➡️ Ответьте на следующие вопросы по очереди — мы спросим их один за другим.")
-    await message.answer("\n".join(parts), parse_mode=ParseMode.HTML)
+    lines = [f"{Emoji.MAGIC} {title}", ""]
+    for idx, question in enumerate(questions, 1):
+        text = question.get("text", "")
+        purpose = question.get("purpose")
+        lines.append(f"{idx}) {text}")
+        if purpose:
+            lines.append(f"   <i>Цель: {purpose}</i>")
+    lines.extend(
+        [
+            "",
+            "✍️ Напишите все ответы одним сообщением, пронумеровав их, например:",
+            "1) Ответ на первый вопрос",
+            "2) Ответ на второй вопрос",
+        ]
+    )
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 async def _finalize_draft(message: Message, state: FSMContext) -> None:
@@ -4103,18 +4115,18 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
     # Показываем индикатор "отправляет документ" во время генерации
     from src.bot.typing_indicator import typing_action
 
-    async with typing_action(message.bot, message.chat.id, "upload_document"):
-        try:
+    try:
+        async with typing_action(message.bot, message.chat.id, "upload_document"):
             result = await generate_document(openai_service, request_text, title, answers)
-        except DocumentDraftingError as err:
-            await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
-            await state.clear()
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
-            await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
-            await state.clear()
-            return
+    except DocumentDraftingError as err:
+        await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
+        await state.clear()
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
+        await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
+        await state.clear()
+        return
 
     if result.status != "ok":
         if result.follow_up_questions:
@@ -4133,7 +4145,11 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
             )
             await state.set_state(DocumentDraftStates.asking_details)
             await message.answer(f"{Emoji.WARNING} Нужно несколько уточнений, чтобы завершить документ.")
-            await _send_next_question(message, state, prefix="Дополнительный вопрос")
+            await _send_questions_prompt(
+                message,
+                extra_questions,
+                title="Дополнительные вопросы",
+            )
             return
 
         issues_text = "\n".join(result.issues) or "Модель не смогла подготовить документ."
@@ -4653,6 +4669,7 @@ async def handle_photo_upload(message: Message, state: FSMContext):
             return
 
         # Показываем индикатор "отправляет фото"
+        from src.bot.typing_indicator import send_typing_once
         await send_typing_once(message.bot, message.chat.id, "upload_photo")
 
         # Получаем данные из состояния
