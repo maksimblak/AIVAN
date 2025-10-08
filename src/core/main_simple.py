@@ -55,7 +55,7 @@ from src.bot.document_drafter import (
     plan_document,
 )
 from src.bot.status_manager import ProgressStatus, progress_router
-
+from src.bot.retention_notifier import RetentionNotifier
 from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, sanitize_telegram_html
 from src.core.attachments import QuestionAttachment
@@ -187,6 +187,7 @@ task_manager = None
 health_checker = None
 scaling_components = None
 judicial_rag = None
+retention_notifier = None
 
 
 async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, answer_text: str) -> None:
@@ -4026,6 +4027,46 @@ async def handle_back_to_menu(callback: CallbackQuery, state: FSMContext):
         await callback.answer(f"Ошибка: {e}")
         logger.error(f"Ошибка в handle_back_to_menu: {e}", exc_info=True)
 
+
+async def handle_retention_quick_question(callback: CallbackQuery):
+    """Обработка кнопки 'Задать вопрос' из retention уведомления"""
+    try:
+        await callback.answer()
+        await callback.message.answer(
+            f"{Emoji.ROBOT} <b>Отлично!</b>\n\n"
+            "Просто напиши свой вопрос, и я отвечу на него.\n\n"
+            f"{Emoji.INFO} <i>Пример:</i> Что делать, если нарушили права потребителя?",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_retention_quick_question: {e}", exc_info=True)
+
+
+async def handle_retention_show_features(callback: CallbackQuery):
+    """Обработка кнопки 'Все возможности' из retention уведомления"""
+    try:
+        await callback.answer()
+
+        features_text = (
+            f"{Emoji.ROBOT} <b>Что я умею:</b>\n\n"
+            f"{Emoji.QUESTION} <b>Юридические консультации</b>\n"
+            "Отвечаю на вопросы по любым правовым темам\n\n"
+            f"📄 <b>Работа с документами</b>\n"
+            "• Анализ договоров и документов\n"
+            "• Поиск рисков и проблем\n"
+            "• OCR — распознавание текста из фото\n"
+            "• Составление документов\n\n"
+            f"📚 <b>Судебная практика</b>\n"
+            "Поиск релевантных судебных решений\n\n"
+            f"{Emoji.MICROPHONE} <b>Голосовые сообщения</b>\n"
+            "Отправь голосовое — получишь голосовой ответ\n\n"
+            f"{Emoji.INFO} Просто напиши вопрос или выбери действие!"
+        )
+
+        await callback.message.answer(features_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error in handle_retention_show_features: {e}", exc_info=True)
+
 # --- progress router hookup ---
 def register_progressbar(dp: Dispatcher) -> None:
     dp.include_router(progress_router)
@@ -4931,6 +4972,12 @@ async def run_bot() -> None:
     await task_manager.start_all()
     logger.info("Started %s background tasks", len(task_manager.tasks))
 
+    # Запускаем retention notifier
+    global retention_notifier
+    retention_notifier = RetentionNotifier(bot, db)
+    await retention_notifier.start()
+    logger.info("✉️ Retention notifier started")
+
     refresh_runtime_globals()
 
     # Команды
@@ -4981,6 +5028,10 @@ async def run_bot() -> None:
     dp.callback_query.register(handle_referral_program_callback, F.data == "referral_program")
     dp.callback_query.register(handle_copy_referral_callback, F.data.startswith("copy_referral_"))
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
+
+    # Обработчики retention уведомлений
+    dp.callback_query.register(handle_retention_quick_question, F.data == "quick_question")
+    dp.callback_query.register(handle_retention_show_features, F.data == "show_features")
 
     # Обработчики системы документооборота
     dp.callback_query.register(handle_doc_draft_start, F.data == "doc_draft_start")
@@ -5060,6 +5111,13 @@ async def run_bot() -> None:
     finally:
         logger.info("🔧 Shutting down services...")
         set_system_status("stopping")
+
+        # Останавливаем retention notifier
+        if retention_notifier:
+            try:
+                await retention_notifier.stop()
+            except Exception as e:
+                logger.error(f"Error stopping retention notifier: {e}")
 
         # Останавливаем фоновые задачи
         try:

@@ -181,6 +181,10 @@ class RetentionNotifier:
                           WHERE rn.user_id = u.user_id
                             AND rn.scenario = ?
                       )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocked_users bu
+                          WHERE bu.user_id = u.user_id
+                      )
                     LIMIT 100
                 """, (now - delay_seconds, now - (delay_seconds + 3600), scenario.name))
 
@@ -197,6 +201,10 @@ class RetentionNotifier:
                           WHERE rn.user_id = u.user_id
                             AND rn.scenario = ?
                             AND rn.sent_at > ?
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocked_users bu
+                          WHERE bu.user_id = u.user_id
                       )
                     LIMIT 100
                 """, (
@@ -384,7 +392,8 @@ class RetentionNotifier:
             cursor = await conn.execute("""
                 SELECT COUNT(*) FROM blocked_users
             """)
-            blocked_count = (await cursor.fetchone())[0] if await cursor.fetchone() else 0
+            blocked_row = await cursor.fetchone()
+            blocked_count = blocked_row[0] if blocked_row else 0
             await cursor.close()
 
             return {

@@ -46,6 +46,24 @@ class ChurnMetrics:
     churn_by_usage: dict[str, int]  # low/medium/high usage
 
 
+METRIC_LABELS: dict[str, str] = {
+    "total_revenue_potential": "Потенциальная выручка сегмента",
+    "avg_requests_per_user": "Среднее запросов на пользователя",
+    "most_active_user_id": "ID самого активного пользователя",
+    "high_risk_count": "Пользователей в высокой зоне риска",
+    "potential_revenue_loss": "Потенциальная потеря выручки",
+    "avg_lifetime_days": "Средний срок жизни (дней)",
+    "total_lost_revenue": "Потерянная выручка",
+    "avg_time_to_conversion": "Среднее время до оплаты (дней)",
+    "recurring_customers": "Повторно оплатившие",
+    "total_revenue": "Выручка сегмента",
+    "potential_conversions": "Потенциальные конверсии",
+    "already_paid": "Уже оплатили",
+    "avg_requests": "Среднее число запросов",
+    "total_vip_revenue": "Выручка от VIP-клиентов",
+}
+
+
 class AdminAnalytics:
     """Система аналитики для администраторов"""
 
@@ -129,7 +147,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='power_users',
-                name='⚡ Power Users',
+                name='⚡ Суперактивные',
                 description='Активные платные пользователи (>5 запросов/день)',
                 user_count=len(users),
                 users=users,
@@ -183,7 +201,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='at_risk',
-                name='⚠️ At Risk',
+                name='⚠️ Группа риска',
                 description='Мало используют, подписка истекает скоро',
                 user_count=len(users),
                 users=users,
@@ -240,7 +258,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='churned',
-                name='📉 Churned',
+                name='📉 Ушедшие',
                 description='Не продлили подписку после истечения',
                 user_count=len(users),
                 users=users,
@@ -291,7 +309,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='trial_converters',
-                name='💰 Trial Converters',
+                name='💰 Из триала в оплату',
                 description='Успешно конвертировались в платных клиентов',
                 user_count=len(users),
                 users=users,
@@ -337,7 +355,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='freeloaders',
-                name='🚫 Freeloaders',
+                name='🚫 Бесплатники',
                 description='Использовали trial, не купили, неактивны',
                 user_count=len(users),
                 users=users,
@@ -383,7 +401,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='new_users',
-                name='🆕 New Users',
+                name='🆕 Новые пользователи',
                 description='Зарегистрировались за последние 7 дней',
                 user_count=len(users),
                 users=users,
@@ -429,7 +447,7 @@ class AdminAnalytics:
 
             return UserSegment(
                 segment_id='vip',
-                name='👑 VIP Users',
+                name='👑 VIP-пользователи',
                 description='Топ-20 по количеству платежей',
                 user_count=len(users),
                 users=users,
@@ -554,7 +572,8 @@ class AdminAnalytics:
         if segment.metrics:
             summary += "\n<b>Метрики:</b>\n"
             for key, value in segment.metrics.items():
-                summary += f"• {key.replace('_', ' ').title()}: {value}\n"
+                label = METRIC_LABELS.get(key, key.replace('_', ' ').title())
+                summary += f"• {label}: {value}\n"
 
         if segment.users:
             summary += f"\n<b>Топ-{min(max_users, len(segment.users))} пользователей:</b>\n"
