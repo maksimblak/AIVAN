@@ -4437,7 +4437,8 @@ async def cmd_askdoc(message: Message) -> None:
 
     question = parts[1].strip()
     try:
-        result = await document_manager.answer_chat_question(message.from_user.id, question)
+        async with typing_action(message.bot, message.chat.id, "typing"):
+            result = await document_manager.answer_chat_question(message.from_user.id, question)
     except ProcessingError as exc:
         await message.answer(f"{Emoji.WARNING} {html_escape(exc.message)}", parse_mode=ParseMode.HTML)
         return
@@ -4473,174 +4474,172 @@ async def handle_document_upload(message: Message, state: FSMContext):
             return
 
         # НОВОЕ: Показываем индикатор "отправляет документ"
+        async with typing_action(message.bot, message.chat.id, "upload_document"):
+            # Получаем данные из состояния
+            data = await state.get_data()
+            operation = data.get("document_operation")
+            options = dict(data.get("operation_options") or {})
+            output_format = str(options.get("output_format", "txt"))
+            output_format = str(options.get("output_format", "txt"))
 
-        await send_typing_once(message.bot, message.chat.id, "upload_document")
+            if not operation:
+                await message.answer("❌ Операция не выбрана. Начните заново с /start")
+                await state.clear()
+                return
 
-        # Получаем данные из состояния
-        data = await state.get_data()
-        operation = data.get("document_operation")
-        options = dict(data.get("operation_options") or {})
-        output_format = str(options.get("output_format", "txt"))
-        output_format = str(options.get("output_format", "txt"))
+            # Переходим в состояние обработки
+            await state.set_state(DocumentProcessingStates.processing_document)
 
-        if not operation:
-            await message.answer("❌ Операция не выбрана. Начните заново с /start")
-            await state.clear()
-            return
+            # Информация о файле
+            file_name = message.document.file_name or "unknown"
+            file_size = message.document.file_size or 0
+            mime_type = message.document.mime_type or "application/octet-stream"
 
-        # Переходим в состояние обработки
-        await state.set_state(DocumentProcessingStates.processing_document)
-
-        # Информация о файле
-        file_name = message.document.file_name or "unknown"
-        file_size = message.document.file_size or 0
-        mime_type = message.document.mime_type or "application/octet-stream"
-
-        # Проверяем размер файла (максимум 50MB)
-        max_size = 50 * 1024 * 1024
-        if file_size > max_size:
-            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-            await message.answer(
-                f"{Emoji.ERROR} Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
-            await state.clear()
-            return
-
-        # Показываем статус обработки
-        operation_info = document_manager.get_operation_info(operation) or {}
-        operation_name = operation_info.get("name", operation)
-        file_size_kb = max(1, file_size // 1024)
-
-        stage_labels = _get_stage_labels(operation)
-
-        status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
-
-        send_progress, progress_state = _make_progress_updater(
-            message,
-            status_msg,
-            file_name=file_name,
-            operation_name=operation_name,
-            file_size_kb=file_size_kb,
-            stage_labels=stage_labels,
-        )
-
-        await send_progress({"stage": "start", "percent": 5})
-
-        try:
-            await send_progress({"stage": "downloading", "percent": 18})
-            # Скачиваем файл
-            file_info = await message.bot.get_file(message.document.file_id)
-            file_path = file_info.file_path
-
-            if not file_path:
-                raise ProcessingError("Не удалось получить путь к файлу", "FILE_ERROR")
-
-            file_content = await message.bot.download_file(file_path)
-
-            documents_dir = Path("documents")
-            documents_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(file_name).name or "document"
-            unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-            stored_path = documents_dir / unique_name
-
-            file_bytes = file_content.read()
-            stored_path.write_bytes(file_bytes)
-            await send_progress({"stage": "uploaded", "percent": 32})
-
-            try:
-                await send_progress({"stage": "processing", "percent": 45})
-                result = await document_manager.process_document(
-                    user_id=message.from_user.id,
-                    file_content=file_bytes,
-                    original_name=file_name,
-                    mime_type=mime_type,
-                    operation=operation,
-                    progress_callback=send_progress,
-                    **options,
-                )
-            finally:
-                with suppress(Exception):
-                    stored_path.unlink(missing_ok=True)
-
-            await send_progress({"stage": "finalizing", "percent": 90})
-
-            if result.success:
-                # Форматируем результат для Telegram
-                formatted_result = document_manager.format_result_for_telegram(result, operation)
-
-                # Отправляем результат
-                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-
-                exports = result.data.get("exports") or []
-                for export in exports:
-                    export_path = export.get("path")
-                    if not export_path:
-                        error_msg = export.get("error")
-                        if error_msg:
-                            await message.answer(f"{Emoji.WARNING} {error_msg}")
-                        continue
-                    label = export.get("label") or export.get("name")
-                    file_name = Path(export_path).name
-                    format_tag = str(export.get("format", "file")).upper()
-                    parts = [f"📄 {format_tag}"]
-                    if label:
-                        parts.append(str(label))
-                    parts.append(file_name)
-                    caption = " • ".join(part for part in parts if part)
-                    try:
-                        await message.answer_document(FSInputFile(export_path), caption=caption)
-                    except Exception as send_error:
-                        logger.error(
-                            f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
-                        )
-                        await message.answer(
-                            f"Не удалось отправить файл {file_name}"
-                        )
-                    finally:
-                        with suppress(Exception):
-                            Path(export_path).unlink(missing_ok=True)
-
-                completion_payload = _build_completion_payload(operation, result)
-                await send_progress({'stage': 'completed', 'percent': 100, **completion_payload})
-                with suppress(Exception):
-                    await asyncio.sleep(0.6)
-                    await status_msg.delete()
-
-                logger.info(
-                    f"Successfully processed document {file_name} for user {message.from_user.id}"
-                )
-            else:
-                await send_progress({'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message})
+            # Проверяем размер файла (максимум 50MB)
+            max_size = 50 * 1024 * 1024
+            if file_size > max_size:
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
+                    f"{Emoji.ERROR} Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
-                with suppress(Exception):
-                    await status_msg.delete()
+                await state.clear()
+                return
 
-        except Exception as e:
-            # Удаляем статусное сообщение в случае ошибки
-            try:
-                await status_msg.delete()
-            except:
-                pass
+            # Показываем статус обработки
+            operation_info = document_manager.get_operation_info(operation) or {}
+            operation_name = operation_info.get("name", operation)
+            file_size_kb = max(1, file_size // 1024)
 
-            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-            await message.answer(
-                f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
+            stage_labels = _get_stage_labels(operation)
+
+            status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
+
+            send_progress, progress_state = _make_progress_updater(
+                message,
+                status_msg,
+                file_name=file_name,
+                operation_name=operation_name,
+                file_size_kb=file_size_kb,
+                stage_labels=stage_labels,
             )
-            logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
-        finally:
-            # Очищаем состояние
-            await state.clear()
+            await send_progress({"stage": "start", "percent": 5})
+
+            try:
+                await send_progress({"stage": "downloading", "percent": 18})
+                # Скачиваем файл
+                file_info = await message.bot.get_file(message.document.file_id)
+                file_path = file_info.file_path
+
+                if not file_path:
+                    raise ProcessingError("Не удалось получить путь к файлу", "FILE_ERROR")
+
+                file_content = await message.bot.download_file(file_path)
+
+                documents_dir = Path("documents")
+                documents_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = Path(file_name).name or "document"
+                unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+                stored_path = documents_dir / unique_name
+
+                file_bytes = file_content.read()
+                stored_path.write_bytes(file_bytes)
+                await send_progress({"stage": "uploaded", "percent": 32})
+
+                try:
+                    await send_progress({"stage": "processing", "percent": 45})
+                    result = await document_manager.process_document(
+                        user_id=message.from_user.id,
+                        file_content=file_bytes,
+                        original_name=file_name,
+                        mime_type=mime_type,
+                        operation=operation,
+                        progress_callback=send_progress,
+                        **options,
+                    )
+                finally:
+                    with suppress(Exception):
+                        stored_path.unlink(missing_ok=True)
+
+                await send_progress({"stage": "finalizing", "percent": 90})
+
+                if result.success:
+                    # Форматируем результат для Telegram
+                    formatted_result = document_manager.format_result_for_telegram(result, operation)
+
+                    # Отправляем результат
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+                    exports = result.data.get("exports") or []
+                    for export in exports:
+                        export_path = export.get("path")
+                        if not export_path:
+                            error_msg = export.get("error")
+                            if error_msg:
+                                await message.answer(f"{Emoji.WARNING} {error_msg}")
+                            continue
+                        label = export.get("label") or export.get("name")
+                        file_name = Path(export_path).name
+                        format_tag = str(export.get("format", "file")).upper()
+                        parts = [f"📄 {format_tag}"]
+                        if label:
+                            parts.append(str(label))
+                        parts.append(file_name)
+                        caption = " • ".join(part for part in parts if part)
+                        try:
+                            await message.answer_document(FSInputFile(export_path), caption=caption)
+                        except Exception as send_error:
+                            logger.error(
+                                f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
+                            )
+                            await message.answer(
+                                f"Не удалось отправить файл {file_name}"
+                            )
+                        finally:
+                            with suppress(Exception):
+                                Path(export_path).unlink(missing_ok=True)
+
+                    completion_payload = _build_completion_payload(operation, result)
+                    await send_progress({'stage': 'completed', 'percent': 100, **completion_payload})
+                    with suppress(Exception):
+                        await asyncio.sleep(0.6)
+                        await status_msg.delete()
+
+                    logger.info(
+                        f"Successfully processed document {file_name} for user {message.from_user.id}"
+                    )
+                else:
+                    await send_progress({'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message})
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(
+                        f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+                    with suppress(Exception):
+                        await status_msg.delete()
+
+            except Exception as e:
+                # Удаляем статусное сообщение в случае ошибки
+                try:
+                    await status_msg.delete()
+                except:
+                    pass
+
+                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                await message.answer(
+                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+                logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
+
+            finally:
+                # Очищаем состояние
+                await state.clear()
 
     except Exception as e:
         reply_markup = None
@@ -4663,177 +4662,176 @@ async def handle_photo_upload(message: Message, state: FSMContext):
             return
 
         # Показываем индикатор "отправляет фото"
-        await send_typing_once(message.bot, message.chat.id, "upload_photo")
+        async with typing_action(message.bot, message.chat.id, "upload_photo"):
+            # Получаем данные из состояния
+            data = await state.get_data()
+            operation = data.get("document_operation")
+            options = dict(data.get("operation_options") or {})
+            output_format = str(options.get("output_format", "txt"))
+            output_format = str(options.get("output_format", "txt"))
 
-        # Получаем данные из состояния
-        data = await state.get_data()
-        operation = data.get("document_operation")
-        options = dict(data.get("operation_options") or {})
-        output_format = str(options.get("output_format", "txt"))
-        output_format = str(options.get("output_format", "txt"))
+            if not operation:
+                await message.answer("❌ Операция не выбрана. Начните заново с /start")
+                await state.clear()
+                return
 
-        if not operation:
-            await message.answer("❌ Операция не выбрана. Начните заново с /start")
-            await state.clear()
-            return
+            # Переходим в состояние обработки
+            await state.set_state(DocumentProcessingStates.processing_document)
 
-        # Переходим в состояние обработки
-        await state.set_state(DocumentProcessingStates.processing_document)
+            # Получаем самую большую версию фотографии
+            photo = message.photo[-1]
+            file_name = f"photo_{photo.file_id}.jpg"
+            file_size = photo.file_size or 0
+            mime_type = "image/jpeg"
 
-        # Получаем самую большую версию фотографии
-        photo = message.photo[-1]
-        file_name = f"photo_{photo.file_id}.jpg"
-        file_size = photo.file_size or 0
-        mime_type = "image/jpeg"
+            # Проверяем размер файла (максимум 20MB для фотографий)
+            max_size = 20 * 1024 * 1024
+            if file_size > max_size:
+                await message.answer(
+                    f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
+                )
+                await state.clear()
+                return
 
-        # Проверяем размер файла (максимум 20MB для фотографий)
-        max_size = 20 * 1024 * 1024
-        if file_size > max_size:
-            await message.answer(
-                f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
+            # Показываем статус обработки
+            operation_info = document_manager.get_operation_info(operation) or {}
+            operation_name = operation_info.get("name", operation)
+
+            file_size_kb = max(1, file_size // 1024)
+            stage_labels = _get_stage_labels(operation)
+
+            status_msg = await message.answer(
+                f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
+                f"⏳ Операция: {html_escape(operation_name)}\n"
+                f"📏 Размер: {file_size_kb} КБ",
+                parse_mode=ParseMode.HTML,
             )
-            await state.clear()
-            return
 
-        # Показываем статус обработки
-        operation_info = document_manager.get_operation_info(operation) or {}
-        operation_name = operation_info.get("name", operation)
-
-        file_size_kb = max(1, file_size // 1024)
-        stage_labels = _get_stage_labels(operation)
-
-        status_msg = await message.answer(
-            f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
-            f"⏳ Операция: {html_escape(operation_name)}\n"
-            f"📏 Размер: {file_size_kb} КБ",
-            parse_mode=ParseMode.HTML,
-        )
-
-        send_progress, progress_state = _make_progress_updater(
-            message,
-            status_msg,
-            file_name=file_name,
-            operation_name=operation_name,
-            file_size_kb=file_size_kb,
-            stage_labels=stage_labels,
-        )
-
-        try:
-            await send_progress({"stage": "start", "percent": 5})
-
-            # Скачиваем фотографию
-            file_info = await message.bot.get_file(photo.file_id)
-            file_path = file_info.file_path
-
-            if not file_path:
-                raise ProcessingError("Не удалось получить путь к фотографии", "FILE_ERROR")
-
-            file_content = await message.bot.download_file(file_path)
-
-            documents_dir = Path("documents")
-            documents_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(file_name).name or "photo.jpg"
-            unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-            stored_path = documents_dir / unique_name
-
-            file_bytes = file_content.read()
-            stored_path.write_bytes(file_bytes)
-            await send_progress({"stage": "uploaded", "percent": 32})
+            send_progress, progress_state = _make_progress_updater(
+                message,
+                status_msg,
+                file_name=file_name,
+                operation_name=operation_name,
+                file_size_kb=file_size_kb,
+                stage_labels=stage_labels,
+            )
 
             try:
-                await send_progress({"stage": "processing", "percent": 45})
-                result = await document_manager.process_document(
-                    user_id=message.from_user.id,
-                    file_content=file_bytes,
-                    original_name=file_name,
-                    mime_type=mime_type,
-                    operation=operation,
-                    progress_callback=send_progress,
-                    **options,
-                )
-            finally:
-                with suppress(Exception):
-                    stored_path.unlink(missing_ok=True)
+                await send_progress({"stage": "start", "percent": 5})
 
-            await send_progress({"stage": "finalizing", "percent": 90})
+                # Скачиваем фотографию
+                file_info = await message.bot.get_file(photo.file_id)
+                file_path = file_info.file_path
 
-            if result.success:
-                # Форматируем результат для Telegram
-                formatted_result = document_manager.format_result_for_telegram(result, operation)
+                if not file_path:
+                    raise ProcessingError("Не удалось получить путь к фотографии", "FILE_ERROR")
 
-                # Отправляем результат
-                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                file_content = await message.bot.download_file(file_path)
 
-                # Отправляем экспортированные файлы, если есть
-                exports = result.data.get("exports") or []
-                for export in exports:
-                    export_path = export.get("path")
-                    if not export_path:
-                        error_msg = export.get("error")
-                        if error_msg:
-                            await message.answer(f"{Emoji.WARNING} {error_msg}")
-                        continue
-                    label = export.get("label") or export.get("name")
-                    file_name = Path(export_path).name
-                    format_tag = str(export.get("format", "file")).upper()
-                    parts = [f"📄 {format_tag}"]
-                    if label:
-                        parts.append(str(label))
-                    parts.append(file_name)
-                    caption = " • ".join(part for part in parts if part)
-                    try:
-                        await message.answer_document(FSInputFile(export_path), caption=caption)
-                    except Exception as send_error:
-                        logger.error(
-                            f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
-                        )
-                        await message.answer(
-                            f"Не удалось отправить файл {file_name}"
-                        )
-                    finally:
-                        with suppress(Exception):
-                            Path(export_path).unlink(missing_ok=True)
+                documents_dir = Path("documents")
+                documents_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = Path(file_name).name or "photo.jpg"
+                unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+                stored_path = documents_dir / unique_name
 
-                completion_payload = _build_completion_payload(operation, result)
-                await send_progress({"stage": "completed", "percent": 100, **completion_payload})
-                with suppress(Exception):
-                    await asyncio.sleep(0.6)
+                file_bytes = file_content.read()
+                stored_path.write_bytes(file_bytes)
+                await send_progress({"stage": "uploaded", "percent": 32})
+
+                try:
+                    await send_progress({"stage": "processing", "percent": 45})
+                    result = await document_manager.process_document(
+                        user_id=message.from_user.id,
+                        file_content=file_bytes,
+                        original_name=file_name,
+                        mime_type=mime_type,
+                        operation=operation,
+                        progress_callback=send_progress,
+                        **options,
+                    )
+                finally:
+                    with suppress(Exception):
+                        stored_path.unlink(missing_ok=True)
+
+                await send_progress({"stage": "finalizing", "percent": 90})
+
+                if result.success:
+                    # Форматируем результат для Telegram
+                    formatted_result = document_manager.format_result_for_telegram(result, operation)
+
+                    # Отправляем результат
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+                    # Отправляем экспортированные файлы, если есть
+                    exports = result.data.get("exports") or []
+                    for export in exports:
+                        export_path = export.get("path")
+                        if not export_path:
+                            error_msg = export.get("error")
+                            if error_msg:
+                                await message.answer(f"{Emoji.WARNING} {error_msg}")
+                            continue
+                        label = export.get("label") or export.get("name")
+                        file_name = Path(export_path).name
+                        format_tag = str(export.get("format", "file")).upper()
+                        parts = [f"📄 {format_tag}"]
+                        if label:
+                            parts.append(str(label))
+                        parts.append(file_name)
+                        caption = " • ".join(part for part in parts if part)
+                        try:
+                            await message.answer_document(FSInputFile(export_path), caption=caption)
+                        except Exception as send_error:
+                            logger.error(
+                                f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
+                            )
+                            await message.answer(
+                                f"Не удалось отправить файл {file_name}"
+                            )
+                        finally:
+                            with suppress(Exception):
+                                Path(export_path).unlink(missing_ok=True)
+
+                    completion_payload = _build_completion_payload(operation, result)
+                    await send_progress({"stage": "completed", "percent": 100, **completion_payload})
+                    with suppress(Exception):
+                        await asyncio.sleep(0.6)
+                        await status_msg.delete()
+
+                    logger.info(
+                        f"Successfully processed photo {file_name} for user {message.from_user.id}"
+                    )
+                else:
+                    await send_progress(
+                        {"stage": "failed", "percent": progress_state["percent"], "note": result.message}
+                    )
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(
+                        f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+
+            except Exception as e:
+                # Удаляем статусное сообщение
+                try:
+                    await send_progress({"stage": "failed", "percent": progress_state["percent"], "note": str(e)})
                     await status_msg.delete()
+                except:
+                    pass
 
-                logger.info(
-                    f"Successfully processed photo {file_name} for user {message.from_user.id}"
-                )
-            else:
-                await send_progress(
-                    {"stage": "failed", "percent": progress_state["percent"], "note": result.message}
-                )
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
+                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
+                logger.error(f"Error processing photo {file_name}: {e}", exc_info=True)
 
-        except Exception as e:
-            # Удаляем статусное сообщение
-            try:
-                await send_progress({"stage": "failed", "percent": progress_state["percent"], "note": str(e)})
-                await status_msg.delete()
-            except:
-                pass
-
-            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-            await message.answer(
-                f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
-            logger.error(f"Error processing photo {file_name}: {e}", exc_info=True)
-
-        finally:
-            # Очищаем состояние
-            await state.clear()
+            finally:
+                # Очищаем состояние
+                await state.clear()
 
     except Exception as e:
         await message.answer(f"❌ Произошла ошибка: {str(e)}")

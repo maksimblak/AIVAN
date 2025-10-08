@@ -105,16 +105,24 @@ _JSON_RE = re.compile(r"\{[\s\S]*\}")
 
 def _extract_json(text: str) -> Any:
     """Extract the first JSON object found in text."""
+
+    def _try_parse(candidate: str) -> Any:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            cleaned = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+            return json.loads(cleaned)
+
     try:
-        return json.loads(text)
+        return _try_parse(text)
     except json.JSONDecodeError:
         match = _JSON_RE.search(text)
         if not match:
-            raise DocumentDraftingError("Ответ модели не похож на JSON")
+            raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
         try:
-            return json.loads(match.group(0))
+            return _try_parse(match.group(0))
         except json.JSONDecodeError as err:
-            raise DocumentDraftingError("Не удалось разобрать JSON из ответа модели") from err
+            raise DocumentDraftingError("Не удалось распарсить JSON из ответа модели") from err
 
 
 def _format_answers(answers: Iterable[dict[str, str]]) -> str:
