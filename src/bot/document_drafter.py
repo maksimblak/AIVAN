@@ -258,14 +258,8 @@ def format_plan_summary(plan: DraftPlan) -> str:
     if plan.notes:
         parts.append("Контекст:\n- " + "\n- ".join(plan.notes))
     if plan.questions:
-        question_lines: list[str] = []
-        for idx, item in enumerate(plan.questions, 1):
-            purpose = item.get("purpose")
-            line = f"{idx}. {item['text']}"
-            if purpose:
-                line += f" (цель: {purpose})"
-            question_lines.append(line)
-        parts.append("Что нужно уточнить:\n" + "\n".join(question_lines))
+        parts.append(f"Всего уточняющих вопросов: {len(plan.questions)}")
+        parts.append("Ответьте на них в следующем сообщении согласно инструкции.")
     else:
-        parts.append("Дополнительные данные не требуются — можно приступать к генерации документа.")
+        parts.append("Дополнительные данные не требуются — можно сразу формировать документ.")
     return "\n\n".join(parts)
