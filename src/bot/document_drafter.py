@@ -100,33 +100,61 @@ DOCUMENT_GENERATOR_USER_TEMPLATE = """
 }}
 """.strip()
 
-_JSON_RE = re.compile(r"\{[\s\S]*\}")
-_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
+_JSON_START_RE = re.compile(r"[{\[]")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+_JSON_DECODER = json.JSONDecoder()
 
 
-def _extract_json(text: str) -> Any:
-    """Extract the first JSON object found in text."""
+def _strip_code_fences(payload: str) -> str:
+    stripped = payload.strip()
+    lowered = stripped.lower()
+    for prefix in ("```json", "```", "~~~json", "~~~"):
+        if lowered.startswith(prefix):
+            stripped = stripped[len(prefix) :]
+            stripped = stripped.lstrip("\r\n")
+            break
+
+    for suffix in ("```", "~~~"):
+        if stripped.endswith(suffix):
+            stripped = stripped[: -len(suffix)]
+            stripped = stripped.rstrip()
+            break
+
+    return stripped.strip()
+
+
+def _extract_json(text: Any) -> Any:
+    """Extract the first JSON structure found in text."""
+
+    if isinstance(text, (dict, list)):
+        return text
+    if text is None:
+        raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
+    if not isinstance(text, str):
+        raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
+
+    cleaned_text = _strip_code_fences(text)
 
     def _try_parse(candidate: str) -> Any:
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            cleaned = _TRAILING_COMMA_RE.sub(r"\1", candidate)
-            return json.loads(cleaned)
+        candidate = candidate.strip()
+        if not candidate:
+            raise json.JSONDecodeError("Empty JSON candidate", candidate, 0)
+        normalized = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+        obj, _ = _JSON_DECODER.raw_decode(normalized)
+        return obj
 
     try:
-        return _try_parse(text)
-    except json.JSONDecodeError:
-        for regex in (_JSON_RE, _JSON_ARRAY_RE):
-            match = regex.search(text)
-            if not match:
-                continue
+        return _try_parse(cleaned_text)
+    except (json.JSONDecodeError, ValueError) as err:
+        logger.debug("Primary JSON parse failed, scanning for nested JSON: %s", err)
+        for match in _JSON_START_RE.finditer(cleaned_text):
+            start_idx = match.start()
             try:
-                return _try_parse(match.group(0))
-            except json.JSONDecodeError:
+                return _try_parse(cleaned_text[start_idx:])
+            except (json.JSONDecodeError, ValueError):
                 continue
-        raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
+
+    raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
 
 
 def _format_answers(answers: Iterable[dict[str, str]]) -> str:
