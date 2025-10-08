@@ -18,6 +18,8 @@ class AppSettings(BaseModel):
 
     use_status_animation: bool = Field(default=True, alias="USE_STATUS_ANIMATION")
     use_streaming: bool = Field(default=True, alias="USE_STREAMING")
+    welcome_media_file_id: str | None = Field(default=None, alias="WELCOME_MEDIA_FILE_ID")
+    welcome_media_type: str | None = Field(default=None, alias="WELCOME_MEDIA_TYPE")
 
     db_path: str = Field(default="src/core/data/bot.sqlite3", alias="DB_PATH")
     db_max_connections: int = Field(default=5, alias="DB_MAX_CONNECTIONS")
@@ -169,6 +171,8 @@ class AppSettings(BaseModel):
         "yookassa_return_url",
         "yookassa_payment_mode",
         "yookassa_payment_subject",
+        "welcome_media_file_id",
+        "welcome_media_type",
         mode="before",
     )
     @classmethod

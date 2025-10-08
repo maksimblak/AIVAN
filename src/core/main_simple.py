@@ -789,6 +789,39 @@ def _format_stat_row(label: str, value: str) -> str:
     return f"<b>{label}</b> · {value}"
 
 
+def _describe_primary_summary(summary: str, unit: str) -> str:
+    if not summary or summary == "—":
+        return "нет данных"
+    if "(" in summary and summary.endswith(")"):
+        label, count = summary.rsplit("(", 1)
+        label = label.strip()
+        count = count[:-1].strip()
+        if count.isdigit():
+            return f"{label} — {count} {unit}"
+        return f"{label} — {count}"
+    return summary
+
+
+def _describe_secondary_summary(summary: str, unit: str) -> str:
+    if not summary:
+        return "нет данных"
+    parts = []
+    for raw in summary.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        tokens = item.split()
+        if len(tokens) >= 2 and tokens[-1].isdigit():
+            count = tokens[-1]
+            label = " ".join(tokens[:-1])
+            parts.append(f"{label} — {count}")
+        else:
+            parts.append(item)
+    if not parts:
+        return "нет данных"
+    return "; ".join(parts)
+
+
 def _peak_summary(
     counts: dict[str, int],
     *,
@@ -1697,9 +1730,8 @@ async def _generate_user_stats_response(
         f"{Emoji.STATS} <b>Моя статистика — {normalized_days} дн.</b>",
         divider,
         "👤 <b>Профиль</b>",
-        _format_stat_row("Создан", _format_datetime(created_at_ts)),
-        _format_stat_row("Обновлён", _format_datetime(updated_at_ts)),
-        _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("Дата регистрации", _format_datetime(created_at_ts)),
+                _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
         _format_stat_row("Подписка", subscription_status_text),
         _format_stat_row("План", plan_label),
     ]
@@ -1717,8 +1749,6 @@ async def _generate_user_stats_response(
         lines.append(_progress_line("Подписка", used, plan_info.plan.request_quota))
     elif has_subscription:
         lines.append(_format_stat_row("Подписка", "безлимит"))
-    else:
-        lines.append(_format_stat_row("Подписка", "не активна"))
 
     lines.extend([
         divider,
@@ -1734,18 +1764,18 @@ async def _generate_user_stats_response(
     lines.append(divider)
     lines.append("🕒 <b>Когда обращаются</b>")
     if day_primary != "—":
-        lines.append(_format_stat_row("Пиковый день", day_primary))
+        lines.append(_format_stat_row("Самый активный день", _describe_primary_summary(day_primary, "обращений")))
         if day_secondary:
-            lines.append(_format_stat_row("Также дни", day_secondary))
+            lines.append(_format_stat_row("Другие активные дни", _describe_secondary_summary(day_secondary, "обращений")))
     else:
-        lines.append(_format_stat_row("Пиковый день", "нет данных"))
+        lines.append(_format_stat_row("Самый активный день", "нет данных"))
 
     if hour_primary != "—":
-        lines.append(_format_stat_row("Пиковый час", hour_primary))
+        lines.append(_format_stat_row("Самый активный час", _describe_primary_summary(hour_primary, "обращений")))
         if hour_secondary:
-            lines.append(_format_stat_row("Также часы", hour_secondary))
+            lines.append(_format_stat_row("Другие часы", _describe_secondary_summary(hour_secondary, "обращений")))
     else:
-        lines.append(_format_stat_row("Пиковый час", "нет данных"))
+        lines.append(_format_stat_row("Самый активный час", "нет данных"))
 
     lines.append(divider)
     lines.append("📋 <b>Типы запросов</b>")
