@@ -20,7 +20,7 @@ from src.core.settings import AppSettings
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -159,6 +159,7 @@ class DocumentTranslator(DocumentProcessor):
         target_lang: str = "en",
         *,
         glossary: Dict[str, str] | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         **kwargs: Any,
     ) -> DocumentResult:
         """
@@ -170,6 +171,19 @@ class DocumentTranslator(DocumentProcessor):
             target_lang: целевой язык (ru, en, zh, de, ...)
             glossary: пользовательский глоссарий {исходный термин: целевой термин}
         """
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {"stage": stage, "percent": float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug("Translation progress callback failed at %s", stage, exc_info=True)
+
         if not self.allow_ai or not self.openai_service:
             if not self.openai_service:
                 logger.warning("OpenAI service is not initialized; translation will fallback to identity")
@@ -183,6 +197,9 @@ class DocumentTranslator(DocumentProcessor):
         if not cleaned_text.strip():
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
+        words_count = len(cleaned_text.split())
+        await _notify("text_extracted", 12, words=words_count)
+
         # Нормализация языков
         src = (source_lang or "").lower()
         tgt = (target_lang or "").lower()
@@ -195,8 +212,11 @@ class DocumentTranslator(DocumentProcessor):
             # дефолт — противоположный от детекта
             tgt = "en" if src == "ru" else "ru"
 
+        await _notify("language_detected", 25, language_pair=f"{src}->{tgt}")
+
         # Если языки одинаковые — ничего не делаем
         if src == tgt:
+            await _notify("completed", 100, language_pair=f"{src}->{tgt}", mode="identity")
             return DocumentResult.success_result(
                 data={
                     "translated_text": cleaned_text,
@@ -217,8 +237,10 @@ class DocumentTranslator(DocumentProcessor):
 
         # Перевод
         translated_text, chunk_details = await self._translate_text(
-            cleaned_text, src, tgt, glossary=glossary or {}
+            cleaned_text, src, tgt, glossary=glossary or {}, progress_callback=progress_callback
         )
+
+        await _notify("finalizing", 95, chunks_processed=len(chunk_details))
 
         result_data = {
             "translated_text": translated_text,
@@ -243,9 +265,23 @@ class DocumentTranslator(DocumentProcessor):
     # -------------------------------- Перевод --------------------------------
 
     async def _translate_text(
-        self, text: str, source_lang: str, target_lang: str, *, glossary: Dict[str, str]
+        self, text: str, source_lang: str, target_lang: str, *, glossary: Dict[str, str], progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Перевод текста с помощью AI (чанкинг + защита сущностей)."""
+
+        async def _emit(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {"stage": stage, "percent": float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug("Translation chunk progress failed at %s", stage, exc_info=True)
+
         src_name = self.supported_languages.get(source_lang, source_lang)
         tgt_name = self.supported_languages.get(target_lang, target_lang)
 
@@ -257,11 +293,15 @@ class DocumentTranslator(DocumentProcessor):
         if not chunks:
             chunks = [protected_text]
 
+        total_chunks = len(chunks)
+        await _emit("chunking", 35, chunks_total=total_chunks)
+
         details: List[Dict[str, Any]] = []
         translated_parts: List[str] = []
 
         # Если нет AI — деградируем: возвращаем исходный текст (с восстановлением сущностей)
         if not (self.allow_ai and self.openai_service):
+            await _emit("completed", 100, language_pair=f"{source_lang}->{target_lang}", mode="fallback")
             return _restore_entities(protected_text, placeholders), []
 
         glossary_text = self._format_glossary(glossary)
@@ -319,9 +359,14 @@ class DocumentTranslator(DocumentProcessor):
                 }
             )
 
+            progress = 40 + (i / max(total_chunks, 1)) * 45
+            await _emit("translating", progress, chunk_index=i, chunks_total=total_chunks, status=status)
+
         # Склеиваем и возвращаем плейсхолдеры назад
+        await _emit("merging", 90, chunks_total=total_chunks)
         merged = self._merge_chunks(translated_parts)
         restored = _restore_entities(merged, placeholders)
+        await _emit("completed", 100, language_pair=f"{source_lang}->{target_lang}", chunks_total=total_chunks, mode="ai")
         return restored, details
 
     @staticmethod

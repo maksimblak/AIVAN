@@ -145,7 +145,7 @@ class DocumentManager:
         processor = meta.get("processor")
         try:
             safe_kwargs = dict(options)
-            if operation == "analyze_risks" and progress_callback is not None:
+            if progress_callback is not None:
                 safe_kwargs["progress_callback"] = progress_callback
             result = await processor.safe_process(doc_info.file_path, **safe_kwargs)
         except ProcessingError as exc:

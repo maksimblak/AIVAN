@@ -17,7 +17,7 @@ from src.core.settings import AppSettings
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 import httpx
 
@@ -74,10 +74,25 @@ class OCRConverter(DocumentProcessor):
     # ——————————————————————————————————————
 
     async def process(
-        self, file_path: str | Path, output_format: str = "txt", **kwargs: Any
+        self, file_path: str | Path, output_format: str = "txt", progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None, **kwargs: Any
     ) -> DocumentResult:
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {'stage': stage, 'percent': float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug('OCR progress callback failed at %s', stage, exc_info=True)
+
         path = Path(file_path)
         file_extension = path.suffix.lower()
+
+        await _notify('preparing', 10, file_type=file_extension)
 
         try:
             if is_image_file(path):
@@ -85,7 +100,7 @@ class OCRConverter(DocumentProcessor):
                 file_type = "image"
                 pages_info: List[Dict[str, Any]] = []
             elif file_extension == ".pdf":
-                text, confidence, pages_info = await self._ocr_pdf(path)
+                text, confidence, pages_info = await self._ocr_pdf(path, progress_callback=progress_callback)
                 file_type = "pdf"
             else:
                 raise ProcessingError(
@@ -381,12 +396,26 @@ class OCRConverter(DocumentProcessor):
     # PDF
     # ——————————————————————————————————————
 
-    async def _ocr_pdf(self, pdf_path: Path) -> Tuple[str, float, List[Dict[str, Any]]]:
+    async def _ocr_pdf(self, pdf_path: Path, progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None) -> Tuple[str, float, List[Dict[str, Any]]]:
         """
         1) Пытаемся извлечь встроенный текст.
         2) Если качества недостаточно — рендерим все страницы в PNG и OCR-им их конкурентно.
         Возвращаем (combined_text, avg_confidence, pages_info[]).
         """
+
+        async def _emit(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {'stage': stage, 'percent': float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug('OCR PDF progress callback failed at %s', stage, exc_info=True)
+
         logger.info("Начало обработки PDF: %s", pdf_path)
 
         # 1) Встроенный текст
@@ -397,13 +426,15 @@ class OCRConverter(DocumentProcessor):
         if quality >= 0.7 and len(embedded_text.strip()) > 50:
             logger.info("Использован встроенный текст PDF")
             final_emb_conf = self._refine_confidence(embedded_text, embedded_conf)
+            await _emit("ocr_running", 65, pages_total=1, pages_done=1, mode="embedded")
+            await _emit("completed", 100, confidence=float(final_emb_conf), pages_total=1, mode="embedded")
             return embedded_text, float(final_emb_conf), []
 
         # 2) Рендер всех страниц → PNG
         page_images = await self._render_pdf_pages_to_images(pdf_path)
         try:
             # 3) Конкурентный OCR страниц
-            pages: List[PageResult] = await self._ocr_images_concurrently(page_images)
+            pages: List[PageResult] = await self._ocr_images_concurrently(page_images, progress_callback=progress_callback)
 
             if pages:
                 pages_sorted = sorted(pages, key=lambda p: p.page)
@@ -493,10 +524,16 @@ class OCRConverter(DocumentProcessor):
             logger.error("Не удалось отрендерить PDF в изображения: %s", e)
             return []
 
-    async def _ocr_images_concurrently(self, image_paths: List[Path]) -> List[PageResult]:
+    async def _ocr_images_concurrently(self, image_paths: List[Path], progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None) -> List[PageResult]:
         """OCR для списка изображений с ограничением конкуренции."""
+        total = len(image_paths)
+        if total == 0:
+            return []
+
         sem = asyncio.Semaphore(self.max_pdf_concurrency)
         results: List[PageResult] = []
+        lock = asyncio.Lock()
+        progress = {"done": 0}
 
         async def worker(idx: int, p: Path):
             async with sem:
@@ -506,6 +543,21 @@ class OCRConverter(DocumentProcessor):
                         results.append(PageResult(page=idx + 1, text=text, confidence=float(conf)))
                 except Exception as e:
                     logger.warning("Ошибка OCR страницы %s: %s", idx + 1, e)
+                finally:
+                    async with lock:
+                        progress["done"] += 1
+                        if progress_callback:
+                            percent = 45 + (progress["done"] / total) * 40
+                            data = {
+                                "stage": "ocr_page",
+                                "percent": percent,
+                                "pages_total": total,
+                                "pages_done": progress["done"],
+                            }
+                            try:
+                                await progress_callback(data)
+                            except Exception:
+                                logger.debug("OCR page progress callback failed", exc_info=True)
 
         await asyncio.gather(*(worker(i, p) for i, p in enumerate(image_paths)))
         return results

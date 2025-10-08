@@ -23,7 +23,7 @@ from src.core.settings import AppSettings
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -268,11 +268,25 @@ class DocumentAnonymizer(DocumentProcessor):
         anonymization_mode: str = "replace",  # replace | mask | remove | pseudonym
         exclude_types: List[str] | None = None,
         custom_patterns: List[dict[str, str]] | List[str] | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         **kwargs,
     ) -> DocumentResult:
         """
         Обезличивание документа.
         """
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {"stage": stage, "percent": float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug("Anonymizer progress callback failed at %s", stage, exc_info=True)
+
         # 1) Достаём текст
         success, text = await FileFormatHandler.extract_text_from_file(file_path)
         if not success:
@@ -282,9 +296,14 @@ class DocumentAnonymizer(DocumentProcessor):
         if not cleaned_text.strip():
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
+        words_count = len(cleaned_text.split())
+        await _notify("text_extracted", 15, words=words_count)
+
         # 2) Готовим исключения/карту
         self.anonymization_map = {}
         exclude_set = {item.lower() for item in (exclude_types or [])}
+
+        await _notify("pattern_prepare", 35, excluded=len(exclude_set))
 
         # 3) Анонимизация
         custom_specs = self._prepare_custom_specs(custom_patterns)
@@ -294,6 +313,7 @@ class DocumentAnonymizer(DocumentProcessor):
             exclude_set,
             custom_specs=custom_specs,
         )
+        await _notify("anonymizing", 65, masked=len(self.anonymization_map))
         report["excluded_types"] = sorted(exclude_set) if exclude_set else []
         if custom_specs and "custom_patterns" not in report:
             report["custom_patterns"] = [
@@ -301,6 +321,8 @@ class DocumentAnonymizer(DocumentProcessor):
             ]
 
         # 4) Ответ
+        await _notify("finalizing", 85, masked=len(self.anonymization_map))
+
         result_data = {
             "anonymized_text": anonymized_text,
             "anonymization_report": report,
@@ -312,6 +334,8 @@ class DocumentAnonymizer(DocumentProcessor):
             result_data["applied_custom_patterns"] = [
                 {"kind": spec.kind, "label": spec.label} for spec in custom_specs
             ]
+        await _notify("completed", 100, masked=len(self.anonymization_map))
+
         return DocumentResult.success_result(
             data=result_data, message="Обезличивание документа успешно завершено"
         )

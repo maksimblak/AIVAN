@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -159,8 +159,22 @@ class DocumentSummarizer(DocumentProcessor):
         detail_level: str = "detailed",
         language: str = "ru",
         output_formats: list[str] | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         **_: Any,
     ) -> DocumentResult:
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {"stage": stage, "percent": float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug("Summary progress callback failed at %s", stage, exc_info=True)
+
         if not self.allow_ai or not self.openai_service:
             # оффлайн режим недопустим? — деградируем gracefully
             if not self.openai_service:
@@ -177,13 +191,29 @@ class DocumentSummarizer(DocumentProcessor):
 
         normalized_lang = self._normalize_language(language, cleaned_text)
         metadata = self._collect_metadata(cleaned_text, file_path, normalized_lang)
+        words_count = len(cleaned_text.split())
+
+        await _notify("text_extracted", 12, words=words_count)
+        await _notify(
+            "metadata_collected",
+            25,
+            language=metadata.get("language_display") or metadata.get("language"),
+            source_length=metadata.get("source_length_chars"),
+        )
 
         # эвристики
         deadlines_heuristic = self._extract_deadlines(cleaned_text)
         penalties_heuristic = self._extract_penalties(cleaned_text)
+        await _notify(
+            "heuristics",
+            40,
+            deadlines=len(deadlines_heuristic),
+            penalties=len(penalties_heuristic),
+        )
 
         # основное саммари
         try:
+            await _notify("summary_generation", 55)
             if self.allow_ai and self.openai_service:
                 summary_payload = await self._create_summary_llm(
                     cleaned_text,
@@ -203,6 +233,12 @@ class DocumentSummarizer(DocumentProcessor):
             raise ProcessingError(f"Ошибка саммари: {exc}", "SUMMARY_ERROR")
 
         summary_data: Dict[str, Any] = summary_payload["summary"]
+        await _notify(
+            "summary_ready",
+            75,
+            key_points=len(summary_data.get("key_points") or []),
+            actions=len(summary_data.get("actions") or []),
+        )
 
         # подмешиваем эвристику, если модель не дала
         if not summary_data.get("deadlines") and deadlines_heuristic:
@@ -217,6 +253,7 @@ class DocumentSummarizer(DocumentProcessor):
 
         # финальный вид для вывода
         summary_text = self._format_summary_text(summary_data, normalized_lang)
+        await _notify("finalizing", 90, checklist=len(summary_data.get("actions") or []))
 
         result_payload = {
             "summary": {"content": summary_text, "structured": summary_data},
@@ -230,6 +267,8 @@ class DocumentSummarizer(DocumentProcessor):
         }
         if output_formats:
             result_payload["requested_formats"] = list(dict.fromkeys(output_formats))
+
+        await _notify("completed", 100, key_points=len(summary_data.get("key_points") or []), deadlines=len(summary_data.get("deadlines") or []), penalties=len(summary_data.get("penalties") or []))
 
         return DocumentResult.success_result(data=result_payload, message="Саммари подготовлено")
 
