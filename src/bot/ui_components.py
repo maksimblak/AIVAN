@@ -41,7 +41,7 @@ class Emoji:
     STATS = "📊"
     INFO = "ℹ️"
 
-    DIAMOND = "💎"
+    DIAMOND = "🧾"
     DOWNLOAD = "📥"
     CLOCK = "🕒"
     CALENDAR = "📅"

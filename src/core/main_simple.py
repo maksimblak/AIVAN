@@ -3022,7 +3022,7 @@ async def handle_my_profile_callback(callback: CallbackQuery):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-                    InlineKeyboardButton(text="💎 Статус подписки", callback_data="subscription_status"),
+                    InlineKeyboardButton(text="🧾 Статус подписки", callback_data="subscription_status"),
                 ],
                 [
                     InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
