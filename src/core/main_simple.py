@@ -4164,6 +4164,36 @@ async def _send_questions_prompt(
         await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
 
 
+
+_TITLE_SANITIZE_RE = re.compile(r"[\\/:*?\"<>|\r\n]+")
+_TITLE_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _prepare_document_titles(raw_title: str | None) -> tuple[str, str, str]:
+    base = (raw_title or "").strip()
+    if not base:
+        base = "Документ"
+    if base.endswith(")") and "(" in base:
+        simplified = re.sub(r"\s*\([^)]*\)\s*$", "", base).strip()
+        if simplified:
+            base = simplified
+    display_title = _TITLE_WHITESPACE_RE.sub(" ", base).strip()
+    if not display_title:
+        display_title = "Документ"
+    caption = f"{Emoji.DOCUMENT} {display_title}"
+
+    file_stub = _TITLE_SANITIZE_RE.sub("_", display_title).strip("._ ")
+    if not file_stub:
+        file_stub = "Документ"
+    max_len = 80
+    if len(file_stub) > max_len:
+        file_stub = file_stub[:max_len].rstrip("._ ")
+        if not file_stub:
+            file_stub = "Документ"
+    filename = f"{file_stub}.docx"
+    return display_title, caption, filename
+
+
 async def _finalize_draft(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     request_text = data.get("draft_request", "")
@@ -4232,8 +4262,11 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         tmp_path = Path(tmp_file.name)
     try:
         build_docx_from_markdown(result.markdown, str(tmp_path))
-        caption = f"{Emoji.DOCUMENT} {result.title}" if result.title else f"{Emoji.DOCUMENT} Документ"
-        await message.answer_document(FSInputFile(str(tmp_path)), caption=caption)
+        display_title, caption, filename = _prepare_document_titles(result.title or title)
+        await message.answer_document(
+            FSInputFile(str(tmp_path), filename=filename),
+            caption=caption,
+        )
     except DocumentDraftingError as err:
         await message.answer(f"{Emoji.ERROR} Не удалось сформировать DOCX: {err}")
     finally:
