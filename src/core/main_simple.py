@@ -3923,7 +3923,7 @@ async def handle_doc_draft_answer(
         return
 
     answers = data.get("draft_answers") or []
-    bulk_answers = _extract_numbered_answers(answer_text)
+    bulk_answers = _extract_answer_chunks(answer_text)
 
     if bulk_answers:
         remaining_questions = questions[index:]
@@ -3947,8 +3947,7 @@ async def handle_doc_draft_answer(
                 missing_numbers = ", ".join(str(i) for i in range(index + 1, len(questions) + 1))
                 await message.answer(
                     f"{Emoji.WARNING} Ответы получены не полностью. Остались вопросы: {missing_numbers}.\n"
-                    "Отправьте оставшиеся ответы одним сообщением, пронумеровав их, например:\n"
-                    "3) ...",
+                    "Добавьте недостающие ответы одним сообщением — можно отделять их пустой строкой или начинать с номера/маркировки.",
                     parse_mode=ParseMode.HTML,
                 )
             else:
@@ -3959,9 +3958,9 @@ async def handle_doc_draft_answer(
         # если не удалось сопоставить ни одного ответа — переходим к обычной обработке
 
     await message.answer(
-        f"{Emoji.WARNING} Пожалуйста, отправьте ответы одним сообщением и пронумеруйте их, например:\n"
-        "1) Ответ на первый вопрос\n"
-        "2) Ответ на второй вопрос",
+        f"{Emoji.WARNING} Пожалуйста, отправьте ответы одним сообщением. Можно:\n"
+        "- отделять каждый ответ пустой строкой\n"
+        "- начать строки с номера или маркера (1), 2), - )",
         parse_mode=ParseMode.HTML,
     )
 
@@ -4040,34 +4039,63 @@ async def handle_doc_draft_answer_voice(message: Message, state: FSMContext) -> 
     await handle_doc_draft_answer(message, state, text_override=transcript)
 
 
-def _extract_numbered_answers(answer_text: str) -> list[str] | None:
-    """Выделить несколько ответов из одного сообщения по шаблону `1) ...`."""
-    lines = answer_text.strip().splitlines()
-    pattern = re.compile(r"^\s*(\d+)[\).\:-]\s*(.*)")
-    answers: list[str] = []
-    current: list[str] | None = None
-
-    for line in lines:
-        match = pattern.match(line)
-        if match:
-            if current is not None:
-                combined = "\n".join(current).strip()
-                if combined:
-                    answers.append(combined)
-            current = [match.group(2)]
-        else:
-            if current is None:
-                return None
-            current.append(line)
-
-    if current is None:
+def _extract_answer_chunks(answer_text: str) -> list[str] | None:
+    """Попробовать выделить несколько ответов из свободного текста."""
+    text = (answer_text or "").strip()
+    if not text:
         return None
 
-    combined = "\n".join(current).strip()
-    if combined:
-        answers.append(combined)
+    lines = text.splitlines()
+    numbered_pattern = re.compile(r"^\s*(\d+)[\).\:-]\s*(.*)")
+    answers: list[str] = []
+    current: list[str] | None = None
+    has_numbers = False
 
-    return answers if len(answers) > 1 else None
+    for line in lines:
+        match = numbered_pattern.match(line)
+        if match:
+            has_numbers = True
+            if current is not None:
+                chunk = "\n".join(current).strip()
+                if chunk:
+                    answers.append(chunk)
+            current = [match.group(2)]
+        else:
+            if current is not None:
+                current.append(line)
+    if has_numbers:
+        if current:
+            chunk = "\n".join(current).strip()
+            if chunk:
+                answers.append(chunk)
+        return [chunk for chunk in answers if chunk] or None
+
+    bullet_pattern = re.compile(r"^\s*[-•]\s*(.*)")
+    answers = []
+    current = None
+    for line in lines:
+        match = bullet_pattern.match(line)
+        if match:
+            if current:
+                chunk = "\n".join(current).strip()
+                if chunk:
+                    answers.append(chunk)
+            current = [match.group(1)]
+        else:
+            if current:
+                current.append(line)
+    if current:
+        chunk = "\n".join(current).strip()
+        if chunk:
+            answers.append(chunk)
+    if len(answers) > 1:
+        return answers
+
+    chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
+    if len(chunks) > 1:
+        return chunks
+
+    return [text] if text else None
 
 async def _send_questions_prompt(
     message: Message,
@@ -4093,9 +4121,11 @@ async def _send_questions_prompt(
         [
             "",
             "<b>Как ответить:</b>",
-            "✍️ Напишите все ответы одним сообщением, пронумеровав их:",
+            "✍️ Напишите все ответы одним сообщением. Можно:",
+            "• разделять ответы пустой строкой",
+            "• начинать строки с номера или маркера",
             "<code>1) Ответ на первый вопрос</code>",
-            "<code>2) Ответ на второй вопрос</code>",
+            "<code>- Ответ на второй вопрос</code>",
         ]
     )
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
