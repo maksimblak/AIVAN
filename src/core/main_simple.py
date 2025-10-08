@@ -47,7 +47,7 @@ from aiogram.types import (
 )
 
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
-from src.bot.document_drafter import (
+from src.documents.document_drafter import (
     DocumentDraftingError,
     build_docx_from_markdown,
     format_plan_summary,
