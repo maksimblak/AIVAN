@@ -87,7 +87,7 @@ from src.core.settings import AppSettings
 from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
 from src.bot.ratelimit import RateLimiter
-from src.bot.typing_indicator import send_typing_once
+from src.bot.typing_indicator import send_typing_once, typing_action
 
 SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
@@ -2885,8 +2885,6 @@ async def process_voice_message(message: Message):
         return
 
     # НОВОЕ: Показываем индикатор "записывает голосовое"
-    from src.bot.typing_indicator import typing_action
-
     try:
         voice_enabled = settings().voice_mode_enabled
     except RuntimeError:
@@ -3856,7 +3854,6 @@ async def handle_doc_draft_request(
         return
 
     # Показываем индикатор "печатает"
-    from src.bot.typing_indicator import send_typing_once
     await send_typing_once(message.bot, message.chat.id, "typing")
 
     status_msg = await message.answer(f"{Emoji.LOADING} Анализирую запрос…")
@@ -3996,7 +3993,6 @@ async def _extract_doc_voice_text(message: Message) -> str | None:
     temp_voice_path: Path | None = None
     try:
         await audio_service.ensure_short_enough(message.voice.duration)
-        from src.bot.typing_indicator import typing_action
 
         async with typing_action(message.bot, message.chat.id, "record_voice"):
             temp_voice_path = await _download_voice_to_temp(message)
@@ -4113,8 +4109,6 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         return
 
     # Показываем индикатор "отправляет документ" во время генерации
-    from src.bot.typing_indicator import typing_action
-
     try:
         async with typing_action(message.bot, message.chat.id, "upload_document"):
             result = await generate_document(openai_service, request_text, title, answers)
@@ -4669,7 +4663,6 @@ async def handle_photo_upload(message: Message, state: FSMContext):
             return
 
         # Показываем индикатор "отправляет фото"
-        from src.bot.typing_indicator import send_typing_once
         await send_typing_once(message.bot, message.chat.id, "upload_photo")
 
         # Получаем данные из состояния
