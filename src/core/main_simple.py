@@ -15,7 +15,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
@@ -984,7 +984,7 @@ async def send_rating_request(message: Message, request_id: int):
 async def _try_send_welcome_media(
     message: Message,
     caption_html: str,
-    keyboard: InlineKeyboardMarkup,
+    keyboard: Optional[InlineKeyboardMarkup],
 ) -> bool:
     """Send welcome media via cached file id or local file when available."""
     if not WELCOME_MEDIA:
@@ -993,6 +993,7 @@ async def _try_send_welcome_media(
     media_type = (WELCOME_MEDIA.media_type or "video").lower()
     media_source = None
     supports_streaming = False
+    media_caption = caption_html
 
     if WELCOME_MEDIA.file_id:
         media_source = WELCOME_MEDIA.file_id
@@ -1007,21 +1008,21 @@ async def _try_send_welcome_media(
         if media_type == "animation":
             await message.answer_animation(
                 animation=media_source,
-                caption=caption_html,
+                caption=media_caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
             )
         elif media_type == "photo":
             await message.answer_photo(
                 photo=media_source,
-                caption=caption_html,
+                caption=media_caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
             )
         else:
             await message.answer_video(
                 video=media_source,
-                caption=caption_html,
+                caption=media_caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
                 supports_streaming=supports_streaming,
@@ -1030,6 +1031,52 @@ async def _try_send_welcome_media(
     except Exception as media_error:  # noqa: BLE001
         logger.warning("Failed to send welcome media: %s", media_error)
         return False
+
+
+def _profile_menu_text() -> str:
+    return "👤 <b>Мой профиль</b>\n\nВыберите действие:"
+
+
+def _profile_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
+                InlineKeyboardButton(text="🧾 Статус подписки", callback_data="subscription_status"),
+            ],
+            [
+                InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
+                InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
+            ],
+            [
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main"),
+            ],
+        ]
+    )
+
+
+def _main_menu_text() -> str:
+    return (
+        "🏠 <b>Главное меню</b>\n\n"
+        "Выберите действие:"
+    )
+
+
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
+            ],
+            [
+                InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing"),
+            ],
+            [
+                InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
+                InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
+            ],
+        ]
+    )
 
 
 async def cmd_start(message: Message):
@@ -1073,10 +1120,6 @@ async def cmd_start(message: Message):
 •  <b>Составление документов</b> — иски, жалобы, договоры
 •  <b>Юридическая стратегия</b> — рекомендации по защите интересов и разрешению споров
 •  <b>Консультации без ограничений</b> — ответы на любые правовые вопросы
-•  <b>Проверка документов</b> — выявление юридических рисков и подводных камней Анализ судебной практики — поиск релевантных решений судов по вашему делу
-•  <b>Составление документов</b> — иски, жалобы, договоры
-•  <b>Юридическая стратегия</b> — рекомендации по защите интересов и разрешению споров
-•  <b>Консультации без ограничений</b> — ответы на любые правовые вопросы
 •  <b>Проверка документов</b> — выявление юридических рисков и подводных камней
 
 <b>ПРИМЕРЫ ОБРАЩЕНИЙ:</b>
@@ -1091,37 +1134,24 @@ async def cmd_start(message: Message):
 
 <b>ПОПРОБУЙ ПРЯМО СЕЙЧАС 👇</b>"""
 
-    # Создаем inline клавиатуру с кнопками (компактное размещение)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
-            ],
-            [
-                InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
-            ],
-            [
-                InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
-                InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
-            ],
-        ]
-    )
-
     welcome_html = sanitize_telegram_html(welcome_raw)
 
-    if await _try_send_welcome_media(
+    media_sent = await _try_send_welcome_media(
         message=message,
         caption_html=welcome_html,
-        keyboard=keyboard,
-    ):
-        logger.info("User %s started bot", message.from_user.id)
-        return
+        keyboard=None,
+    )
 
-    # финальный фолбэк — просто текст
+    if not media_sent:
+        await message.answer(
+            welcome_html,
+            parse_mode=ParseMode.HTML,
+        )
+
     await message.answer(
-        welcome_html,
+        _profile_menu_text(),
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
+        reply_markup=_profile_menu_keyboard(),
     )
     logger.info("User %s started bot", message.from_user.id)
 
@@ -2986,8 +3016,14 @@ async def handle_search_practice_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        # Создаем сообщение для запроса вопроса
-        await callback.message.answer(
+        instruction_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
+            ]
+        )
+
+        await callback.message.edit_text(
             "🔍 <b>Поиск и аналитика судебной практики</b>\n\n"
             "📝 Опишите ваш юридический вопрос, и я найду релевантную судебную практику:\n\n"
             "• Получите краткую консультацию с 2 ссылками на практику\n"
@@ -2995,6 +3031,7 @@ async def handle_search_practice_callback(callback: CallbackQuery):
             "• Подготовка документов на основе практики\n\n"
             "<i>Напишите ваш вопрос следующим сообщением...</i>",
             parse_mode=ParseMode.HTML,
+            reply_markup=instruction_keyboard,
         )
 
         # Устанавливаем режим поиска практики для пользователя
@@ -3017,28 +3054,10 @@ async def handle_my_profile_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        # Создаем клавиатуру с кнопками профиля
-        profile_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-                    InlineKeyboardButton(text="🧾 Статус подписки", callback_data="subscription_status"),
-                ],
-                [
-                    InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
-                    InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
-                ],
-                [
-                    InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main"),
-                ],
-            ]
-        )
-
-        await callback.message.answer(
-            "👤 <b>Мой профиль</b>\n\n"
-            "Выберите действие:",
+        await callback.message.edit_text(
+            _profile_menu_text(),
             parse_mode=ParseMode.HTML,
-            reply_markup=profile_keyboard
+            reply_markup=_profile_menu_keyboard(),
         )
 
     except Exception as e:
@@ -3056,7 +3075,11 @@ async def handle_my_stats_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer("Статистика временно недоступна")
+            await callback.message.edit_text(
+                "Статистика временно недоступна",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
@@ -3074,7 +3097,11 @@ async def handle_my_stats_callback(callback: CallbackQuery):
             )
         except RuntimeError as stats_error:
             logger.error("Failed to build user stats: %s", stats_error)
-            await callback.message.answer("Статистика временно недоступна")
+            await callback.message.edit_text(
+                "Статистика временно недоступна",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         def generate_activity_graph(daily_data: Sequence[int]) -> tuple[str, int]:
@@ -3132,7 +3159,7 @@ async def handle_my_stats_callback(callback: CallbackQuery):
         if extra_sections:
             status_text = f"{status_text}\n\n" + "\n".join(extra_sections)
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             status_text,
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard,
@@ -3153,7 +3180,11 @@ async def handle_subscription_status_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer('Сервис временно недоступен')
+            await callback.message.edit_text(
+                "Сервис временно недоступен",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
@@ -3206,7 +3237,7 @@ async def handle_subscription_status_callback(callback: CallbackQuery):
         keyboard_buttons.append([InlineKeyboardButton(text='🔙 Назад к профилю', callback_data='my_profile')])
         subscription_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             status_text,
             parse_mode=ParseMode.HTML,
             reply_markup=subscription_keyboard,
@@ -3225,26 +3256,10 @@ async def handle_back_to_main_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        # Отправляем главное меню (как в команде /start)
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
-                ],
-                [
-                    InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
-                ],
-                [
-                    InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
-                    InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
-                ],
-            ]
-        )
-
-        await callback.message.answer(
-            "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+        await callback.message.edit_text(
+            _main_menu_text(),
             parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
+            reply_markup=_main_menu_keyboard(),
         )
 
     except Exception as e:
@@ -3262,7 +3277,11 @@ async def handle_payment_history_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer("Сервис временно недоступен")
+            await callback.message.edit_text(
+                "Сервис временно недоступен",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
@@ -3326,7 +3345,7 @@ async def handle_payment_history_callback(callback: CallbackQuery):
             ]
         )
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             history_text,
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard
@@ -3347,14 +3366,22 @@ async def handle_referral_program_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer("Сервис временно недоступен")
+            await callback.message.edit_text(
+                "Сервис временно недоступен",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
         user = await db.get_user(user_id)
 
         if not user:
-            await callback.message.answer("Ошибка получения данных пользователя")
+            await callback.message.edit_text(
+                "Ошибка получения данных пользователя",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         referral_code: str | None = None
@@ -3465,7 +3492,7 @@ async def handle_referral_program_callback(callback: CallbackQuery):
 
         referral_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             referral_text,
             parse_mode=ParseMode.HTML,
             reply_markup=referral_keyboard
