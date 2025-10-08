@@ -1195,6 +1195,17 @@ async def process_question(
     if not message.from_user:
         return
 
+    # НОВОЕ: Показываем typing индикатор мгновенно
+    from src.bot.typing_indicator import send_typing_once
+
+    # Выбираем тип индикатора в зависимости от контента
+    if attachments:
+        action = "upload_document"
+    else:
+        action = "typing"
+
+    await send_typing_once(message.bot, message.chat.id, action)
+
     try:
         user_id = _ensure_valid_user_id(message.from_user.id, context="process_question")
     except ValidationException as exc:
@@ -2688,6 +2699,9 @@ async def process_voice_message(message: Message):
     if not message.voice:
         return
 
+    # НОВОЕ: Показываем индикатор "записывает голосовое"
+    from src.bot.typing_indicator import typing_action
+
     try:
         voice_enabled = settings().voice_mode_enabled
     except RuntimeError:
@@ -2707,8 +2721,10 @@ async def process_voice_message(message: Message):
     try:
         await audio_service.ensure_short_enough(message.voice.duration)
 
-        temp_voice_path = await _download_voice_to_temp(message)
-        transcript = await audio_service.transcribe(temp_voice_path)
+        # Показываем индикатор во время транскрипции и обработки
+        async with typing_action(message.bot, message.chat.id, "record_voice"):
+            temp_voice_path = await _download_voice_to_temp(message)
+            transcript = await audio_service.transcribe(temp_voice_path)
 
         preview = html_escape(transcript[:500])
         if len(transcript) > 500:
@@ -2722,23 +2738,25 @@ async def process_voice_message(message: Message):
         if not response_text:
             return
 
-        try:
-            tts_paths = await audio_service.synthesize(response_text, prefer_male=True)
-        except Exception as tts_error:
-            logger.warning("Text-to-speech failed: %s", tts_error)
-            return
+        # Показываем индикатор "отправляет голосовое" во время генерации TTS
+        async with typing_action(message.bot, message.chat.id, "upload_voice"):
+            try:
+                tts_paths = await audio_service.synthesize(response_text, prefer_male=True)
+            except Exception as tts_error:
+                logger.warning("Text-to-speech failed: %s", tts_error)
+                return
 
-        if not tts_paths:
-            logger.warning("Text-to-speech returned no audio chunks")
-            return
+            if not tts_paths:
+                logger.warning("Text-to-speech returned no audio chunks")
+                return
 
-        for idx, generated_path in enumerate(tts_paths):
-            caption = VOICE_REPLY_CAPTION if idx == 0 else None
-            await message.answer_voice(
-                FSInputFile(generated_path),
-                caption=caption,
-                parse_mode=ParseMode.HTML if caption else None,
-            )
+            for idx, generated_path in enumerate(tts_paths):
+                caption = VOICE_REPLY_CAPTION if idx == 0 else None
+                await message.answer_voice(
+                    FSInputFile(generated_path),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML if caption else None,
+                )
 
     except ValueError as duration_error:
         logger.warning("Voice message duration exceeded: %s", duration_error)
@@ -4063,6 +4081,10 @@ async def handle_document_upload(message: Message, state: FSMContext):
         if not message.document:
             await message.answer("❌ Ошибка: документ не найден")
             return
+
+        # НОВОЕ: Показываем индикатор "отправляет документ"
+        from src.bot.typing_indicator import send_typing_once
+        await send_typing_once(message.bot, message.chat.id, "upload_document")
 
         # Получаем данные из состояния
         data = await state.get_data()
