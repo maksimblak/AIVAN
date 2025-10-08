@@ -15,7 +15,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence
 
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
@@ -946,6 +946,190 @@ def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"{Emoji.DOCUMENT} Загрузить ещё", callback_data=f"ocr_upload_more:{output_format}")
         ]]
     )
+
+
+_BASE_STAGE_LABELS: dict[str, tuple[str, str]] = {
+    "start": ("Подготавливаем обработку", "🚀"),
+    "downloading": ("Скачиваем документ", "⬇️"),
+    "uploaded": ("Файл сохранён", "💾"),
+    "processing": ("Обрабатываем документ", "⏳"),
+    "finalizing": ("Формируем результат", "🧾"),
+    "completed": ("Готово", "✅"),
+    "failed": ("Ошибка обработки", "❌"),
+}
+
+_STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
+    "summarize": {
+        "processing": ("Анализируем структуру", "🧠"),
+        "finalizing": ("Собираем саммари", "📄"),
+    },
+    "analyze_risks": {
+        "processing": ("Анализируем риски", "⚠️"),
+        "pattern_scan": ("Ищем шаблоны рисков", "🧭"),
+        "ai_analysis": ("ИИ анализирует документ", "🤖"),
+        "compliance_check": ("Проверяем требования закона", "⚖️"),
+        "aggregation": ("Сводим результаты", "🗂️"),
+        "highlighting": ("Готовим подсветку", "🔍"),
+    },
+    "anonymize": {
+        "processing": ("Ищем персональные данные", "🕵️"),
+        "finalizing": ("Формируем обезличенную версию", "🧾"),
+    },
+    "translate": {
+        "processing": ("Переводим текст", "🌐"),
+        "finalizing": ("Готовим итоговый перевод", "📝"),
+    },
+    "ocr": {
+        "processing": ("Распознаём текст", "🖨️"),
+        "finalizing": ("Очищаем результат", "🧼"),
+        "ocr_page": ("Распознаём страницы", "📑"),
+    },
+    "chat": {
+        "processing": ("Индексируем документ", "🧠"),
+        "finalizing": ("Готовим чаты", "💬"),
+        "chunking": ("Режем документ на блоки", "🧩"),
+        "indexing": ("Создаём поисковый индекс", "📚"),
+    },
+}
+
+
+def _get_stage_labels(operation: str) -> dict[str, tuple[str, str]]:
+    labels = _BASE_STAGE_LABELS.copy()
+    labels.update(_STAGE_LABEL_OVERRIDES.get(operation, {}))
+    return labels
+
+
+def _format_risk_count(count: int) -> str:
+    count = int(count)
+    suffix = "рисков"
+    if count % 10 == 1 and count % 100 != 11:
+        suffix = "риск"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        suffix = "риска"
+    return f"Найдено {count} {suffix}"
+
+
+def _format_progress_extras(update: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if update.get("risks_found") is not None:
+        parts.append(_format_risk_count(update["risks_found"]))
+    if update.get("violations") is not None:
+        parts.append(f"⚖️ Нарушений: {int(update['violations'])}")
+    if update.get("chunks_total") and update.get("chunk_index"):
+        parts.append(f"🧩 Блок {int(update['chunk_index'])}/{int(update['chunks_total'])}")
+    elif update.get("chunks_total") is not None:
+        parts.append(f"🧩 Блоков: {int(update['chunks_total'])}")
+    if update.get("language_pair"):
+        parts.append(f"🌐 {html_escape(str(update['language_pair']))}")
+    if update.get("mode"):
+        parts.append(f"⚙️ Режим: {html_escape(str(update['mode']))}")
+    if update.get("pages_total") is not None:
+        done = int(update.get("pages_done") or 0)
+        total = int(update["pages_total"])
+        parts.append(f"📑 Страницы: {done}/{total}")
+    if update.get("masked") is not None:
+        parts.append(f"🔐 Заменено: {int(update['masked'])}")
+    if update.get("words") is not None:
+        parts.append(f"📝 Слов: {int(update['words'])}")
+    if update.get("confidence") is not None:
+        parts.append(f"🎯 Точность: {float(update['confidence']):.1f}%")
+    if update.get("note"):
+        parts.append(f"⚠️ {html_escape(str(update['note']))}")
+    return " | ".join(parts)
+
+
+def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
+    data = getattr(result_obj, "data", None) or {}
+    payload: dict[str, Any] = {}
+    if op == "analyze_risks":
+        pattern = len(data.get("pattern_risks", []) or [])
+        ai_risks = len(((data.get("ai_analysis") or {}).get("risks")) or [])
+        payload["risks_found"] = pattern + ai_risks
+        payload["violations"] = len(((data.get("legal_compliance") or {}).get("violations")) or [])
+        payload["overall"] = data.get("overall_risk_level")
+    elif op == "summarize":
+        summary_struct = ((data.get("summary") or {}).get("structured")) or {}
+        payload["words"] = len(((summary_struct.get("summary")) or "").split())
+        payload["chunks_total"] = len(summary_struct.get("key_points") or [])
+    elif op == "anonymize":
+        report = data.get("anonymization_report") or {}
+        masked = report.get("processed_items")
+        if masked is None:
+            stats = report.get("statistics") or {}
+            masked = sum(int(v) for v in stats.values()) if stats else 0
+        payload["masked"] = int(masked or 0)
+    elif op == "translate":
+        meta = data.get("translation_metadata") or {}
+        payload["language_pair"] = meta.get("language_pair")
+        payload["chunks_total"] = meta.get("chunks_processed")
+        payload["mode"] = meta.get("mode")
+    elif op == "ocr":
+        payload["confidence"] = data.get("confidence_score")
+        processing = data.get("processing_info") or {}
+        payload["pages_total"] = processing.get("pages_processed") or len(data.get("pages", []) or [])
+        payload["mode"] = processing.get("file_type")
+    elif op == "chat":
+        info = data.get("document_info") or {}
+        payload["chunks_total"] = info.get("chunks_count")
+    return {k: v for k, v in payload.items() if v not in (None, "", [])}
+
+
+def _make_progress_updater(
+    message: Message,
+    status_msg: Message,
+    *,
+    file_name: str,
+    operation_name: str,
+    file_size_kb: int,
+    stage_labels: dict[str, tuple[str, str]],
+) -> tuple[Callable[[dict[str, Any]], Awaitable[None]], dict[str, Any]]:
+    progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+
+    async def send_progress(update: dict[str, Any]) -> None:
+        nonlocal progress_state, status_msg
+        if not status_msg or not status_msg.message_id:
+            return
+        stage = str(update.get("stage") or progress_state["stage"] or "processing")
+        percent_val = update.get("percent")
+        if percent_val is None:
+            percent = progress_state["percent"]
+        else:
+            percent = max(0, min(100, int(round(float(percent_val)))))
+        if percent < progress_state["percent"] and stage != "failed":
+            percent = progress_state["percent"]
+
+        progress_state["stage"] = stage
+        progress_state["percent"] = percent
+
+        label, icon = stage_labels.get(stage, stage_labels.get("processing", ("Обработка", "⏳")))
+        extras_line = _format_progress_extras(update)
+        elapsed = time.monotonic() - progress_state["started_at"]
+        elapsed_text = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+
+        lines = [
+            f"{icon} {label}: {percent}%",
+            f"🗂️ Файл: <b>{html_escape(file_name)}</b>",
+            f"🛠️ Операция: {html_escape(operation_name)}",
+            f"📊 Размер: {file_size_kb} КБ",
+            f"⏱️ Время: {elapsed_text}",
+        ]
+        if extras_line:
+            lines.append(extras_line)
+
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                text="\n".join(lines),
+                parse_mode=ParseMode.HTML,
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.debug("Progress edit failed: %s", exc)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Unexpected progress update error: %s", exc)
+
+    return send_progress, progress_state
 
 
 async def send_rating_request(message: Message, request_id: int):
@@ -3734,6 +3918,35 @@ async def handle_doc_draft_answer(
         return
 
     answers = data.get("draft_answers") or []
+    bulk_answers = _extract_numbered_answers(answer_text)
+
+    if bulk_answers:
+        remaining_questions = questions[index:]
+        used_count = 0
+        for offset, chunk in enumerate(bulk_answers):
+            if offset >= len(remaining_questions):
+                break
+            question = remaining_questions[offset]
+            answers.append({"question": question.get("text", ""), "answer": chunk})
+            used_count += 1
+
+        if used_count > 0:
+            if used_count < len(bulk_answers):
+                extra = "\n".join(bulk_answers[used_count:]).strip()
+                if extra and answers:
+                    answers[-1]["answer"] = f"{answers[-1]['answer']}\n{extra}"
+            index += used_count
+
+            await state.update_data(draft_answers=answers, current_question_index=index)
+            if index < len(questions):
+                await _send_next_question(message, state, prefix="Вопрос")
+            else:
+                await state.set_state(DocumentDraftStates.generating)
+                await message.answer(f"{Emoji.LOADING} Спасибо! Формирую документ…")
+                await _finalize_draft(message, state)
+            return
+        # если не удалось сопоставить ни одного ответа — переходим к обычной обработке
+
     answers.append({"question": questions[index]["text"], "answer": answer_text})
     index += 1
 
@@ -3821,6 +4034,36 @@ async def handle_doc_draft_answer_voice(message: Message, state: FSMContext) -> 
         return
     await handle_doc_draft_answer(message, state, text_override=transcript)
 
+
+def _extract_numbered_answers(answer_text: str) -> list[str] | None:
+    """Выделить несколько ответов из одного сообщения по шаблону `1) ...`."""
+    lines = answer_text.strip().splitlines()
+    pattern = re.compile(r"^\s*(\d+)[\).\:-]\s*(.*)")
+    answers: list[str] = []
+    current: list[str] | None = None
+
+    for line in lines:
+        match = pattern.match(line)
+        if match:
+            if current is not None:
+                combined = "\n".join(current).strip()
+                if combined:
+                    answers.append(combined)
+            current = [match.group(2)]
+        else:
+            if current is None:
+                return None
+            current.append(line)
+
+    if current is None:
+        return None
+
+    combined = "\n".join(current).strip()
+    if combined:
+        answers.append(combined)
+
+    return answers if len(answers) > 1 else None
+
 async def _send_next_question(message: Message, state: FSMContext, *, prefix: str) -> None:
     data = await state.get_data()
     plan = data.get("draft_plan") or {}
@@ -3836,6 +4079,12 @@ async def _send_next_question(message: Message, state: FSMContext, *, prefix: st
     parts = [f"{Emoji.MAGIC} {prefix} {index + 1}: {text}"]
     if purpose:
         parts.append(f"<i>Цель: {purpose}</i>")
+    if index == 0 and len(questions) > 1:
+        parts.append(
+            "<i>Можно ответить одним сообщением, пронумеровав ответы, например:</i>\n"
+            "1) Ответ на первый вопрос\n"
+            "2) Ответ на второй вопрос"
+        )
     await message.answer("\n".join(parts), parse_mode=ParseMode.HTML)
 
 
@@ -3941,13 +4190,13 @@ async def handle_document_processing(callback: CallbackQuery):
         message_text = (
             "🗂️ <b>Работа с документами</b>\n\n"
             "Автоматическая обработка и анализ ваших документов с помощью ИИ\n\n"
-            "🔹 <b>Что можно делать:</b>\n"
-            "• Создавать краткие выжимки больших документов\n"
-            "• Находить риски и проблемы в договорах\n"
-            "• Задавать вопросы по содержанию файлов\n"
-            "• Переводить на другие языки\n"
-            "• Обезличивать персональные данные\n"
-            "• Распознавать текст со сканов и фото\n\n"
+            "🔹 <b>Что можно делать:</b>\n\n"
+            "• <b>Краткое резюме</b> — превращает объёмные документы в короткие выжимки\n"
+            "• <b>Риск-анализ</b> — находит опасные формулировки и проблемные места в договорах\n"
+            "• <b>Диалог с файлом</b> — отвечает на вопросы по содержанию документа\n"
+            "• <b>Перевод</b> — переносит текст на выбранный язык\n"
+            "• <b>Обезличивание</b> — скрывает персональные данные и конфиденциальные сведения\n"
+            "• <b>Распознание текста</b> — извлекает текст со сканов и фотографий\n\n"
             "👇 <b>Выберите нужную операцию:</b>"
         )
 
@@ -4250,170 +4499,18 @@ async def handle_document_upload(message: Message, state: FSMContext):
         operation_name = operation_info.get("name", operation)
         file_size_kb = max(1, file_size // 1024)
 
-        base_stage_labels: dict[str, tuple[str, str]] = {
-            "start": ("Подготавливаем обработку", "🚀"),
-            "downloading": ("Скачиваем документ", "⬇️"),
-            "uploaded": ("Файл сохранён", "💾"),
-            "processing": ("Обрабатываем документ", "⏳"),
-            "finalizing": ("Формируем результат", "🧾"),
-            "completed": ("Готово", "✅"),
-            "failed": ("Ошибка обработки", "❌"),
-        }
-        operation_stage_overrides: dict[str, dict[str, tuple[str, str]]] = {
-            "summarize": {
-                "processing": ("Анализируем структуру", "🧠"),
-                "finalizing": ("Собираем саммари", "📄"),
-            },
-            "analyze_risks": {
-                "processing": ("Анализируем риски", "⚠️"),
-                "pattern_scan": ("Ищем шаблоны рисков", "🧭"),
-                "ai_analysis": ("ИИ анализирует документ", "🤖"),
-                "compliance_check": ("Проверяем требования закона", "⚖️"),
-                "aggregation": ("Сводим результаты", "🗂️"),
-                "highlighting": ("Готовим подсветку", "🔍"),
-            },
-            "anonymize": {
-                "processing": ("Ищем персональные данные", "🕵️"),
-                "finalizing": ("Формируем обезличенную версию", "🧾"),
-            },
-            "translate": {
-                "processing": ("Переводим текст", "🌐"),
-                "finalizing": ("Готовим итоговый перевод", "📝"),
-            },
-            "ocr": {
-                "processing": ("Распознаём текст", "🖨️"),
-                "finalizing": ("Очищаем результат", "🧼"),
-                "ocr_page": ("Распознаём страницы", "📑"),
-            },
-            "chat": {
-                "processing": ("Индексируем документ", "🧠"),
-                "finalizing": ("Готовим чаты", "💬"),
-                "chunking": ("Режем документ на блоки", "🧩"),
-                "indexing": ("Создаём поисковый индекс", "📚"),
-            },
-        }
-        stage_labels = base_stage_labels.copy()
-        stage_labels.update(operation_stage_overrides.get(operation, {}))
-
-        def _format_risk_count(count: int) -> str:
-            count = int(count)
-            suffix = "рисков"
-            if count % 10 == 1 and count % 100 != 11:
-                suffix = "риск"
-            elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-                suffix = "риска"
-            return f"Найдено {count} {suffix}"
-
-        def _format_extras(update: dict[str, Any]) -> str:
-            parts: list[str] = []
-            if update.get("risks_found") is not None:
-                parts.append(_format_risk_count(update["risks_found"]))
-            if update.get("violations") is not None:
-                parts.append(f"⚖️ Нарушений: {int(update['violations'])}")
-            if update.get("chunks_total") and update.get("chunk_index"):
-                parts.append(f"🧩 Блок {int(update['chunk_index'])}/{int(update['chunks_total'])}")
-            elif update.get("chunks_total") is not None:
-                parts.append(f"🧩 Блоков: {int(update['chunks_total'])}")
-            if update.get("language_pair"):
-                parts.append(f"🌐 {html_escape(str(update['language_pair']))}")
-            if update.get("mode"):
-                parts.append(f"⚙️ Режим: {html_escape(str(update['mode']))}")
-            if update.get("pages_total") is not None:
-                done = int(update.get("pages_done") or 0)
-                total = int(update['pages_total'])
-                parts.append(f"📑 Страницы: {done}/{total}")
-            if update.get("masked") is not None:
-                parts.append(f"🔐 Заменено: {int(update['masked'])}")
-            if update.get("words") is not None:
-                parts.append(f"📝 Слов: {int(update['words'])}")
-            if update.get("confidence") is not None:
-                parts.append(f"🎯 Точность: {float(update['confidence']):.1f}%")
-            if update.get("note"):
-                parts.append(f"⚠️ {html_escape(str(update['note']))}")
-            return " | ".join(parts)
-
-        def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
-            data = getattr(result_obj, 'data', None) or {}
-            payload: dict[str, Any] = {}
-            if op == 'analyze_risks':
-                pattern = len(data.get('pattern_risks', []) or [])
-                ai_risks = len(((data.get('ai_analysis') or {}).get('risks')) or [])
-                payload['risks_found'] = pattern + ai_risks
-                payload['violations'] = len(((data.get('legal_compliance') or {}).get('violations')) or [])
-                payload['overall'] = data.get('overall_risk_level')
-            elif op == 'summarize':
-                summary_struct = ((data.get('summary') or {}).get('structured')) or {}
-                payload['words'] = len(((summary_struct.get('summary')) or '').split())
-                payload['chunks_total'] = len(summary_struct.get('key_points') or [])
-            elif op == 'anonymize':
-                report = data.get('anonymization_report') or {}
-                masked = report.get('processed_items')
-                if masked is None:
-                    stats = report.get('statistics') or {}
-                    masked = sum(int(v) for v in stats.values()) if stats else 0
-                payload['masked'] = int(masked or 0)
-            elif op == 'translate':
-                meta = data.get('translation_metadata') or {}
-                payload['language_pair'] = meta.get('language_pair')
-                payload['chunks_total'] = meta.get('chunks_processed')
-                payload['mode'] = meta.get('mode')
-            elif op == 'ocr':
-                payload['confidence'] = data.get('confidence_score')
-                processing = data.get('processing_info') or {}
-                payload['pages_total'] = processing.get('pages_processed') or len(data.get('pages', []) or [])
-                payload['mode'] = processing.get('file_type')
-            elif op == 'chat':
-                info = data.get('document_info') or {}
-                payload['chunks_total'] = info.get('chunks_count')
-            return {k: v for k, v in payload.items() if v not in (None, '', [])}
-
-        progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+        stage_labels = _get_stage_labels(operation)
 
         status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
 
-        async def send_progress(update: dict[str, Any]) -> None:
-            nonlocal progress_state, status_msg
-            if not status_msg or not status_msg.message_id:
-                return
-            stage = str(update.get("stage") or progress_state["stage"] or "processing")
-            percent_val = update.get("percent")
-            if percent_val is None:
-                percent = progress_state["percent"]
-            else:
-                percent = max(0, min(100, int(round(float(percent_val)))))
-            if percent < progress_state["percent"] and stage != "failed":
-                percent = progress_state["percent"]
-
-            progress_state["stage"] = stage
-            progress_state["percent"] = percent
-
-            label, icon = stage_labels.get(stage, stage_labels.get("processing", ("Обработка", "⏳")))
-            extras_line = _format_extras(update)
-            elapsed = time.monotonic() - progress_state["started_at"]
-            elapsed_text = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
-
-            lines = [
-                f"{icon} {label}: {percent}%",
-                f"🗂️ Файл: <b>{html_escape(file_name)}</b>",
-                f"🛠️ Операция: {html_escape(operation_name)}",
-                f"📊 Размер: {file_size_kb} КБ",
-                f"⏱️ Время: {elapsed_text}",
-            ]
-            if extras_line:
-                lines.append(extras_line)
-
-            try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=status_msg.message_id,
-                    text="\n".join(lines),
-                    parse_mode=ParseMode.HTML,
-                )
-            except TelegramBadRequest as exc:
-                if "message is not modified" not in str(exc).lower():
-                    logger.debug("Progress edit failed: %s", exc)
-            except Exception as exc:
-                logger.debug("Unexpected progress update error: %s", exc)
+        send_progress, progress_state = _make_progress_updater(
+            message,
+            status_msg,
+            file_name=file_name,
+            operation_name=operation_name,
+            file_size_kb=file_size_kb,
+            stage_labels=stage_labels,
+        )
 
         await send_progress({"stage": "start", "percent": 5})
 
@@ -4585,14 +4682,28 @@ async def handle_photo_upload(message: Message, state: FSMContext):
         operation_info = document_manager.get_operation_info(operation) or {}
         operation_name = operation_info.get("name", operation)
 
+        file_size_kb = max(1, file_size // 1024)
+        stage_labels = _get_stage_labels(operation)
+
         status_msg = await message.answer(
             f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
             f"⏳ Операция: {html_escape(operation_name)}\n"
-            f"📏 Размер: {file_size // 1024} КБ",
+            f"📏 Размер: {file_size_kb} КБ",
             parse_mode=ParseMode.HTML,
         )
 
+        send_progress, progress_state = _make_progress_updater(
+            message,
+            status_msg,
+            file_name=file_name,
+            operation_name=operation_name,
+            file_size_kb=file_size_kb,
+            stage_labels=stage_labels,
+        )
+
         try:
+            await send_progress({"stage": "start", "percent": 5})
+
             # Скачиваем фотографию
             file_info = await message.bot.get_file(photo.file_id)
             file_path = file_info.file_path
@@ -4667,10 +4778,19 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                         with suppress(Exception):
                             Path(export_path).unlink(missing_ok=True)
 
+                completion_payload = _build_completion_payload(operation, result)
+                await send_progress({"stage": "completed", "percent": 100, **completion_payload})
+                with suppress(Exception):
+                    await asyncio.sleep(0.6)
+                    await status_msg.delete()
+
                 logger.info(
                     f"Successfully processed photo {file_name} for user {message.from_user.id}"
                 )
             else:
+                await send_progress(
+                    {"stage": "failed", "percent": progress_state["percent"], "note": result.message}
+                )
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
                     f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
@@ -4681,6 +4801,7 @@ async def handle_photo_upload(message: Message, state: FSMContext):
         except Exception as e:
             # Удаляем статусное сообщение
             try:
+                await send_progress({"stage": "failed", "percent": progress_state["percent"], "note": str(e)})
                 await status_msg.delete()
             except:
                 pass
