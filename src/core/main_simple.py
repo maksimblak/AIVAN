@@ -4248,15 +4248,177 @@ async def handle_document_upload(message: Message, state: FSMContext):
         # Показываем статус обработки
         operation_info = document_manager.get_operation_info(operation) or {}
         operation_name = operation_info.get("name", operation)
+        file_size_kb = max(1, file_size // 1024)
 
-        status_msg = await message.answer(
-            f"📄 Обрабатываем документ <b>{html_escape(file_name)}</b>...\n\n"
-            f"⏳ Операция: {html_escape(operation_name)}\n"
-            f"📊 Размер: {file_size // 1024} КБ",
-            parse_mode=ParseMode.HTML,
-        )
+        base_stage_labels: dict[str, tuple[str, str]] = {
+            "start": ("Подготавливаем обработку", "🚀"),
+            "downloading": ("Скачиваем документ", "⬇️"),
+            "uploaded": ("Файл сохранён", "💾"),
+            "processing": ("Обрабатываем документ", "⏳"),
+            "finalizing": ("Формируем результат", "🧾"),
+            "completed": ("Готово", "✅"),
+            "failed": ("Ошибка обработки", "❌"),
+        }
+        operation_stage_overrides: dict[str, dict[str, tuple[str, str]]] = {
+            "summarize": {
+                "processing": ("Анализируем структуру", "🧠"),
+                "finalizing": ("Собираем саммари", "📄"),
+            },
+            "analyze_risks": {
+                "processing": ("Анализируем риски", "⚠️"),
+                "pattern_scan": ("Ищем шаблоны рисков", "🧭"),
+                "ai_analysis": ("ИИ анализирует документ", "🤖"),
+                "compliance_check": ("Проверяем требования закона", "⚖️"),
+                "aggregation": ("Сводим результаты", "🗂️"),
+                "highlighting": ("Готовим подсветку", "🔍"),
+            },
+            "anonymize": {
+                "processing": ("Ищем персональные данные", "🕵️"),
+                "finalizing": ("Формируем обезличенную версию", "🧾"),
+            },
+            "translate": {
+                "processing": ("Переводим текст", "🌐"),
+                "finalizing": ("Готовим итоговый перевод", "📝"),
+            },
+            "ocr": {
+                "processing": ("Распознаём текст", "🖨️"),
+                "finalizing": ("Очищаем результат", "🧼"),
+                "ocr_page": ("Распознаём страницы", "📑"),
+            },
+            "chat": {
+                "processing": ("Индексируем документ", "🧠"),
+                "finalizing": ("Готовим чаты", "💬"),
+                "chunking": ("Режем документ на блоки", "🧩"),
+                "indexing": ("Создаём поисковый индекс", "📚"),
+            },
+        }
+        stage_labels = base_stage_labels.copy()
+        stage_labels.update(operation_stage_overrides.get(operation, {}))
+
+        def _format_risk_count(count: int) -> str:
+            count = int(count)
+            suffix = "рисков"
+            if count % 10 == 1 and count % 100 != 11:
+                suffix = "риск"
+            elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+                suffix = "риска"
+            return f"Найдено {count} {suffix}"
+
+        def _format_extras(update: dict[str, Any]) -> str:
+            parts: list[str] = []
+            if update.get("risks_found") is not None:
+                parts.append(_format_risk_count(update["risks_found"]))
+            if update.get("violations") is not None:
+                parts.append(f"⚖️ Нарушений: {int(update['violations'])}")
+            if update.get("chunks_total") and update.get("chunk_index"):
+                parts.append(f"🧩 Блок {int(update['chunk_index'])}/{int(update['chunks_total'])}")
+            elif update.get("chunks_total") is not None:
+                parts.append(f"🧩 Блоков: {int(update['chunks_total'])}")
+            if update.get("language_pair"):
+                parts.append(f"🌐 {html_escape(str(update['language_pair']))}")
+            if update.get("mode"):
+                parts.append(f"⚙️ Режим: {html_escape(str(update['mode']))}")
+            if update.get("pages_total") is not None:
+                done = int(update.get("pages_done") or 0)
+                total = int(update['pages_total'])
+                parts.append(f"📑 Страницы: {done}/{total}")
+            if update.get("masked") is not None:
+                parts.append(f"🔐 Заменено: {int(update['masked'])}")
+            if update.get("words") is not None:
+                parts.append(f"📝 Слов: {int(update['words'])}")
+            if update.get("confidence") is not None:
+                parts.append(f"🎯 Точность: {float(update['confidence']):.1f}%")
+            if update.get("note"):
+                parts.append(f"⚠️ {html_escape(str(update['note']))}")
+            return " | ".join(parts)
+
+        def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
+            data = getattr(result_obj, 'data', None) or {}
+            payload: dict[str, Any] = {}
+            if op == 'analyze_risks':
+                pattern = len(data.get('pattern_risks', []) or [])
+                ai_risks = len(((data.get('ai_analysis') or {}).get('risks')) or [])
+                payload['risks_found'] = pattern + ai_risks
+                payload['violations'] = len(((data.get('legal_compliance') or {}).get('violations')) or [])
+                payload['overall'] = data.get('overall_risk_level')
+            elif op == 'summarize':
+                summary_struct = ((data.get('summary') or {}).get('structured')) or {}
+                payload['words'] = len(((summary_struct.get('summary')) or '').split())
+                payload['chunks_total'] = len(summary_struct.get('key_points') or [])
+            elif op == 'anonymize':
+                report = data.get('anonymization_report') or {}
+                masked = report.get('processed_items')
+                if masked is None:
+                    stats = report.get('statistics') or {}
+                    masked = sum(int(v) for v in stats.values()) if stats else 0
+                payload['masked'] = int(masked or 0)
+            elif op == 'translate':
+                meta = data.get('translation_metadata') or {}
+                payload['language_pair'] = meta.get('language_pair')
+                payload['chunks_total'] = meta.get('chunks_processed')
+                payload['mode'] = meta.get('mode')
+            elif op == 'ocr':
+                payload['confidence'] = data.get('confidence_score')
+                processing = data.get('processing_info') or {}
+                payload['pages_total'] = processing.get('pages_processed') or len(data.get('pages', []) or [])
+                payload['mode'] = processing.get('file_type')
+            elif op == 'chat':
+                info = data.get('document_info') or {}
+                payload['chunks_total'] = info.get('chunks_count')
+            return {k: v for k, v in payload.items() if v not in (None, '', [])}
+
+        progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+
+        status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
+
+        async def send_progress(update: dict[str, Any]) -> None:
+            nonlocal progress_state, status_msg
+            if not status_msg or not status_msg.message_id:
+                return
+            stage = str(update.get("stage") or progress_state["stage"] or "processing")
+            percent_val = update.get("percent")
+            if percent_val is None:
+                percent = progress_state["percent"]
+            else:
+                percent = max(0, min(100, int(round(float(percent_val)))))
+            if percent < progress_state["percent"] and stage != "failed":
+                percent = progress_state["percent"]
+
+            progress_state["stage"] = stage
+            progress_state["percent"] = percent
+
+            label, icon = stage_labels.get(stage, stage_labels.get("processing", ("Обработка", "⏳")))
+            extras_line = _format_extras(update)
+            elapsed = time.monotonic() - progress_state["started_at"]
+            elapsed_text = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+
+            lines = [
+                f"{icon} {label}: {percent}%",
+                f"🗂️ Файл: <b>{html_escape(file_name)}</b>",
+                f"🛠️ Операция: {html_escape(operation_name)}",
+                f"📊 Размер: {file_size_kb} КБ",
+                f"⏱️ Время: {elapsed_text}",
+            ]
+            if extras_line:
+                lines.append(extras_line)
+
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id,
+                    text="\n".join(lines),
+                    parse_mode=ParseMode.HTML,
+                )
+            except TelegramBadRequest as exc:
+                if "message is not modified" not in str(exc).lower():
+                    logger.debug("Progress edit failed: %s", exc)
+            except Exception as exc:
+                logger.debug("Unexpected progress update error: %s", exc)
+
+        await send_progress({"stage": "start", "percent": 5})
 
         try:
+            await send_progress({"stage": "downloading", "percent": 18})
             # Скачиваем файл
             file_info = await message.bot.get_file(message.document.file_id)
             file_path = file_info.file_path
@@ -4274,25 +4436,24 @@ async def handle_document_upload(message: Message, state: FSMContext):
 
             file_bytes = file_content.read()
             stored_path.write_bytes(file_bytes)
+            await send_progress({"stage": "uploaded", "percent": 32})
 
             try:
+                await send_progress({"stage": "processing", "percent": 45})
                 result = await document_manager.process_document(
                     user_id=message.from_user.id,
                     file_content=file_bytes,
                     original_name=file_name,
                     mime_type=mime_type,
                     operation=operation,
+                    progress_callback=send_progress,
                     **options,
                 )
             finally:
                 with suppress(Exception):
                     stored_path.unlink(missing_ok=True)
 
-            # Удаляем статусное сообщение
-            try:
-                await status_msg.delete()
-            except:
-                pass
+            await send_progress({"stage": "finalizing", "percent": 90})
 
             if result.success:
                 # Форматируем результат для Telegram
@@ -4331,16 +4492,25 @@ async def handle_document_upload(message: Message, state: FSMContext):
                         with suppress(Exception):
                             Path(export_path).unlink(missing_ok=True)
 
+                completion_payload = _build_completion_payload(operation, result)
+                await send_progress({'stage': 'completed', 'percent': 100, **completion_payload})
+                with suppress(Exception):
+                    await asyncio.sleep(0.6)
+                    await status_msg.delete()
+
                 logger.info(
                     f"Successfully processed document {file_name} for user {message.from_user.id}"
                 )
             else:
+                await send_progress({'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message})
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
                     f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
+                with suppress(Exception):
+                    await status_msg.delete()
 
         except Exception as e:
             # Удаляем статусное сообщение в случае ошибки
@@ -4440,25 +4610,24 @@ async def handle_photo_upload(message: Message, state: FSMContext):
 
             file_bytes = file_content.read()
             stored_path.write_bytes(file_bytes)
+            await send_progress({"stage": "uploaded", "percent": 32})
 
             try:
+                await send_progress({"stage": "processing", "percent": 45})
                 result = await document_manager.process_document(
                     user_id=message.from_user.id,
                     file_content=file_bytes,
                     original_name=file_name,
                     mime_type=mime_type,
                     operation=operation,
+                    progress_callback=send_progress,
                     **options,
                 )
             finally:
                 with suppress(Exception):
                     stored_path.unlink(missing_ok=True)
 
-            # Удаляем статусное сообщение
-            try:
-                await status_msg.delete()
-            except:
-                pass
+            await send_progress({"stage": "finalizing", "percent": 90})
 
             if result.success:
                 # Форматируем результат для Telegram
@@ -5252,3 +5421,4 @@ async def run_bot() -> None:
                 logger.error(f"❌ Error closing {service_name}: {e}")
 
         logger.info("👋 AI-Ivan shutdown complete")
+
