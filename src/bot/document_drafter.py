@@ -257,12 +257,28 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
 
 def format_plan_summary(plan: DraftPlan) -> str:
-    parts = [f"Документ: {plan.title}"]
+    lines: list[str] = []
+
+    title = (plan.title or "Документ").strip()
+    lines.append(f"📄 Документ: {title}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
     if plan.notes:
-        parts.append("Контекст:\n- " + "\n- ".join(plan.notes))
+        lines.append("🔍 Контекст (важное):")
+        max_notes = 6
+        for note in plan.notes[:max_notes]:
+            clean = str(note).strip()
+            if clean:
+                lines.append(f"• {clean}")
+        remaining = len(plan.notes) - max_notes
+        if remaining > 0:
+            lines.append(f"… ещё {remaining} пункт(ов)")
+        lines.append("")
+
+    lines.append(f"❓ Уточняющих вопросов: {len(plan.questions)}")
     if plan.questions:
-        parts.append(f"Всего уточняющих вопросов: {len(plan.questions)}")
-        parts.append("Ответьте на них в следующем сообщении согласно инструкции.")
+        lines.append("💬 Ответьте на них одним сообщением, следуя подсказке ниже.")
     else:
-        parts.append("Дополнительные данные не требуются — можно сразу формировать документ.")
-    return "\n\n".join(parts)
+        lines.append("✅ Дополнительных уточнений не требуется — можно формировать документ.")
+
+    return "\n".join(lines)
