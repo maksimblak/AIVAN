@@ -101,6 +101,7 @@ DOCUMENT_GENERATOR_USER_TEMPLATE = """
 """.strip()
 
 _JSON_RE = re.compile(r"\{[\s\S]*\}")
+_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 
 
@@ -117,13 +118,15 @@ def _extract_json(text: str) -> Any:
     try:
         return _try_parse(text)
     except json.JSONDecodeError:
-        match = _JSON_RE.search(text)
-        if not match:
-            raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
-        try:
-            return _try_parse(match.group(0))
-        except json.JSONDecodeError as err:
-            raise DocumentDraftingError("Не удалось распарсить JSON из ответа модели") from err
+        for regex in (_JSON_RE, _JSON_ARRAY_RE):
+            match = regex.search(text)
+            if not match:
+                continue
+            try:
+                return _try_parse(match.group(0))
+            except json.JSONDecodeError:
+                continue
+        raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
 
 
 def _format_answers(answers: Iterable[dict[str, str]]) -> str:
