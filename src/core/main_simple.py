@@ -1674,32 +1674,13 @@ async def _send_plan_catalog(message: Message, *, edit: bool = False) -> None:
         await message.answer(text, **kwargs)
 
 
-def _build_stats_keyboard(selected_days: int, has_subscription: bool) -> InlineKeyboardMarkup:
-    period_buttons: list[InlineKeyboardButton] = []
-    for option in PERIOD_OPTIONS:
-        label = f"{option} д"
-        if option == selected_days:
-            label = f"✅ {label}"
-        period_buttons.append(
-            InlineKeyboardButton(text=label, callback_data=f"my_stats:{option}")
-        )
-
-    rows: list[list[InlineKeyboardButton]] = [period_buttons]
-    if not has_subscription:
-        rows.append(
-            [InlineKeyboardButton(text="💳 Купить подписку", callback_data="get_subscription")]
-        )
-    rows.append([InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 async def _generate_user_stats_response(
     user_id: int,
     days: int,
     *,
     stats: dict[str, Any] | None = None,
     user: Any | None = None,
-) -> tuple[str, InlineKeyboardMarkup]:
+) -> tuple[str, InlineKeyboardMarkup | None]:
     if db is None:
         raise RuntimeError("Database is not available")
 
@@ -1855,7 +1836,7 @@ async def _generate_user_stats_response(
                 pass
 
     text = "\n".join(lines)
-    keyboard = _build_stats_keyboard(normalized_days, has_subscription)
+    keyboard = None
     return text, keyboard
 
 
