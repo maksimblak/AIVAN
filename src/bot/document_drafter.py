@@ -101,6 +101,7 @@ DOCUMENT_GENERATOR_USER_TEMPLATE = """
 """.strip()
 
 _JSON_RE = re.compile(r"\{[\s\S]*\}")
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 
 
 def _extract_json(text: str) -> Any:
