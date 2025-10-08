@@ -87,6 +87,7 @@ from src.core.settings import AppSettings
 from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
 from src.bot.ratelimit import RateLimiter
+from src.bot.typing_indicator import send_typing_once
 
 SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
@@ -1380,8 +1381,7 @@ async def process_question(
     if not message.from_user:
         return
 
-    # НОВОЕ: Показываем typing индикатор мгновенно
-    from src.bot.typing_indicator import send_typing_once
+
 
     # Выбираем тип индикатора в зависимости от контента
     if attachments:
@@ -3855,6 +3855,10 @@ async def handle_doc_draft_request(
         await state.clear()
         return
 
+    # Показываем индикатор "печатает"
+
+    await send_typing_once(message.bot, message.chat.id, "typing")
+
     status_msg = await message.answer(f"{Emoji.LOADING} Анализирую запрос…")
     try:
         plan = await plan_document(openai_service, request_text)
@@ -4080,11 +4084,7 @@ async def _send_next_question(message: Message, state: FSMContext, *, prefix: st
     if purpose:
         parts.append(f"<i>Цель: {purpose}</i>")
     if index == 0 and len(questions) > 1:
-        parts.append(
-            "<i>Можно ответить одним сообщением, пронумеровав ответы, например:</i>\n"
-            "1) Ответ на первый вопрос\n"
-            "2) Ответ на второй вопрос"
-        )
+        parts.append("➡️ Ответьте на следующие вопросы по очереди — мы спросим их один за другим.")
     await message.answer("\n".join(parts), parse_mode=ParseMode.HTML)
 
 
@@ -4100,17 +4100,21 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
-    try:
-        result = await generate_document(openai_service, request_text, title, answers)
-    except DocumentDraftingError as err:
-        await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
-        await state.clear()
-        return
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
-        await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
-        await state.clear()
-        return
+    # Показываем индикатор "отправляет документ" во время генерации
+    from src.bot.typing_indicator import typing_action
+
+    async with typing_action(message.bot, message.chat.id, "upload_document"):
+        try:
+            result = await generate_document(openai_service, request_text, title, answers)
+        except DocumentDraftingError as err:
+            await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
+            await state.clear()
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
+            await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
+            await state.clear()
+            return
 
     if result.status != "ok":
         if result.follow_up_questions:
@@ -4459,7 +4463,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
             return
 
         # НОВОЕ: Показываем индикатор "отправляет документ"
-        from src.bot.typing_indicator import send_typing_once
+
         await send_typing_once(message.bot, message.chat.id, "upload_document")
 
         # Получаем данные из состояния
@@ -4647,6 +4651,9 @@ async def handle_photo_upload(message: Message, state: FSMContext):
         if not message.photo:
             await message.answer("❌ Ошибка: фотография не найдена")
             return
+
+        # Показываем индикатор "отправляет фото"
+        await send_typing_once(message.bot, message.chat.id, "upload_photo")
 
         # Получаем данные из состояния
         data = await state.get_data()
