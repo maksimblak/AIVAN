@@ -78,14 +78,14 @@ class DocumentManager:
             },
             "translate": {
                 "emoji": "🌐",
-                "name": "Перевод",
+                "name": "Перевод текста",
                 "description": "Перевод текста на выбранный язык",
                 "formats": ["TXT"],
                 "processor": self.translator,
             },
             "ocr": {
                 "emoji": "📷",
-                "name": "OCR",
+                "name": "Распознание текста",
                 "description": "Распознавание текста на изображениях и PDF",
                 "formats": ["TXT"],
                 "processor": self.ocr_converter,

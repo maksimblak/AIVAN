@@ -104,7 +104,7 @@ FEATURE_LABELS = {
     "judicial_practice": "Судебная практика",
     "document_draft": "Составление документов",
     "voice_message": "Голосовые сообщения",
-    "ocr_processing": "OCR распознавание",
+    "ocr_processing": "распознание текста",
     "document_chat": "Чат с документом",
 }
 
@@ -939,7 +939,7 @@ def create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
 
 
 def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
-    """Создаёт клавиатуру для возврата и повторной загрузки OCR."""
+    """Создаёт клавиатуру для возврата и повторной загрузки режима "распознание текста"."""
     return InlineKeyboardMarkup(
         inline_keyboard=[[
             InlineKeyboardButton(text=f"{Emoji.BACK} Назад", callback_data="back_to_menu"),
@@ -2783,7 +2783,7 @@ async def process_voice_message(message: Message):
 # ============ СИСТЕМА РЕЙТИНГА ============
 
 async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
-    """Prepare state for another OCR upload after a result message."""
+    """Prepare state for another "распознание текста" upload after a result message."""
     output_format = "txt"
     data = callback.data or ""
     if ":" in data:
@@ -2802,7 +2802,7 @@ async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
         await state.set_state(DocumentProcessingStates.waiting_for_document)
 
         await callback.message.answer(
-            f"{Emoji.DOCUMENT} Отправьте следующий файл или фото для OCR.",
+            f"{Emoji.DOCUMENT} Отправьте следующий файл или фото для режима \"распознание текста\".",
             parse_mode=ParseMode.HTML,
         )
         await callback.answer("Готов к загрузке нового документа")
@@ -3146,7 +3146,7 @@ async def handle_my_stats_callback(callback: CallbackQuery):
                 "judicial_practice": "📚 Судебная практика",
                 "document_draft": "📝 Составление документов",
                 "voice_message": "🎙️ Голосовые сообщения",
-                "ocr_processing": "🔍 OCR распознавание",
+                "ocr_processing": "🔍 распознание текста",
                 "document_chat": "💬 Чат с документом",
             }
             if not feature:
@@ -4055,7 +4055,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
                 "Международных договоров, документооборота с зарубежными партнерами"
             ),
             "ocr": (
-                "👁️ <b>OCR - распознавание текста</b>\n\n"
+                "👁️ <b>Режим \"распознание текста\"</b>\n\n"
                 "⚙️ <b>Как это работает:</b>\n"
                 "• Извлекает текст из сканированных документов\n"
                 "• Распознает текст на изображениях и PDF\n"
@@ -4140,7 +4140,7 @@ async def handle_retention_show_features(callback: CallbackQuery):
             f"📄 <b>Работа с документами</b>\n"
             "• Анализ договоров и документов\n"
             "• Поиск рисков и проблем\n"
-            "• OCR — распознавание текста из фото\n"
+            "• Режим \"распознание текста\" — извлечение текста из фото\n"
             "• Составление документов\n\n"
             f"📚 <b>Судебная практика</b>\n"
             "Поиск релевантных судебных решений\n\n"
@@ -4545,7 +4545,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
 
 
 async def handle_photo_upload(message: Message, state: FSMContext):
-    """Обработка загруженной фотографии для OCR"""
+    """Обработка загруженной фотографии для режима "распознание текста"."""
     try:
         if not message.photo:
             await message.answer("❌ Ошибка: фотография не найдена")
@@ -4586,7 +4586,7 @@ async def handle_photo_upload(message: Message, state: FSMContext):
         operation_name = operation_info.get("name", operation)
 
         status_msg = await message.answer(
-            f"📷 Обрабатываем фотографию для OCR...\n\n"
+            f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
             f"⏳ Операция: {html_escape(operation_name)}\n"
             f"📏 Размер: {file_size // 1024} КБ",
             parse_mode=ParseMode.HTML,
