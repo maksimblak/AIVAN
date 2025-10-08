@@ -4068,7 +4068,7 @@ def _extract_answer_chunks(answer_text: str) -> list[str] | None:
             chunk = "\n".join(current).strip()
             if chunk:
                 answers.append(chunk)
-        return [chunk for chunk in answers if chunk] or None
+        return answers if len(answers) > 1 else None
 
     bullet_pattern = re.compile(r"^\s*[-•]\s*(.*)")
     answers = []
@@ -4095,7 +4095,7 @@ def _extract_answer_chunks(answer_text: str) -> list[str] | None:
     if len(chunks) > 1:
         return chunks
 
-    return [text] if text else None
+    return None
 
 async def _send_questions_prompt(
     message: Message,
@@ -4106,29 +4106,49 @@ async def _send_questions_prompt(
     if not questions:
         return
 
-    lines = [
+    header_lines = [
         f"{Emoji.MAGIC} <b>{html_escape(title)}</b>",
         "",
-        "<b>Вопросы:</b>",
+        "<b>Как ответить:</b>",
+        "✍️ Напишите все ответы одним сообщением. Можно:",
+        "• разделять ответы пустой строкой",
+        "• начинать строки с номера или маркера",
+        "<code>1) Ответ на первый вопрос</code>",
+        "<code>- Ответ на второй вопрос</code>",
     ]
+
+    await message.answer("\n".join(header_lines), parse_mode=ParseMode.HTML)
+
+    question_blocks: list[str] = []
     for idx, question in enumerate(questions, 1):
         text = html_escape(question.get("text", ""))
         purpose = question.get("purpose")
-        lines.append(f"<b>{idx})</b> {text}")
+        block_lines = [f"<b>{idx})</b> {text}"]
         if purpose:
-            lines.append(f"&nbsp;&nbsp;&nbsp;<i>Цель: {html_escape(purpose)}</i>")
-    lines.extend(
-        [
-            "",
-            "<b>Как ответить:</b>",
-            "✍️ Напишите все ответы одним сообщением. Можно:",
-            "• разделять ответы пустой строкой",
-            "• начинать строки с номера или маркера",
-            "<code>1) Ответ на первый вопрос</code>",
-            "<code>- Ответ на второй вопрос</code>",
-        ]
-    )
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+            block_lines.append(f"&nbsp;&nbsp;&nbsp;<i>Цель: {html_escape(purpose)}</i>")
+        question_blocks.append("\n".join(block_lines))
+
+    if not question_blocks:
+        return
+
+    max_len = 3500
+    chunk_lines: list[str] = ["<b>Вопросы:</b>"]
+    for block in question_blocks:
+        candidate = chunk_lines + [block]
+        candidate_text = "\n".join(candidate)
+        if len(candidate_text) > max_len and len(chunk_lines) > 1:
+            await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+            chunk_lines = ["<b>Вопросы (продолжение):</b>", block]
+        else:
+            if len(candidate_text) > max_len:
+                # блок слишком большой сам по себе — отправим отдельно
+                await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+                chunk_lines = ["<b>Вопросы (продолжение):</b>", block]
+            else:
+                chunk_lines.append(block)
+
+    if len(chunk_lines) > 1:
+        await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
 
 
 async def _finalize_draft(message: Message, state: FSMContext) -> None:
