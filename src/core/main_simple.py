@@ -973,6 +973,57 @@ async def send_rating_request(message: Message, request_id: int):
 # ============ КОМАНДЫ ============
 
 
+async def _try_send_welcome_media(
+    message: Message,
+    caption_html: str,
+    keyboard: InlineKeyboardMarkup,
+) -> bool:
+    """Send welcome media via cached file id or local file when available."""
+    if not WELCOME_MEDIA:
+        return False
+
+    media_type = (WELCOME_MEDIA.media_type or "video").lower()
+    media_source = None
+    supports_streaming = False
+
+    if WELCOME_MEDIA.file_id:
+        media_source = WELCOME_MEDIA.file_id
+        supports_streaming = media_type == "video"
+    elif WELCOME_MEDIA.path and WELCOME_MEDIA.path.exists():
+        media_source = FSInputFile(WELCOME_MEDIA.path)
+        supports_streaming = media_type == "video"
+    else:
+        return False
+
+    try:
+        if media_type == "animation":
+            await message.answer_animation(
+                animation=media_source,
+                caption=caption_html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        elif media_type == "photo":
+            await message.answer_photo(
+                photo=media_source,
+                caption=caption_html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        else:
+            await message.answer_video(
+                video=media_source,
+                caption=caption_html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+                supports_streaming=supports_streaming,
+            )
+        return True
+    except Exception as media_error:  # noqa: BLE001
+        logger.warning("Failed to send welcome media: %s", media_error)
+        return False
+
+
 async def cmd_start(message: Message):
     """Единственная команда - приветствие"""
     if not message.from_user:
@@ -1048,23 +1099,19 @@ async def cmd_start(message: Message):
         ]
     )
 
-    if WELCOME_MEDIA and WELCOME_MEDIA.path.exists():
-        try:
-            await message.answer_video(
-                video=FSInputFile(WELCOME_MEDIA.path),
-                caption=sanitize_telegram_html(welcome_raw),  # текст под видео
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-                supports_streaming=True  # чтобы можно было смотреть без полного скачивания
-            )
-            return
-        except Exception as video_error:
-            logger.warning("Failed to send welcome video: %s", video_error)
+    welcome_html = sanitize_telegram_html(welcome_raw)
 
+    if await _try_send_welcome_media(
+        message=message,
+        caption_html=welcome_html,
+        keyboard=keyboard,
+    ):
+        logger.info("User %s started bot", message.from_user.id)
+        return
 
     # финальный фолбэк — просто текст
     await message.answer(
-        sanitize_telegram_html(welcome_raw),
+        welcome_html,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
     )
