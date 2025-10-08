@@ -3653,9 +3653,15 @@ async def handle_doc_draft_cancel(callback: CallbackQuery, state: FSMContext) ->
         await callback.answer()
 
 
-async def handle_doc_draft_request(message: Message, state: FSMContext) -> None:
+async def handle_doc_draft_request(
+    message: Message,
+    state: FSMContext,
+    *,
+    text_override: str | None = None,
+) -> None:
     """Обработка исходного запроса юриста."""
-    request_text = (message.text or "").strip()
+    source_text = text_override if text_override is not None else message.text
+    request_text = (source_text or "").strip()
     if not request_text:
         await message.answer(f"{Emoji.WARNING} Опишите, пожалуйста, какой документ нужен")
         return
@@ -3703,7 +3709,12 @@ async def handle_doc_draft_request(message: Message, state: FSMContext) -> None:
         await _finalize_draft(message, state)
 
 
-async def handle_doc_draft_answer(message: Message, state: FSMContext) -> None:
+async def handle_doc_draft_answer(
+    message: Message,
+    state: FSMContext,
+    *,
+    text_override: str | None = None,
+) -> None:
     """Обработка ответов юриста на уточняющие вопросы."""
     data = await state.get_data()
     plan = data.get("draft_plan") or {}
@@ -3716,7 +3727,8 @@ async def handle_doc_draft_answer(message: Message, state: FSMContext) -> None:
         await _finalize_draft(message, state)
         return
 
-    answer_text = (message.text or "").strip()
+    source_text = text_override if text_override is not None else message.text
+    answer_text = (source_text or "").strip()
     if not answer_text:
         await message.answer(f"{Emoji.WARNING} Пожалуйста, введите ответ")
         return
@@ -3734,6 +3746,80 @@ async def handle_doc_draft_answer(message: Message, state: FSMContext) -> None:
         await message.answer(f"{Emoji.LOADING} Спасибо! Формирую документ…")
         await _finalize_draft(message, state)
 
+
+
+
+async def _extract_doc_voice_text(message: Message) -> str | None:
+    """Распознать голосовое сообщение в сценарии составления документа."""
+    if not message.voice:
+        return None
+
+    if audio_service is None:
+        await message.answer(f"{Emoji.WARNING} Голосовой режим недоступен, отправьте текстовое сообщение.")
+        return None
+
+    try:
+        voice_enabled = settings().voice_mode_enabled
+    except RuntimeError:
+        voice_enabled = bool(getattr(config, "voice_mode_enabled", False))
+
+    if not voice_enabled:
+        await message.answer(f"{Emoji.WARNING} Голосовой режим сейчас выключен. Пришлите ответ текстом.")
+        return None
+
+    if not message.bot:
+        await message.answer(f"{Emoji.WARNING} Не удалось получить доступ к боту. Ответьте текстом.")
+        return None
+
+    temp_voice_path: Path | None = None
+    try:
+        await audio_service.ensure_short_enough(message.voice.duration)
+        from src.bot.typing_indicator import typing_action
+
+        async with typing_action(message.bot, message.chat.id, "record_voice"):
+            temp_voice_path = await _download_voice_to_temp(message)
+            transcript = await audio_service.transcribe(temp_voice_path)
+    except ValueError as duration_error:
+        logger.warning("Document draft voice input too long: %s", duration_error)
+        await message.answer(
+            f"{Emoji.WARNING} Голосовое сообщение слишком длинное. Максимальная длительность — {audio_service.max_duration_seconds} секунд."
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to transcribe voice for document draft: %s", exc)
+        await message.answer(
+            f"{Emoji.ERROR} Не получилось распознать голос. Отправьте ответ текстом, пожалуйста."
+        )
+        return None
+    finally:
+        with suppress(Exception):
+            if temp_voice_path:
+                temp_voice_path.unlink()
+
+    preview = html_escape(transcript[:500])
+    if len(transcript) > 500:
+        preview += "…"
+    await message.answer(
+        f"{Emoji.MICROPHONE} Распознанный текст:\n<i>{preview}</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    return transcript
+
+
+async def handle_doc_draft_request_voice(message: Message, state: FSMContext) -> None:
+    """Обработать голосовой запрос на составление документа."""
+    transcript = await _extract_doc_voice_text(message)
+    if transcript is None:
+        return
+    await handle_doc_draft_request(message, state, text_override=transcript)
+
+
+async def handle_doc_draft_answer_voice(message: Message, state: FSMContext) -> None:
+    """Обработать голосовой ответ в сценарии уточняющих вопросов."""
+    transcript = await _extract_doc_voice_text(message)
+    if transcript is None:
+        return
+    await handle_doc_draft_answer(message, state, text_override=transcript)
 
 async def _send_next_question(message: Message, state: FSMContext, *, prefix: str) -> None:
     data = await state.get_data()
@@ -5044,7 +5130,13 @@ async def run_bot() -> None:
         handle_doc_draft_request, DocumentDraftStates.waiting_for_request, F.text
     )
     dp.message.register(
+        handle_doc_draft_request_voice, DocumentDraftStates.waiting_for_request, F.voice
+    )
+    dp.message.register(
         handle_doc_draft_answer, DocumentDraftStates.asking_details, F.text
+    )
+    dp.message.register(
+        handle_doc_draft_answer_voice, DocumentDraftStates.asking_details, F.voice
     )
     dp.message.register(
         handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
