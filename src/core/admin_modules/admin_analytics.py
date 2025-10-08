@@ -60,8 +60,32 @@ METRIC_LABELS: dict[str, str] = {
     "potential_conversions": "Потенциальные конверсии",
     "already_paid": "Уже оплатили",
     "avg_requests": "Среднее число запросов",
-    "total_vip_revenue": "Выручка от VIP-клиентов",
+    "active_subscribers": "Активных подписок",
+    "monthly_revenue_estimate": "Оценка месячной выручки",
 }
+
+PLAN_SEGMENT_DEFS: dict[str, dict[str, Any]] = {
+    "base_1m": {
+        "name": "💼 Тариф «Базовый»",
+        "button": "💼 Базовый",
+        "description": "Подписчики тарифа «Базовый»",
+        "price": 1499,
+    },
+    "standard_1m": {
+        "name": "📦 Тариф «Стандарт»",
+        "button": "📦 Стандарт",
+        "description": "Подписчики тарифа «Стандарт»",
+        "price": 2500,
+    },
+    "premium_1m": {
+        "name": "🚀 Тариф «Премиум»",
+        "button": "🚀 Премиум",
+        "description": "Подписчики тарифа «Премиум»",
+        "price": 4000,
+    },
+}
+
+PLAN_SEGMENT_ORDER: tuple[str, ...] = tuple(PLAN_SEGMENT_DEFS.keys())
 
 
 class AdminAnalytics:
@@ -93,8 +117,8 @@ class AdminAnalytics:
         # 6. New Users - новые за последние 7 дней
         segments['new_users'] = await self._get_new_users()
 
-        # 7. VIP - топ по платежам
-        segments['vip'] = await self._get_vip_users()
+        # 7. Подписки по тарифам
+        segments.update(await self._get_subscription_plan_segments())
 
         return segments
 
@@ -408,51 +432,76 @@ class AdminAnalytics:
                 metrics=metrics
             )
 
-    async def _get_vip_users(self) -> UserSegment:
-        """VIP пользователи - топ по платежам"""
+    async def _get_subscription_plan_segments(self) -> dict[str, UserSegment]:
+        """Разделение пользователей по текущему тарифному плану"""
+
+        now = int(time.time())
+        segments: dict[str, UserSegment] = {}
 
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
-                SELECT
-                    u.user_id,
-                    u.total_requests,
-                    u.subscription_until,
-                    COUNT(t.id) as payment_count,
-                    SUM(t.amount) as total_spent,
-                    MIN(t.created_at) as first_payment,
-                    MAX(t.created_at) as last_payment
-                FROM users u
-                INNER JOIN payments t ON u.user_id = t.user_id
-                    AND t.status = 'completed'
-                GROUP BY u.user_id
-                HAVING payment_count >= 2
-                ORDER BY total_spent DESC
-                LIMIT 20
-            """)
+            for plan_id, config in PLAN_SEGMENT_DEFS.items():
+                cursor = await conn.execute(
+                    """
+                    SELECT
+                        u.user_id,
+                        u.total_requests,
+                        u.subscription_until,
+                        u.subscription_requests_balance,
+                        u.subscription_last_purchase_at
+                    FROM users u
+                    WHERE u.subscription_plan = ?
+                    ORDER BY (u.subscription_last_purchase_at IS NOT NULL) DESC,
+                             u.subscription_last_purchase_at DESC,
+                             u.user_id
+                    LIMIT 50
+                    """,
+                    (plan_id,),
+                )
 
-            rows = await cursor.fetchall()
-            await cursor.close()
+                rows = await cursor.fetchall()
+                await cursor.close()
 
-            users = []
-            for row in rows:
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'subscription_until': datetime.fromtimestamp(row[2]).strftime('%Y-%m-%d'),
-                    'payment_count': row[3],
-                    'total_spent': row[4],
-                    'first_payment': datetime.fromtimestamp(row[5]).strftime('%Y-%m-%d'),
-                    'last_payment': datetime.fromtimestamp(row[6]).strftime('%Y-%m-%d')
-                })
+                users: list[dict[str, Any]] = []
+                total_requests = 0
+                active_users = 0
 
-            return UserSegment(
-                segment_id='vip',
-                name='👑 VIP-пользователи',
-                description='Топ-20 по количеству платежей',
-                user_count=len(users),
-                users=users,
-                metrics={'total_vip_revenue': sum(u['total_spent'] for u in users)}
-            )
+                for user_id, total_reqs, subscription_until, balance, last_purchase in rows:
+                    total_request_value = total_reqs or 0
+                    subscription_until_value = subscription_until or 0
+                    last_purchase_value = last_purchase or 0
+
+                    if subscription_until_value and subscription_until_value >= now:
+                        active_users += 1
+
+                    total_requests += total_request_value
+
+                    users.append({
+                        'user_id': user_id,
+                        'subscription_until': datetime.fromtimestamp(subscription_until_value).strftime('%Y-%m-%d') if subscription_until_value else '—',
+                        'last_purchase': datetime.fromtimestamp(last_purchase_value).strftime('%Y-%m-%d') if last_purchase_value else '—',
+                        'total_requests': total_request_value,
+                        'requests_balance': balance if balance is not None else '—',
+                    })
+
+                user_count = len(users)
+                avg_requests = round(total_requests / user_count, 1) if user_count else 0.0
+                monthly_revenue = active_users * config['price']
+                segment_key = f'plan_{plan_id}'
+
+                segments[segment_key] = UserSegment(
+                    segment_id=segment_key,
+                    name=config['name'],
+                    description=config['description'],
+                    user_count=user_count,
+                    users=users,
+                    metrics={
+                        'active_subscribers': active_users,
+                        'avg_requests': avg_requests,
+                        'monthly_revenue_estimate': f"{monthly_revenue:,}₽".replace(",", " "),
+                    },
+                )
+
+        return segments
 
     async def get_conversion_metrics(self) -> ConversionMetrics:
         """Метрики конверсии trial -> paid"""
@@ -596,4 +645,6 @@ __all__ = (
     "ConversionMetrics",
     "ChurnMetrics",
     "AdminAnalytics",
+    "PLAN_SEGMENT_DEFS",
+    "PLAN_SEGMENT_ORDER",
 )

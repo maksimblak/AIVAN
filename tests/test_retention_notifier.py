@@ -111,7 +111,7 @@ async def test_integration():
     """Тест 5: Проверка интеграции с main_simple.py"""
     print("\nTest 5: Checking integration with main_simple.py...")
     try:
-        with open("src/core/main_simple.py", "r", encoding="utf-8") as f:
+        with open("../src/core/main_simple.py", "r", encoding="utf-8") as f:
             content = f.read()
 
         # Проверяем наличие импорта
