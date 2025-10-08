@@ -110,6 +110,14 @@ FEATURE_LABELS = {
 
 SECTION_DIVIDER = "<code>────────────────────</code>"
 
+def _build_stats_keyboard(has_subscription: bool) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    if not has_subscription:
+        buttons.append([InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 DAY_NAMES = {
     "0": "Вс",
     "1": "Пн",
@@ -1680,7 +1688,7 @@ async def _generate_user_stats_response(
     *,
     stats: dict[str, Any] | None = None,
     user: Any | None = None,
-) -> tuple[str, InlineKeyboardMarkup | None]:
+) -> tuple[str, InlineKeyboardMarkup]:
     if db is None:
         raise RuntimeError("Database is not available")
 
@@ -1836,7 +1844,7 @@ async def _generate_user_stats_response(
                 pass
 
     text = "\n".join(lines)
-    keyboard = None
+    keyboard = _build_stats_keyboard(has_subscription)
     return text, keyboard
 
 
@@ -4880,7 +4888,7 @@ async def run_bot() -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
-            BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
+            BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
             BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
             BotCommand(command="mystats", description="📊 Моя статистика"),
             BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
