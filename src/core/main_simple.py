@@ -4078,19 +4078,24 @@ async def _send_questions_prompt(
     if not questions:
         return
 
-    lines = [f"{Emoji.MAGIC} {title}", ""]
+    lines = [
+        f"{Emoji.MAGIC} <b>{html_escape(title)}</b>",
+        "",
+        "<b>Вопросы:</b>",
+    ]
     for idx, question in enumerate(questions, 1):
-        text = question.get("text", "")
+        text = html_escape(question.get("text", ""))
         purpose = question.get("purpose")
-        lines.append(f"{idx}) {text}")
+        lines.append(f"<b>{idx})</b> {text}")
         if purpose:
-            lines.append(f"   <i>Цель: {purpose}</i>")
+            lines.append(f"&nbsp;&nbsp;&nbsp;<i>Цель: {html_escape(purpose)}</i>")
     lines.extend(
         [
             "",
-            "✍️ Напишите все ответы одним сообщением, пронумеровав их, например:",
-            "1) Ответ на первый вопрос",
-            "2) Ответ на второй вопрос",
+            "<b>Как ответить:</b>",
+            "✍️ Напишите все ответы одним сообщением, пронумеровав их:",
+            "<code>1) Ответ на первый вопрос</code>",
+            "<code>2) Ответ на второй вопрос</code>",
         ]
     )
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
