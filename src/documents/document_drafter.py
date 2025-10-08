@@ -248,38 +248,138 @@ async def generate_document(
 def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     try:
         from docx import Document  # type: ignore
+        from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
+        from docx.shared import Cm, Pt  # type: ignore
     except ImportError as exc:  # pragma: no cover
-        raise DocumentDraftingError("Для генерации DOCX требуется python-docx") from exc
+        raise DocumentDraftingError("Не удалось подготовить DOCX без пакета python-docx") from exc
 
     if not markdown.strip():
         raise DocumentDraftingError("Пустой текст документа")
 
     document = Document()
-    current_list = False
+    section = document.sections[0]
+    for attr in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
+        setattr(section, attr, Cm(2.5))
+
+    def _ensure_font(style_name: str, *, size: int, bold: bool = False, italic: bool = False, align: int | None = None) -> None:
+        try:
+            style = document.styles[style_name]
+        except KeyError:
+            return
+        font = style.font
+        font.name = "Times New Roman"
+        font.size = Pt(size)
+        font.bold = bold
+        font.italic = italic
+        if style.element.rPr is not None:
+            r_fonts = style.element.rPr.rFonts
+            if r_fonts is not None:
+                r_fonts.set(qn("w:eastAsia"), "Times New Roman")
+        paragraph_format = getattr(style, "paragraph_format", None)
+        if paragraph_format:
+            paragraph_format.space_after = Pt(6)
+            if align is not None:
+                paragraph_format.alignment = align
+
+    normal_style = document.styles["Normal"]
+    normal_font = normal_style.font
+    normal_font.name = "Times New Roman"
+    normal_font.size = Pt(12)
+    if normal_style.element.rPr is not None:
+        r_fonts = normal_style.element.rPr.rFonts
+        if r_fonts is not None:
+            r_fonts.set(qn("w:eastAsia"), "Times New Roman")
+    normal_paragraph = normal_style.paragraph_format
+    normal_paragraph.space_after = Pt(6)
+    normal_paragraph.first_line_indent = Cm(1.25)
+    normal_paragraph.line_spacing = 1.5
+
+    _ensure_font("Title", size=16, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    _ensure_font("Heading 1", size=14, bold=True)
+    _ensure_font("Heading 2", size=13, bold=True)
+    _ensure_font("Heading 3", size=12, bold=True)
+
+    def _add_runs(paragraph, text: str) -> None:
+        pattern = re.compile(r"(\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_|`.+?`)", re.DOTALL)
+        for chunk in pattern.split(text):
+            if not chunk:
+                continue
+            run = paragraph.add_run()
+            if chunk.startswith(("**", "__")) and chunk.endswith(chunk[:2]):
+                run.text = chunk[2:-2]
+                run.bold = True
+            elif chunk.startswith(("*", "_")) and chunk.endswith(chunk[0]):
+                run.text = chunk[1:-1]
+                run.italic = True
+            elif chunk.startswith("`") and chunk.endswith("`"):
+                run.text = chunk[1:-1]
+                run.font.name = "Consolas"
+                run.font.size = Pt(11)
+            else:
+                run.text = chunk
+
+    list_mode: str | None = None
 
     for raw_line in markdown.splitlines():
         line = raw_line.rstrip()
+
         if not line:
-            if current_list:
-                current_list = False
             document.add_paragraph("")
+            list_mode = None
             continue
 
         if line.startswith("# "):
-            document.add_heading(line[2:].strip(), level=1)
-            current_list = False
-        elif line.startswith("## "):
-            document.add_heading(line[3:].strip(), level=2)
-            current_list = False
-        elif line.startswith("### "):
-            document.add_heading(line[4:].strip(), level=3)
-            current_list = False
-        elif line.startswith(('- ', '* ')):
-            document.add_paragraph(line[2:].strip(), style="List Bullet")
-            current_list = True
-        else:
-            document.add_paragraph(line)
-            current_list = False
+            content = line[2:].strip()
+            title_paragraph = document.add_paragraph(style="Title")
+            title_paragraph.paragraph_format.space_after = Pt(12)
+            title_paragraph.paragraph_format.keep_with_next = True
+            title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _add_runs(title_paragraph, content.upper())
+            list_mode = None
+            continue
+
+        if line.startswith("## "):
+            content = line[3:].strip()
+            paragraph = document.add_paragraph(style="Heading 1")
+            paragraph.paragraph_format.keep_with_next = True
+            paragraph.paragraph_format.space_before = Pt(12)
+            _add_runs(paragraph, content)
+            list_mode = None
+            continue
+
+        if line.startswith("### "):
+            content = line[4:].strip()
+            paragraph = document.add_paragraph(style="Heading 2")
+            paragraph.paragraph_format.keep_with_next = True
+            paragraph.paragraph_format.space_before = Pt(10)
+            _add_runs(paragraph, content)
+            list_mode = None
+            continue
+
+        bullet_match = re.match(r"^[-*]\s+(.*)", line)
+        number_match = re.match(r"^\d+[.)]\s+(.*)", line)
+        if bullet_match:
+            paragraph = document.add_paragraph(style="List Bullet")
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.left_indent = Cm(0.75)
+            _add_runs(paragraph, bullet_match.group(1).strip())
+            list_mode = "bullet"
+            continue
+        if number_match:
+            paragraph = document.add_paragraph(style="List Number")
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.left_indent = Cm(0.75)
+            _add_runs(paragraph, number_match.group(1).strip())
+            list_mode = "number"
+            continue
+
+        paragraph = document.add_paragraph(style="Normal")
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        if list_mode:
+            paragraph.paragraph_format.first_line_indent = Cm(1.25)
+        _add_runs(paragraph, line.strip())
+        list_mode = None
 
     document.save(output_path)
 
