@@ -390,6 +390,7 @@ def format_plan_summary(plan: DraftPlan) -> str:
     title = (plan.title or "Документ").strip()
     lines.append(f"📄 Документ: {title}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
 
     # Context notes are kept internal, not displayed to users
     # if plan.notes:
@@ -406,7 +407,14 @@ def format_plan_summary(plan: DraftPlan) -> str:
 
     lines.append(f"❓ Уточняющих вопросов: {len(plan.questions)}")
     if plan.questions:
-        lines.append("💬 Ответьте на них одним сообщением, следуя подсказке ниже.")
+        lines.append("")
+        lines.append("💡 Как отвечать:")
+        lines.append("✅ Напишите все ответы одним сообщением")
+        lines.append("")
+        lines.append("Варианты оформления:")
+        lines.append("  1) Первый ответ")
+        lines.append("  2) Второй ответ")
+        lines.append("  или разделяйте пустой строкой")
     else:
         lines.append("✅ Дополнительных уточнений не требуется — можно формировать документ.")
 

@@ -4244,29 +4244,13 @@ async def _send_questions_prompt(
     if not question_blocks:
         return
 
-    # Объединяем заголовок с инструкциями и вопросы в одно сообщение
-    header_lines = [
-        f"📋 <b>{html_escape(title)}</b>",
-        f"<code>{'━' * 35}</code>\n",
-
-        f"<b>💡 Как отвечать:</b>",
-        f"✅ Напишите все ответы <b>одним сообщением</b>\n",
-
-        f"<b>Варианты оформления:</b>",
-        f"  <code>1) Первый ответ</code>",
-        f"  <code>2) Второй ответ</code>",
-        f"  <i>или разделяйте пустой строкой</i>\n",
-
-        f"<code>{'━' * 35}</code>\n",
-        f"<b>Вопросы:</b>",
-    ]
-
+    # Только список вопросов (инструкция уже в сообщении выше)
     max_len = 3500
-    chunk_lines: list[str] = header_lines.copy()
+    chunk_lines: list[str] = ["<b>Вопросы:</b>"]
     for block in question_blocks:
         candidate = chunk_lines + [block]
         candidate_text = "\n".join(candidate)
-        if len(candidate_text) > max_len and len(chunk_lines) > len(header_lines):
+        if len(candidate_text) > max_len and len(chunk_lines) > 1:
             await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
             chunk_lines = ["<b>Вопросы (продолжение):</b>", block]
         else:
