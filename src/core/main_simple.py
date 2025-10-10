@@ -3811,11 +3811,35 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
     try:
         await state.clear()
         await state.set_state(DocumentDraftStates.waiting_for_request)
+
         intro_text = (
-            f"{Emoji.MAGIC} <b>Создание юридического документа</b>\n\n"
-            "Кратко опишите, какой документ нужен и для какой ситуации. "
-            "После этого я задам нужные уточнения и подготовлю проект в формате DOCX."
+            f"✨ <b>Создание юридического документа</b>\n"
+            f"<code>{'━' * 35}</code>\n\n"
+
+            f"📋 <b>Как это работает:</b>\n\n"
+
+            f"<b>1️⃣ Опишите задачу</b>\n"
+            f"   └ Расскажите, какой документ нужен\n\n"
+
+            f"<b>2️⃣ Отвечайте на вопросы</b>\n"
+            f"   └ Я уточню детали для точности\n\n"
+
+            f"<b>3️⃣ Получите DOCX</b>\n"
+            f"   └ Готовый документ за минуту\n\n"
+
+            f"<code>{'━' * 35}</code>\n\n"
+
+            f"💡 <i>Совет: Опишите ситуацию максимально подробно — "
+            f"это поможет создать точный документ с первого раза</i>\n\n"
+
+            f"<b>Примеры запросов:</b>\n"
+            f"• Исковое заявление о взыскании долга\n"
+            f"• Договор оказания юридических услуг\n"
+            f"• Жалоба в Роспотребнадзор\n\n"
+
+            f"👇 <b>Опишите, что нужно создать:</b>"
         )
+
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=f"{Emoji.BACK} Отмена", callback_data="doc_draft_cancel")]]
         )
@@ -3830,9 +3854,14 @@ async def handle_doc_draft_cancel(callback: CallbackQuery, state: FSMContext) ->
     """Отмена процесса создания документа."""
     await state.clear()
     with suppress(Exception):
-        await callback.message.answer(f"{Emoji.BACK} Создание документа отменено")
+        await callback.message.answer(
+            f"🚫 <b>Создание документа отменено</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"💡 Вы можете начать заново в любой момент",
+            parse_mode=ParseMode.HTML
+        )
     with suppress(Exception):
-        await callback.answer()
+        await callback.answer("Отменено")
 
 
 async def handle_doc_draft_request(
@@ -3845,29 +3874,73 @@ async def handle_doc_draft_request(
     source_text = text_override if text_override is not None else message.text
     request_text = (source_text or "").strip()
     if not request_text:
-        await message.answer(f"{Emoji.WARNING} Опишите, пожалуйста, какой документ нужен")
+        await message.answer(
+            f"⚠️ <b>Пустой запрос</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"📝 Пожалуйста, опишите какой документ нужен\n\n"
+            f"<i>Например:</i>\n"
+            f"• Договор аренды квартиры\n"
+            f"• Исковое заявление о возврате товара\n"
+            f"• Претензия в управляющую компанию",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     if openai_service is None:
-        await message.answer(f"{Emoji.ERROR} Сервис генерации документов временно недоступен. Попробуйте позже.")
+        await message.answer(
+            f"❌ <b>Сервис недоступен</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"⚠️ Генерация документов временно недоступна\n"
+            f"🔄 Попробуйте позже или обратитесь к администратору",
+            parse_mode=ParseMode.HTML
+        )
         await state.clear()
         return
 
     # Показываем индикатор "печатает"
     await send_typing_once(message.bot, message.chat.id, "typing")
 
-    status_msg = await message.answer(f"{Emoji.LOADING} Анализирую запрос…")
+    # Красивый статус-индикатор
+    status_msg = await message.answer(
+        f"⚙️ <b>Анализирую запрос...</b>\n"
+        f"<code>{'▰' * 8}{'▱' * 12}</code>\n\n"
+        f"🔍 Определяю тип документа\n"
+        f"📝 Формирую план вопросов\n"
+        f"✨ Подготавливаю структуру",
+        parse_mode=ParseMode.HTML
+    )
+
     try:
         plan = await plan_document(openai_service, request_text)
+
+        # Обновляем статус на успешный
+        with suppress(Exception):
+            await status_msg.edit_text(
+                f"✅ <b>Анализ завершен!</b>\n"
+                f"<code>{'▰' * 20}</code>\n\n"
+                f"📋 План документа готов",
+                parse_mode=ParseMode.HTML
+            )
+            await asyncio.sleep(0.5)  # Короткая пауза для визуального эффекта
     except DocumentDraftingError as err:
         with suppress(Exception):
-            await status_msg.edit_text(f"{Emoji.ERROR} Не получилось составить план вопросов: {err}")
+            await status_msg.edit_text(
+                f"❌ <b>Ошибка анализа</b>\n"
+                f"<code>{'▰' * 5}{'▱' * 15}</code>\n\n"
+                f"⚠️ {err}",
+                parse_mode=ParseMode.HTML
+            )
         await state.clear()
         return
     except Exception as exc:  # noqa: BLE001
         logger.error("Ошибка планирования документа: %s", exc, exc_info=True)
         with suppress(Exception):
-            await status_msg.edit_text(f"{Emoji.ERROR} Что-то пошло не так при обращении к модели")
+            await status_msg.edit_text(
+                f"❌ <b>Ошибка обращения к ИИ</b>\n"
+                f"<code>{'▰' * 5}{'▱' * 15}</code>\n\n"
+                f"🔄 Попробуйте еще раз",
+                parse_mode=ParseMode.HTML
+            )
         await state.clear()
         return
     else:
@@ -3894,7 +3967,13 @@ async def handle_doc_draft_request(
         )
     else:
         await state.set_state(DocumentDraftStates.generating)
-        await message.answer(f"{Emoji.LOADING} Деталей достаточно, формирую документ…")
+        await message.answer(
+            f"✅ <b>Информации достаточно!</b>\n"
+            f"<code>{'▰' * 20}</code>\n\n"
+            f"🚀 Приступаю к формированию документа\n"
+            f"⏱ Это займет около минуты",
+            parse_mode=ParseMode.HTML
+        )
         await _finalize_draft(message, state)
 
 
@@ -3911,7 +3990,12 @@ async def handle_doc_draft_answer(
     index = data.get("current_question_index", 0)
 
     if index >= len(questions):
-        await message.answer(f"{Emoji.WARNING} Все ответы уже получены, приступаю к формированию документа")
+        await message.answer(
+            f"✅ <b>Ответы получены</b>\n"
+            f"<code>{'▰' * 20}</code>\n\n"
+            f"🚀 Приступаю к формированию документа",
+            parse_mode=ParseMode.HTML
+        )
         await state.set_state(DocumentDraftStates.generating)
         await _finalize_draft(message, state)
         return
@@ -3919,7 +4003,11 @@ async def handle_doc_draft_answer(
     source_text = text_override if text_override is not None else message.text
     answer_text = (source_text or "").strip()
     if not answer_text:
-        await message.answer(f"{Emoji.WARNING} Пожалуйста, введите ответ")
+        await message.answer(
+            f"⚠️ <b>Пустой ответ</b>\n\n"
+            f"📝 Пожалуйста, введите ваш ответ на вопрос",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     answers = data.get("draft_answers") or []
@@ -3946,24 +4034,28 @@ async def handle_doc_draft_answer(
             if index < len(questions):
                 missing_numbers = ", ".join(str(i) for i in range(index + 1, len(questions) + 1))
                 await message.answer(
-                    f"{Emoji.WARNING} Ответы получены не полностью. Остались вопросы: {missing_numbers}.\n"
-                    "Добавьте недостающие ответы одним сообщением — можно отделять их пустой строкой или начинать с номера/маркировки.",
+                    f"⚠️ <b>Неполные ответы</b>\n"
+                    f"<code>{'─' * 30}</code>\n\n"
+                    f"✅ Получено ответов: <b>{index}</b>\n"
+                    f"❌ Осталось вопросов: <b>{len(questions) - index}</b>\n"
+                    f"📝 Номера вопросов: {missing_numbers}\n\n"
+                    f"<b>Как дополнить:</b>\n"
+                    f"• Отправьте недостающие ответы одним сообщением\n"
+                    f"• Отделяйте пустой строкой или нумеруйте",
                     parse_mode=ParseMode.HTML,
                 )
             else:
                 await state.set_state(DocumentDraftStates.generating)
                 await message.answer(
-                    "\n".join(
-                        [
-                            f"{Emoji.LOADING} <b>Формирую документ</b>",
-                            "",
-                            "┌────────────────────┐",
-                            "⏳ <i>Проверяю ответы…</i>",
-                            "✍️ <i>Расставляю аргументы…</i>",
-                            "📄 <i>Собираю итоговый текст…</i>",
-                            "└────────────────────┘",
-                        ]
-                    ),
+                    f"⚙️ <b>Формирование документа...</b>\n"
+                    f"<code>{'▰' * 20}</code>\n\n"
+
+                    f"✅ Все ответы получены\n"
+                    f"🔄 Анализирую информацию\n"
+                    f"📝 Подготавливаю текст\n"
+                    f"📄 Формирую DOCX файл\n\n"
+
+                    f"<i>⏱ Обычно занимает 30-60 секунд</i>",
                     parse_mode=ParseMode.HTML,
                 )
                 await _finalize_draft(message, state)
@@ -3971,9 +4063,20 @@ async def handle_doc_draft_answer(
         # если не удалось сопоставить ни одного ответа — переходим к обычной обработке
 
     await message.answer(
-        f"{Emoji.WARNING} Пожалуйста, отправьте ответы одним сообщением. Можно:\n"
-        "- отделять каждый ответ пустой строкой\n"
-        "- начать строки с номера или маркера (1), 2), - )",
+        f"⚠️ <b>Неверный формат ответов</b>\n"
+        f"<code>{'─' * 30}</code>\n\n"
+        f"📝 Отправьте ответы <b>одним сообщением</b>\n\n"
+        f"<b>Варианты форматирования:</b>\n\n"
+        f"<b>Вариант 1 - Нумерация:</b>\n"
+        f"<code>1) Первый ответ</code>\n"
+        f"<code>2) Второй ответ</code>\n"
+        f"<code>3) Третий ответ</code>\n\n"
+        f"<b>Вариант 2 - Пустые строки:</b>\n"
+        f"<code>Первый ответ</code>\n"
+        f"<code></code>\n"
+        f"<code>Второй ответ</code>\n"
+        f"<code></code>\n"
+        f"<code>Третий ответ</code>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -4119,26 +4222,41 @@ async def _send_questions_prompt(
     if not questions:
         return
 
+    # Красивый заголовок с инструкциями
     header_lines = [
-        f"{Emoji.MAGIC} <b>{html_escape(title)}</b>",
-        "",
-        "<b>Как ответить:</b>",
-        "✍️ Напишите все ответы одним сообщением. Можно:",
-        "• разделять ответы пустой строкой",
-        "• начинать строки с номера или маркера",
-        "<code>1) Ответ на первый вопрос</code>",
-        "<code>- Ответ на второй вопрос</code>",
+        f"📋 <b>{html_escape(title)}</b>",
+        f"<code>{'━' * 35}</code>\n",
+
+        f"<b>💡 Как отвечать:</b>",
+        f"✅ Напишите все ответы <b>одним сообщением</b>\n",
+
+        f"<b>Варианты оформления:</b>",
+        f"  <code>1) Первый ответ</code>",
+        f"  <code>2) Второй ответ</code>",
+        f"  <i>или разделяйте пустой строкой</i>\n",
+
+        f"<code>{'━' * 35}</code>",
     ]
 
     await message.answer("\n".join(header_lines), parse_mode=ParseMode.HTML)
 
+    # Форматируем вопросы с улучшенным дизайном
     question_blocks: list[str] = []
     for idx, question in enumerate(questions, 1):
         text = html_escape(question.get("text", ""))
         purpose = question.get("purpose")
-        block_lines = [f"<b>{idx})</b> {text}"]
+
+        # Красивая рамка для каждого вопроса
+        block_lines = [
+            f"<b>❓ Вопрос {idx}</b>",
+            f"<code>{'─' * 30}</code>",
+            f"{text}"
+        ]
+
         if purpose:
-            block_lines.append(f"&nbsp;&nbsp;&nbsp;<i>Цель: {html_escape(purpose)}</i>")
+            block_lines.append(f"\n<i>📌 Цель: {html_escape(purpose)}</i>")
+
+        block_lines.append(f"<code>{'─' * 30}</code>")
         question_blocks.append("\n".join(block_lines))
 
     if not question_blocks:
@@ -4249,26 +4367,56 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    # Показываем информацию о проверке и предупреждения
     notes: list[str] = []
     if result.validated:
-        notes.append("Проверено:\n- " + "\n- ".join(result.validated))
+        validated_items = "\n".join([f"  ✓ {item}" for item in result.validated])
+        notes.append(
+            f"✅ <b>Проверено:</b>\n{validated_items}"
+        )
+
     if result.issues:
-        notes.append(f"{Emoji.WARNING} На что обратить внимание:\n- " + "\n- ".join(result.issues))
+        issues_items = "\n".join([f"  ⚠️ {item}" for item in result.issues])
+        notes.append(
+            f"⚠️ <b>На что обратить внимание:</b>\n{issues_items}"
+        )
+
     if notes:
-        await message.answer("\n\n".join(notes))
+        info_text = (
+            f"<code>{'━' * 35}</code>\n"
+            f"{chr(10).join(notes)}\n"
+            f"<code>{'━' * 35}</code>"
+        )
+        await message.answer(info_text, parse_mode=ParseMode.HTML)
 
-
+    # Создаем и отправляем документ
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
         tmp_path = Path(tmp_file.name)
     try:
         build_docx_from_markdown(result.markdown, str(tmp_path))
         display_title, caption, filename = _prepare_document_titles(result.title or title)
+
+        # Красивое сообщение с документом
+        final_caption = (
+            f"📄 <b>{display_title}</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"✨ Документ успешно создан!\n"
+            f"📎 Формат: DOCX\n\n"
+            f"<i>💡 Проверьте содержимое и при необходимости внесите правки</i>"
+        )
+
         await message.answer_document(
             FSInputFile(str(tmp_path), filename=filename),
-            caption=caption,
+            caption=final_caption,
+            parse_mode=ParseMode.HTML
         )
     except DocumentDraftingError as err:
-        await message.answer(f"{Emoji.ERROR} Не удалось сформировать DOCX: {err}")
+        await message.answer(
+            f"❌ <b>Ошибка формирования DOCX</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"⚠️ {err}",
+            parse_mode=ParseMode.HTML
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
     await state.clear()
