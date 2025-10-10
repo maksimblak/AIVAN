@@ -3809,6 +3809,9 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
         return
 
     try:
+        # Показываем typing indicator для лучшего UX
+        await send_typing_once(callback.bot, callback.message.chat.id, "typing")
+
         await state.clear()
         await state.set_state(DocumentDraftStates.waiting_for_request)
 
@@ -3984,6 +3987,9 @@ async def handle_doc_draft_answer(
     text_override: str | None = None,
 ) -> None:
     """Обработка ответов юриста на уточняющие вопросы."""
+    # Показываем typing indicator при обработке ответов
+    await send_typing_once(message.bot, message.chat.id, "typing")
+
     data = await state.get_data()
     plan = data.get("draft_plan") or {}
     questions = plan.get("questions") or []
@@ -4221,6 +4227,9 @@ async def _send_questions_prompt(
 ) -> None:
     if not questions:
         return
+
+    # Показываем typing indicator перед отправкой вопросов
+    await send_typing_once(message.bot, message.chat.id, "typing")
 
     # Красивый заголовок с инструкциями
     header_lines = [
@@ -4478,6 +4487,9 @@ async def handle_document_processing(callback: CallbackQuery):
 async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора операции с документом"""
     try:
+        # Показываем typing indicator
+        await send_typing_once(callback.bot, callback.message.chat.id, "typing")
+
         operation = callback.data.replace("doc_operation_", "")
         operation_info = document_manager.get_operation_info(operation)
 
