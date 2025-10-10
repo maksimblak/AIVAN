@@ -1268,7 +1268,13 @@ def _profile_menu_text(
     return "\n".join(card_lines)
 
 
-def _profile_menu_keyboard(subscribe_label: str | None = None) -> InlineKeyboardMarkup:
+def _profile_menu_keyboard(subscribe_label: str | None = None, *, has_subscription: bool = False) -> InlineKeyboardMarkup:
+    if has_subscription:
+        change_button = InlineKeyboardButton(text="🔄 Сменить тариф", callback_data="buy_catalog")
+        cancel_label = subscribe_label or "❌ Отменить подписку"
+        cancel_button = InlineKeyboardButton(text=cancel_label, callback_data="cancel_subscription")
+        return InlineKeyboardMarkup(inline_keyboard=[[change_button], [cancel_button]])
+
     first_label = subscribe_label or "💳 Оформить подписку"
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -2153,6 +2159,55 @@ async def handle_get_subscription_callback(callback: CallbackQuery):
             f"{Emoji.WARNING} Не удалось показать каталог подписок. Попробуйте позже.",
             parse_mode=ParseMode.HTML,
         )
+
+
+
+async def handle_cancel_subscription_callback(callback: CallbackQuery):
+    """Показывает инструкции по отмене активной подписки."""
+    if not callback.from_user or callback.message is None:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+
+    try:
+        await callback.answer()
+
+        if db is None:
+            message_text = (
+                f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
+                "Сервис управления подписками временно недоступен. Напишите в поддержку — команда /help."
+            )
+        else:
+            user_id = callback.from_user.id
+            has_subscription = await db.has_active_subscription(user_id)
+            if not has_subscription:
+                message_text = (
+                    f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
+                    "Подписка уже не активна. Вы можете подключить новый тариф в каталоге."
+                )
+            else:
+                message_text = (
+                    f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
+                    "Чтобы остановить автоматические списания, отправьте запрос в поддержку — команда /help.\n"
+                    "Укажите ID пользователя и номер последнего платежа."
+                )
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📦 Каталог тарифов", callback_data="buy_catalog")],
+                [InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info")],
+                [InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")],
+            ]
+        )
+
+        await callback.message.edit_text(
+            message_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error in handle_cancel_subscription_callback: %s", exc, exc_info=True)
+        await callback.answer("❌ Не удалось обработать запрос")
 
 
 async def _send_rub_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
@@ -3357,7 +3412,7 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                 hint_text=hint_text,
             ),
             parse_mode=ParseMode.HTML,
-            reply_markup=_profile_menu_keyboard(subscribe_label),
+            reply_markup=_profile_menu_keyboard(subscribe_label, has_subscription=has_subscription),
         )
 
     except Exception as e:
@@ -5630,6 +5685,7 @@ async def run_bot() -> None:
     # Обработчики профиля
     dp.callback_query.register(handle_my_stats_callback, F.data == "my_stats")
     dp.callback_query.register(handle_get_subscription_callback, F.data == "get_subscription")
+    dp.callback_query.register(handle_cancel_subscription_callback, F.data == "cancel_subscription")
     dp.callback_query.register(handle_buy_catalog_callback, F.data == "buy_catalog")
     dp.callback_query.register(handle_verify_payment_callback, F.data.startswith("verify_payment:"))
     dp.callback_query.register(handle_select_plan_callback, F.data.startswith("select_plan:"))
