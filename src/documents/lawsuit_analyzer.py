@@ -161,7 +161,11 @@ class LawsuitAnalyzer(DocumentProcessor):
             "confidence": str(payload.get("confidence") or "").strip(),
         }
 
-        await _notify("analysis_ready", 85.0, confidence=analysis.get("confidence"))
+        confidence_label = analysis.get("confidence")
+        if confidence_label:
+            await _notify("analysis_ready", 85.0, note=f"Уверенность: {confidence_label}")
+        else:
+            await _notify("analysis_ready", 85.0)
 
         markdown_report = self._build_markdown_report(analysis)
 
@@ -221,4 +225,3 @@ class LawsuitAnalyzer(DocumentProcessor):
             lines.extend(["", f"_Уровень уверенности анализа: {confidence}_"])
 
         return "\n".join(lines).strip()
-
