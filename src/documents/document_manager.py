@@ -62,13 +62,13 @@ class DocumentManager:
                 "formats": ["TXT", "JSON"],
                 "processor": self.risk_analyzer,
             },
-            "chat": {
-                "emoji": "💬",
-                "name": "Чат с документом",
-                "description": "Задавайте произвольные вопросы по содержимому",
-                "formats": ["interactive"],
-                "processor": self.chat,
-            },
+            # "chat": {
+            #     "emoji": "💬",
+            #     "name": "Чат с документом",
+            #     "description": "Задавайте произвольные вопросы по содержимому",
+            #     "formats": ["interactive"],
+            #     "processor": self.chat,
+            # },
             "anonymize": {
                 "emoji": "🕶️",
                 "name": "Анонимизация",
@@ -76,13 +76,13 @@ class DocumentManager:
                 "formats": ["TXT", "JSON"],
                 "processor": self.anonymizer,
             },
-            "translate": {
-                "emoji": "🌐",
-                "name": "Перевод текста",
-                "description": "Перевод текста на выбранный язык",
-                "formats": ["TXT"],
-                "processor": self.translator,
-            },
+            # "translate": {
+            #     "emoji": "🌐",
+            #     "name": "Перевод текста",
+            #     "description": "Перевод текста на выбранный язык",
+            #     "formats": ["TXT"],
+            #     "processor": self.translator,
+            # },
             "ocr": {
                 "emoji": "📷",
                 "name": "Распознание текста",
@@ -453,4 +453,3 @@ class DocumentManager:
 
     def _format_generic_result(self, data: Dict[str, Any], message: str) -> str:
         return html_escape(message or "Готово")
-
