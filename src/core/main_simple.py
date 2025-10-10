@@ -4441,13 +4441,13 @@ async def handle_document_processing(callback: CallbackQuery):
         # Получаем операции и создаем кнопки
         buttons.append([
             InlineKeyboardButton(
-                text="⚖️ Полный анализ искового заявления",
+                text="⚖️ Анализ искового заявления",
                 callback_data="doc_operation_lawsuit_analysis",
             )
         ])
         buttons.append([
             InlineKeyboardButton(
-                text=f"{Emoji.MAGIC} Конструктор юридического документа",
+                text=f"{Emoji.MAGIC} Создание юридического документа",
                 callback_data="doc_draft_start",
             )
         ])
