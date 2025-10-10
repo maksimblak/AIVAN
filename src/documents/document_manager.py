@@ -26,6 +26,17 @@ from .summarizer import DocumentSummarizer
 from .translator import DocumentTranslator
 from .utils import TextProcessor, write_text_async
 
+_LAWSUIT_SECTION_META: dict[str, tuple[str, str]] = {
+    "demands": ("📝", "Требования"),
+    "legal_basis": ("📚", "Правовое обоснование"),
+    "evidence": ("📁", "Доказательства"),
+    "strengths": ("✅", "Сильные стороны"),
+    "risks": ("⚠️", "Риски и слабые места"),
+    "missing_elements": ("❗", "Недостающие элементы"),
+    "recommendations": ("💡", "Рекомендации"),
+    "procedural_notes": ("📅", "Процессуальные заметки"),
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +79,7 @@ class DocumentManager:
                 "emoji": "⚖️",
                 "name": "Анализ искового заявления",
                 "description": "Оценивает требования, правовую позицию и риски отказа",
-                "formats": ["TXT", "JSON"],
+                "formats": ["MD", "JSON"],
                 "processor": self.lawsuit_analyzer,
             },
             # "chat": {
@@ -325,8 +336,8 @@ class DocumentManager:
             analysis = result.data.get("analysis") or {}
             markdown = self._build_lawsuit_markdown(analysis)
             if markdown:
-                path = await self._write_export(base_name, "lawsuit_analysis", markdown, ".txt")
-                exports.append({"path": str(path), "format": "txt", "label": "Анализ"})
+                path = await self._write_export(base_name, "lawsuit_analysis", markdown, ".md")
+                exports.append({"path": str(path), "format": "md", "label": "Анализ"})
             json_payload = json.dumps(analysis, ensure_ascii=False, indent=2)
             path = await self._write_export(base_name, "lawsuit_analysis", json_payload, ".json")
             exports.append({"path": str(path), "format": "json", "label": "Анализ (JSON)"})
@@ -459,25 +470,29 @@ class DocumentManager:
                 party_lines.append(f"• Участник: {html_escape(text)}")
         if party_lines:
             lines.append("")
-            lines.append("<b>Стороны:</b>")
-            lines.append("\n".join(party_lines))
+            lines.append("<b>👥 Стороны:</b>")
+            lines.append("<br>".join(party_lines))
 
-        def _section(title: str, values: Any) -> None:
+        def _section(key: str, values: Any) -> None:
             cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
             if not cleaned:
                 return
+            icon, title = _LAWSUIT_SECTION_META[key]
             lines.append("")
-            lines.append(f"<b>{title}:</b>")
-            lines.append("\n".join(f"• {html_escape(item)}" for item in cleaned))
+            lines.append(f"<b>{icon} {title}:</b>")
+            lines.append("<br>".join(f"• {html_escape(item)}" for item in cleaned))
 
-        _section("Требования", analysis.get("demands"))
-        _section("Правовое обоснование", analysis.get("legal_basis"))
-        _section("Доказательства", analysis.get("evidence"))
-        _section("Сильные стороны", analysis.get("strengths"))
-        _section("Риски и слабые места", analysis.get("risks"))
-        _section("Недостающие элементы", analysis.get("missing_elements"))
-        _section("Рекомендации", analysis.get("recommendations"))
-        _section("Процессуальные заметки", analysis.get("procedural_notes"))
+        for section_key in (
+            "demands",
+            "legal_basis",
+            "evidence",
+            "strengths",
+            "risks",
+            "missing_elements",
+            "recommendations",
+            "procedural_notes",
+        ):
+            _section(section_key, analysis.get(section_key))
 
         confidence = str(analysis.get("confidence") or "").strip()
         if confidence:
@@ -487,6 +502,11 @@ class DocumentManager:
         if data.get("truncated"):
             lines.append("")
             lines.append("<i>⚠️ Анализ выполнен по усечённому тексту документа.</i>")
+
+        if (result_exports := data.get("exports")):
+            if result_exports:
+                lines.append("")
+                lines.append("<i>📎 Подробные файлы анализа приложены ниже.</i>")
 
         if message:
             lines.append("")
@@ -537,7 +557,7 @@ class DocumentManager:
 
         summary = str(analysis.get("summary") or "").strip()
         if summary:
-            lines.extend(["## Резюме", summary, ""])
+            lines.extend(["## ⚖️ Резюме", summary, ""])
 
         parties = analysis.get("parties") or {}
         party_lines: list[str] = []
@@ -550,25 +570,29 @@ class DocumentManager:
             if text:
                 party_lines.append(f"- Участник: {text}")
         if party_lines:
-            lines.extend(["## Стороны", *party_lines, ""])
+            lines.extend(["## 👥 Стороны", *party_lines, ""])
 
-        def append_block(title: str, values: Any) -> None:
+        def append_block(key: str, values: Any) -> None:
             cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
             if not cleaned:
                 return
-            lines.append(f"## {title}")
+            icon, title = _LAWSUIT_SECTION_META[key]
+            lines.append(f"## {icon} {title}")
             for entry in cleaned:
                 lines.append(f"- {entry}")
             lines.append("")
 
-        append_block("Требования", analysis.get("demands"))
-        append_block("Правовое обоснование", analysis.get("legal_basis"))
-        append_block("Доказательства", analysis.get("evidence"))
-        append_block("Сильные стороны", analysis.get("strengths"))
-        append_block("Риски и слабые места", analysis.get("risks"))
-        append_block("Недостающие элементы", analysis.get("missing_elements"))
-        append_block("Рекомендации", analysis.get("recommendations"))
-        append_block("Процессуальные заметки", analysis.get("procedural_notes"))
+        for section_key in (
+            "demands",
+            "legal_basis",
+            "evidence",
+            "strengths",
+            "risks",
+            "missing_elements",
+            "recommendations",
+            "procedural_notes",
+        ):
+            append_block(section_key, analysis.get(section_key))
 
         confidence = str(analysis.get("confidence") or "").strip()
         if confidence:
