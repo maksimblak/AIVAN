@@ -4439,23 +4439,32 @@ async def handle_document_processing(callback: CallbackQuery):
         buttons = []
 
         # Получаем операции и создаем кнопки
-        operation_buttons = []
+        buttons.append([
+            InlineKeyboardButton(
+                text="⚖️ Полный анализ искового заявления",
+                callback_data="doc_operation_lawsuit_analysis",
+            )
+        ])
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{Emoji.MAGIC} Конструктор юридического документа",
+                callback_data="doc_draft_start",
+            )
+        ])
+
+        secondary_buttons = []
         for op_key, op_info in operations.items():
-            if op_key in {"translate", "chat"}:
+            if op_key in {"translate", "chat", "lawsuit_analysis"}:
                 continue
             emoji = op_info.get("emoji", "📄")
             name = op_info.get("name", op_key)
-            operation_buttons.append(
+            secondary_buttons.append(
                 InlineKeyboardButton(text=f"{emoji} {name}", callback_data=f"doc_operation_{op_key}")
             )
 
-        # Размещаем кнопки по 2 в ряд
-        for i in range(0, len(operation_buttons), 2):
-            row = operation_buttons[i:i+2]
+        for i in range(0, len(secondary_buttons), 2):
+            row = secondary_buttons[i:i+2]
             buttons.append(row)
-
-        # Запуск конструктора документа отдельной кнопкой
-        buttons.append([InlineKeyboardButton(text=f"{Emoji.MAGIC} Создать документ", callback_data="doc_draft_start")])
 
         # Кнопка "Назад" в отдельном ряду
         buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
