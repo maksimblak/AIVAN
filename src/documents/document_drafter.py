@@ -391,17 +391,18 @@ def format_plan_summary(plan: DraftPlan) -> str:
     lines.append(f"📄 Документ: {title}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
-    if plan.notes:
-        lines.append("🔍 Контекст (важное):")
-        max_notes = 6
-        for note in plan.notes[:max_notes]:
-            clean = str(note).strip()
-            if clean:
-                lines.append(f"• {clean}")
-        remaining = len(plan.notes) - max_notes
-        if remaining > 0:
-            lines.append(f"… ещё {remaining} пункт(ов)")
-        lines.append("")
+    # Context notes are kept internal, not displayed to users
+    # if plan.notes:
+    #     lines.append("🔍 Контекст (важное):")
+    #     max_notes = 6
+    #     for note in plan.notes[:max_notes]:
+    #         clean = str(note).strip()
+    #         if clean:
+    #             lines.append(f"• {clean}")
+    #     remaining = len(plan.notes) - max_notes
+    #     if remaining > 0:
+    #         lines.append(f"… ещё {remaining} пункт(ов)")
+    #     lines.append("")
 
     lines.append(f"❓ Уточняющих вопросов: {len(plan.questions)}")
     if plan.questions:

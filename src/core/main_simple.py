@@ -3903,52 +3903,43 @@ async def handle_doc_draft_request(
     # Показываем индикатор "печатает"
     await send_typing_once(message.bot, message.chat.id, "typing")
 
-    # Красивый статус-индикатор
-    status_msg = await message.answer(
-        f"⚙️ <b>Анализирую запрос...</b>\n"
-        f"<code>{'▰' * 8}{'▱' * 12}</code>\n\n"
-        f"🔍 Определяю тип документа\n"
-        f"📝 Формирую план вопросов\n"
-        f"✨ Подготавливаю структуру",
-        parse_mode=ParseMode.HTML
+    # Динамический прогресс-бар с автообновлением
+    progress = ProgressStatus(
+        message.bot,
+        message.chat.id,
+        steps=[
+            {"label": "🔍 Определяю тип документа"},
+            {"label": "📝 Формирую план вопросов"},
+            {"label": "✨ Подготавливаю структуру"},
+        ],
+        show_context_toggle=False,
+        show_checklist=True,
+        auto_advance_stages=True,
+        percent_thresholds=[0, 50, 90],
     )
+
+    await progress.start(auto_cycle=True, interval=1.5)
 
     try:
         plan = await plan_document(openai_service, request_text)
 
-        # Обновляем статус на успешный
-        with suppress(Exception):
-            await status_msg.edit_text(
-                f"✅ <b>Анализ завершен!</b>\n"
-                f"<code>{'▰' * 20}</code>\n\n"
-                f"📋 План документа готов",
-                parse_mode=ParseMode.HTML
-            )
-            await asyncio.sleep(0.5)  # Короткая пауза для визуального эффекта
+        # Завершаем прогресс успешно
+        await progress.complete()
+        await asyncio.sleep(0.3)  # Короткая пауза для визуального эффекта
     except DocumentDraftingError as err:
-        with suppress(Exception):
-            await status_msg.edit_text(
-                f"❌ <b>Ошибка анализа</b>\n"
-                f"<code>{'▰' * 5}{'▱' * 15}</code>\n\n"
-                f"⚠️ {err}",
-                parse_mode=ParseMode.HTML
-            )
+        await progress.fail(note=str(err))
         await state.clear()
         return
     except Exception as exc:  # noqa: BLE001
         logger.error("Ошибка планирования документа: %s", exc, exc_info=True)
-        with suppress(Exception):
-            await status_msg.edit_text(
-                f"❌ <b>Ошибка обращения к ИИ</b>\n"
-                f"<code>{'▰' * 5}{'▱' * 15}</code>\n\n"
-                f"🔄 Попробуйте еще раз",
-                parse_mode=ParseMode.HTML
-            )
+        await progress.fail(note="Попробуйте еще раз")
         await state.clear()
         return
     else:
         with suppress(Exception):
-            await status_msg.delete()
+            # Удаляем сообщение прогресса после завершения
+            if progress.message_id:
+                await message.bot.delete_message(message.chat.id, progress.message_id)
 
     await state.update_data(
         draft_request=request_text,
