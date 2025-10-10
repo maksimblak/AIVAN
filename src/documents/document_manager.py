@@ -63,7 +63,7 @@ class DocumentManager:
         self._operations: Dict[str, Dict[str, Any]] = {
             "summarize": {
                 "emoji": "📑",
-                "name": "Саммаризация",
+                "name": "Краткая выжимка документа",
                 "description": "Краткое содержание документа и ключевые выводы",
                 "formats": ["TXT", "JSON"],
                 "processor": self.summarizer,
