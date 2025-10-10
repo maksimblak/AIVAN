@@ -43,6 +43,7 @@ class UserRecord:
     subscription_plan: str | None = None
     subscription_requests_balance: int = 0
     subscription_last_purchase_at: int = 0
+    subscription_cancelled: int = 0
 
 
 @dataclass
@@ -348,6 +349,7 @@ class DatabaseAdvanced:
                     subscription_plan TEXT,
                     subscription_requests_balance INTEGER NOT NULL DEFAULT 0,
                     subscription_last_purchase_at INTEGER NOT NULL DEFAULT 0,
+                    subscription_cancelled INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     total_requests INTEGER NOT NULL DEFAULT 0,
@@ -591,6 +593,7 @@ class DatabaseAdvanced:
             'referral_code': "ALTER TABLE users ADD COLUMN referral_code TEXT;",
             'referrals_count': "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
             'referral_bonus_days': "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
+            'subscription_cancelled': "ALTER TABLE users ADD COLUMN subscription_cancelled INTEGER NOT NULL DEFAULT 0;",
         }
         existing = await self._get_table_columns(conn, 'users')
         applied = False
@@ -634,8 +637,8 @@ class DatabaseAdvanced:
                         INSERT OR IGNORE INTO users
                         (user_id, is_admin, trial_remaining, subscription_until, subscription_plan, subscription_requests_balance,
                          subscription_last_purchase_at, created_at, updated_at, total_requests, successful_requests, failed_requests,
-                         last_request_at, referred_by, referral_code, referrals_count, referral_bonus_days)
-                        VALUES (?, ?, ?, 0, NULL, 0, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0)
+                         last_request_at, referred_by, referral_code, referrals_count, referral_bonus_days, subscription_cancelled)
+                        VALUES (?, ?, ?, 0, NULL, 0, 0, ?, ?, 0, 0, 0, 0, NULL, NULL, 0, 0, 0)
                         """,
                         (user_id, 1 if is_admin else 0, default_trial, now, now),
                     )
@@ -665,7 +668,7 @@ class DatabaseAdvanced:
                         """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
                            total_requests, successful_requests, failed_requests, last_request_at,
                            referred_by, referral_code, referrals_count, referral_bonus_days, subscription_plan,
-                           subscription_requests_balance, subscription_last_purchase_at
+                           subscription_requests_balance, subscription_last_purchase_at, subscription_cancelled
                            FROM users WHERE user_id = ?""",
                         (user_id,),
                     )
@@ -684,7 +687,7 @@ class DatabaseAdvanced:
                     await cursor.close()
                     if row:
                         # Дополняем данные значениями по умолчанию для новых полей
-                        row = row + (None, None, 0, 0, None, 0, 0)
+                        row = row + (None, None, 0, 0, None, 0, 0, 0)
 
                 if row:
                     self.query_count += 1 if self.enable_metrics else 0
@@ -706,7 +709,7 @@ class DatabaseAdvanced:
                         """SELECT user_id, is_admin, trial_remaining, subscription_until, created_at, updated_at,
                            total_requests, successful_requests, failed_requests, last_request_at,
                            referred_by, referral_code, referrals_count, referral_bonus_days, subscription_plan,
-                           subscription_requests_balance, subscription_last_purchase_at
+                           subscription_requests_balance, subscription_last_purchase_at, subscription_cancelled
                            FROM users WHERE user_id = ?""",
                         (user_id,),
                     )
@@ -725,7 +728,7 @@ class DatabaseAdvanced:
                     await cursor.close()
                     if row:
                         # Дополняем данные значениями по умолчанию для новых полей
-                        row = row + (None, None, 0, 0, None, 0, 0)
+                        row = row + (None, None, 0, 0, None, 0, 0, 0)
 
                 self.query_count += 1 if self.enable_metrics else 0
                 return UserRecord(*row) if row else None
@@ -773,6 +776,28 @@ class DatabaseAdvanced:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in has_active_subscription: {str(e)}")
 
+    async def cancel_subscription(self, user_id: int) -> bool:
+        """Отметить подписку как отменённую (отключает автопродление)."""
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                cursor = await conn.execute(
+                    """UPDATE users
+                           SET subscription_cancelled = 1, updated_at = ?
+                         WHERE user_id = ? AND subscription_cancelled = 0""",
+                    (now, user_id),
+                )
+                updated = cursor.rowcount
+                await cursor.close()
+
+                self.query_count += 1 if self.enable_metrics else 0
+                return updated > 0
+
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                raise DatabaseException(f"Database error in cancel_subscription: {str(e)}")
+
+
     async def extend_subscription_days(self, user_id: int, days: int) -> None:
         """Продление подписки"""
         async with self.pool.acquire() as conn:
@@ -796,7 +821,7 @@ class DatabaseAdvanced:
 
                 # Обновляем подписку
                 await conn.execute(
-                    "UPDATE users SET subscription_until = ?, updated_at = ? WHERE user_id = ?",
+                    "UPDATE users SET subscription_until = ?, subscription_cancelled = 0, updated_at = ? WHERE user_id = ?",
                     (new_until, now, user_id),
                 )
 
@@ -837,6 +862,7 @@ class DatabaseAdvanced:
                        subscription_plan = ?,
                        subscription_requests_balance = ?,
                        subscription_last_purchase_at = ?,
+                       subscription_cancelled = 0,
                        updated_at = ?
                      WHERE user_id = ?""",
                     (new_until, plan_id, new_balance, now, now, user_id),

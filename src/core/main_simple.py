@@ -2178,22 +2178,43 @@ async def handle_cancel_subscription_callback(callback: CallbackQuery):
             )
         else:
             user_id = callback.from_user.id
+            user_record = await db.ensure_user(
+                user_id,
+                default_trial=TRIAL_REQUESTS,
+                is_admin=user_id in ADMIN_IDS,
+            )
             has_subscription = await db.has_active_subscription(user_id)
-            if not has_subscription:
-                message_text = (
-                    f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
-                    "Подписка уже не активна. Вы можете подключить новый тариф в каталоге."
+
+            if has_subscription:
+                cancellation_applied = await db.cancel_subscription(user_id)
+                updated_record = await db.get_user(user_id)
+                if updated_record is not None:
+                    user_record = updated_record
+                until_ts = int(getattr(user_record, "subscription_until", 0) or 0)
+                until_text = (
+                    datetime.fromtimestamp(until_ts).strftime("%d.%m.%Y") if until_ts else "—"
                 )
+                if cancellation_applied:
+                    message_text = (
+                        f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
+                        f"Отмена оформлена. Доступ сохранится до {until_text}, после чего подписка отключится.\n"
+                        "Если передумали, выберите `🔄 Сменить тариф`, чтобы продлить доступ."
+                    )
+                else:
+                    message_text = (
+                        f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
+                        f"Отмена уже оформлена. Доступ сохранится до {until_text}."
+                    )
             else:
                 message_text = (
                     f"{Emoji.DIAMOND} <b>Отмена подписки</b>\n\n"
-                    "Чтобы остановить автоматические списания, отправьте запрос в поддержку — команда /help.\n"
-                    "Укажите ID пользователя и номер последнего платежа."
+                    "Подписка уже не активна. Вы можете подключить новый тариф в каталоге."
                 )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="📦 Каталог тарифов", callback_data="buy_catalog")],
+                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
                 [InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info")],
                 [InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")],
             ]
@@ -3364,6 +3385,7 @@ async def handle_my_profile_callback(callback: CallbackQuery):
         tariff_text = None
         hint_text = None
         subscribe_label = "💳 Оформить подписку"
+        has_subscription = False
 
         if db is not None:
             try:
@@ -3374,12 +3396,13 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                     is_admin=user_id in ADMIN_IDS,
                 )
                 has_subscription = await db.has_active_subscription(user_id)
+                cancel_flag = bool(getattr(user_record, "subscription_cancelled", 0))
 
                 plan_id = getattr(user_record, "subscription_plan", None)
                 plan_info = _get_plan_pricing(plan_id) if plan_id else None
                 if plan_info:
                     tariff_text = plan_info.plan.name
-                elif plan_id and plan_id != "—":
+                elif plan_id and plan_id not in (None, "—"):
                     tariff_text = str(plan_id)
                 else:
                     tariff_text = "триал"
@@ -3394,8 +3417,13 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                         )
                     else:
                         status_text = f"подписка активна до {until_dt:%d.%m.%y}"
-                    hint_text = "Пополнить пакет — команда /buy"
-                    subscribe_label = "❌ Отменить подписку"
+
+                    if cancel_flag:
+                        hint_text = "Отмена оформлена — доступ сохранится до даты окончания."
+                        subscribe_label = "✅ Отмена оформлена"
+                    else:
+                        hint_text = "Пополнить пакет — команда /buy"
+                        subscribe_label = "❌ Отменить подписку"
                 else:
                     trial_remaining = int(getattr(user_record, "trial_remaining", 0) or 0)
                     status_text = "нет активной подписки"
