@@ -3810,7 +3810,13 @@ async def handle_help_info_callback(callback: CallbackQuery):
             "→ Сложные запросы: 2-3 минуты"
         )
 
-        await callback.message.answer(support_text, parse_mode=ParseMode.HTML)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")]
+            ]
+        )
+
+        await callback.message.answer(support_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
         logger.info(f"Support info requested by user {callback.from_user.id}")
 
