@@ -4231,24 +4231,6 @@ async def _send_questions_prompt(
     # Показываем typing indicator перед отправкой вопросов
     await send_typing_once(message.bot, message.chat.id, "typing")
 
-    # Красивый заголовок с инструкциями
-    header_lines = [
-        f"📋 <b>{html_escape(title)}</b>",
-        f"<code>{'━' * 35}</code>\n",
-
-        f"<b>💡 Как отвечать:</b>",
-        f"✅ Напишите все ответы <b>одним сообщением</b>\n",
-
-        f"<b>Варианты оформления:</b>",
-        f"  <code>1) Первый ответ</code>",
-        f"  <code>2) Второй ответ</code>",
-        f"  <i>или разделяйте пустой строкой</i>\n",
-
-        f"<code>{'━' * 35}</code>",
-    ]
-
-    await message.answer("\n".join(header_lines), parse_mode=ParseMode.HTML)
-
     # Форматируем вопросы с улучшенным дизайном
     question_blocks: list[str] = []
     for idx, question in enumerate(questions, 1):
@@ -4271,12 +4253,29 @@ async def _send_questions_prompt(
     if not question_blocks:
         return
 
+    # Объединяем заголовок с инструкциями и вопросы в одно сообщение
+    header_lines = [
+        f"📋 <b>{html_escape(title)}</b>",
+        f"<code>{'━' * 35}</code>\n",
+
+        f"<b>💡 Как отвечать:</b>",
+        f"✅ Напишите все ответы <b>одним сообщением</b>\n",
+
+        f"<b>Варианты оформления:</b>",
+        f"  <code>1) Первый ответ</code>",
+        f"  <code>2) Второй ответ</code>",
+        f"  <i>или разделяйте пустой строкой</i>\n",
+
+        f"<code>{'━' * 35}</code>\n",
+        f"<b>Вопросы:</b>",
+    ]
+
     max_len = 3500
-    chunk_lines: list[str] = ["<b>Вопросы:</b>"]
+    chunk_lines: list[str] = header_lines.copy()
     for block in question_blocks:
         candidate = chunk_lines + [block]
         candidate_text = "\n".join(candidate)
-        if len(candidate_text) > max_len and len(chunk_lines) > 1:
+        if len(candidate_text) > max_len and len(chunk_lines) > len(header_lines):
             await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
             chunk_lines = ["<b>Вопросы (продолжение):</b>", block]
         else:
