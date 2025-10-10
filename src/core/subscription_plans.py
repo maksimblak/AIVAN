@@ -47,7 +47,6 @@ DEFAULT_SUBSCRIPTION_PLANS: tuple[SubscriptionPlan, ...] = (
     ),
 )
 
-
 def get_default_subscription_plans() -> tuple[SubscriptionPlan, ...]:
     """Return default subscription plan catalog."""
 
