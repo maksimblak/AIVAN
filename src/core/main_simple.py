@@ -1224,8 +1224,46 @@ async def _try_send_welcome_media(
         return False
 
 
-def _profile_menu_text() -> str:
-    return "👤 <b>Мой профиль</b>\n\nВыберите действие:"
+def _profile_menu_text(
+    user: User | None = None,
+    *,
+    subscription_line: str | None = None,
+    tariff_line: str | None = None,
+) -> str:
+    """Build profile menu header with user-friendly name and optional status lines."""
+
+    def _display_name(person: User | None) -> str:
+        if person is None:
+            return "—"
+        parts = [part.strip() for part in (person.first_name or "", person.last_name or "") if part.strip()]
+        if parts:
+            return " ".join(parts)
+        if person.username:
+            return f"@{person.username}"
+        try:
+            return str(person.id)
+        except Exception:
+            return "—"
+
+    display_name = html_escape(_display_name(user))
+
+    lines = [
+        "👤 <b>Мой профиль</b>",
+        "",
+        f"<b>Профиль:</b> {display_name}",
+    ]
+
+    if subscription_line:
+        lines.append("")
+        lines.append(subscription_line)
+
+    if tariff_line:
+        lines.append("")
+        lines.append(tariff_line)
+
+    lines.append("")
+    lines.append("Выберите действие:")
+    return "\n".join(lines)
 
 
 def _profile_menu_keyboard() -> InlineKeyboardMarkup:
@@ -1236,7 +1274,9 @@ def _profile_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🧾 Статус подписки", callback_data="subscription_status"),
             ],
             [
-                InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
+                InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription"),
+            ],
+            [
                 InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
             ],
             [
@@ -3265,8 +3305,51 @@ async def handle_my_profile_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
+        subscription_line = None
+        tariff_line = None
+
+        if db is not None:
+            try:
+                user_id = callback.from_user.id
+                user_record = await db.ensure_user(
+                    user_id,
+                    default_trial=TRIAL_REQUESTS,
+                    is_admin=user_id in ADMIN_IDS,
+                )
+                has_subscription = await db.has_active_subscription(user_id)
+
+                plan_id = getattr(user_record, "subscription_plan", None)
+                plan_info = _get_plan_pricing(plan_id) if plan_id else None
+                plan_label = plan_info.plan.name if plan_info else (plan_id or "—")
+                tariff_line = f"<b>Тариф:</b> {html_escape(str(plan_label))}"
+
+                if has_subscription and getattr(user_record, "subscription_until", 0):
+                    until_dt = datetime.fromtimestamp(int(user_record.subscription_until))
+                    purchase_ts = int(getattr(user_record, "subscription_last_purchase_at", 0) or 0)
+                    if purchase_ts:
+                        purchase_dt = datetime.fromtimestamp(purchase_ts)
+                        subscription_line = (
+                            f"<b>Статус:</b> подписка оформлена {purchase_dt:%d.%m.%y} "
+                            f"(доступ до {until_dt:%d.%m.%y})"
+                        )
+                    else:
+                        subscription_line = f"<b>Статус:</b> подписка активна до {until_dt:%d.%m.%y}"
+                else:
+                    trial_remaining = int(getattr(user_record, "trial_remaining", 0) or 0)
+                    subscription_line = (
+                        f"<b>Статус:</b> нет активной подписки (триал: {trial_remaining} запросов)"
+                    )
+                    if plan_label == "—":
+                        tariff_line = "<b>Тариф:</b> —"
+            except Exception as profile_error:  # pragma: no cover - fallback
+                logger.debug("Failed to build profile header: %s", profile_error, exc_info=True)
+
         await callback.message.edit_text(
-            _profile_menu_text(),
+            _profile_menu_text(
+                callback.from_user,
+                subscription_line=subscription_line,
+                tariff_line=tariff_line,
+            ),
             parse_mode=ParseMode.HTML,
             reply_markup=_profile_menu_keyboard(),
         )
@@ -3443,7 +3526,6 @@ async def handle_subscription_status_callback(callback: CallbackQuery):
                 '💡 Оформите подписку, чтобы получить дополнительные запросы, приоритет и поддержку.',
             ]
             status_text = "\n".join(status_lines)
-            keyboard_buttons.append([InlineKeyboardButton(text='💳 Оформить подписку', callback_data='get_subscription')])
 
         keyboard_buttons.append([InlineKeyboardButton(text='🔙 Назад к профилю', callback_data='my_profile')])
         subscription_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
@@ -3477,93 +3559,6 @@ async def handle_back_to_main_callback(callback: CallbackQuery):
         logger.error(f"Error in handle_back_to_main_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
 
-
-async def handle_payment_history_callback(callback: CallbackQuery):
-    """Обработчик кнопки 'История платежей'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
-        return
-
-    try:
-        await callback.answer()
-
-        if db is None:
-            await callback.message.edit_text(
-                "Сервис временно недоступен",
-                parse_mode=ParseMode.HTML,
-                reply_markup=_profile_menu_keyboard(),
-            )
-            return
-
-        user_id = callback.from_user.id
-
-        # Получаем историю транзакций
-        transactions = await db.get_user_transactions(user_id, limit=15)
-        transaction_stats = await db.get_transaction_stats(user_id)
-
-        if not transactions:
-            history_text = """💳 <b>История платежей</b>
-
-📊 <b>Статистика</b>
-• Всего транзакций: 0
-• Потрачено: 0 ₽
-
-❌ <b>История пуста</b>
-У вас пока нет платежей."""
-        else:
-            def format_transaction_date(timestamp):
-                if timestamp:
-                    return datetime.fromtimestamp(timestamp).strftime("%d.%m.%Y %H:%M")
-                return "Неизвестно"
-
-            def format_transaction_status(status):
-                status_map = {
-                    "completed": "✅ Завершен",
-                    "pending": "⏳ В обработке",
-                    "failed": "❌ Отклонен",
-                    "cancelled": "🚫 Отменен"
-                }
-                return status_map.get(status, f"❓ {status}")
-
-            def format_amount(amount, currency):
-                if currency == "RUB":
-                    return f"{amount} ₽"
-                elif currency == "XTR":
-                    return f"{amount} ⭐"
-                else:
-                    return f"{amount} {currency}"
-
-            history_text = f"""💳 <b>История платежей</b>
-
-📊 <b>Статистика</b>
-• Всего транзакций: {transaction_stats.get('total_transactions', 0)}
-• Потрачено: {transaction_stats.get('total_spent', 0)} ₽
-
-📝 <b>Последние операции</b>"""
-
-            for transaction in transactions:
-                history_text += f"""
-
-💰 {format_amount(transaction.amount, transaction.currency)}
-├ {format_transaction_status(transaction.status)}
-├ {transaction.provider}
-└ {format_transaction_date(transaction.created_at)}"""
-
-        # Кнопка назад к профилю
-        back_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")],
-            ]
-        )
-
-        await callback.message.edit_text(
-            history_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=back_keyboard
-        )
-
-    except Exception as e:
-        logger.error(f"Error in handle_payment_history_callback: {e}")
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -5708,7 +5703,6 @@ async def run_bot() -> None:
     dp.callback_query.register(handle_verify_payment_callback, F.data.startswith("verify_payment:"))
     dp.callback_query.register(handle_select_plan_callback, F.data.startswith("select_plan:"))
     dp.callback_query.register(handle_pay_plan_callback, F.data.startswith("pay_plan:"))
-    dp.callback_query.register(handle_payment_history_callback, F.data == "payment_history")
     dp.callback_query.register(handle_referral_program_callback, F.data == "referral_program")
     dp.callback_query.register(handle_copy_referral_callback, F.data.startswith("copy_referral_"))
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
