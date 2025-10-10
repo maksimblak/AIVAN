@@ -3950,7 +3950,7 @@ async def handle_doc_draft_request(
 
     summary = format_plan_summary(plan)
     for chunk in _split_plain_text(summary):
-        await message.answer(chunk)
+        await message.answer(chunk, parse_mode=ParseMode.HTML)
 
     if plan.questions:
         await state.set_state(DocumentDraftStates.asking_details)
@@ -4228,17 +4228,14 @@ async def _send_questions_prompt(
         text = html_escape(question.get("text", ""))
         purpose = question.get("purpose")
 
-        # Красивая рамка для каждого вопроса
+        # Чистый и читаемый дизайн без лишних линий
         block_lines = [
-            f"<b>❓ Вопрос {idx}</b>",
-            f"<code>{'─' * 30}</code>",
-            f"{text}"
+            f"<b>{idx}. {text}</b>",  # Вопрос жирным шрифтом
         ]
 
         if purpose:
-            block_lines.append(f"\n<i>📌 Цель: {html_escape(purpose)}</i>")
+            block_lines.append(f"<i>   💡 {html_escape(purpose)}</i>")  # Цель с отступом
 
-        block_lines.append(f"<code>{'─' * 30}</code>")
         question_blocks.append("\n".join(block_lines))
 
     if not question_blocks:
@@ -4246,22 +4243,40 @@ async def _send_questions_prompt(
 
     # Только список вопросов (инструкция уже в сообщении выше)
     max_len = 3500
-    chunk_lines: list[str] = ["<b>Вопросы:</b>"]
+    chunk_lines: list[str] = [
+        "📋 <b>Вопросы:</b>",
+        f"<code>{'─' * 35}</code>",
+        ""
+    ]
+
     for block in question_blocks:
-        candidate = chunk_lines + [block]
+        candidate = chunk_lines + [block, ""]  # Пустая строка между вопросами
         candidate_text = "\n".join(candidate)
-        if len(candidate_text) > max_len and len(chunk_lines) > 1:
+        if len(candidate_text) > max_len and len(chunk_lines) > 3:
             await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
-            chunk_lines = ["<b>Вопросы (продолжение):</b>", block]
+            chunk_lines = [
+                "📋 <b>Вопросы (продолжение):</b>",
+                f"<code>{'─' * 35}</code>",
+                "",
+                block,
+                ""
+            ]
         else:
             if len(candidate_text) > max_len:
                 # блок слишком большой сам по себе — отправим отдельно
                 await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
-                chunk_lines = ["<b>Вопросы (продолжение):</b>", block]
+                chunk_lines = [
+                    "📋 <b>Вопросы (продолжение):</b>",
+                    f"<code>{'─' * 35}</code>",
+                    "",
+                    block,
+                    ""
+                ]
             else:
                 chunk_lines.append(block)
+                chunk_lines.append("")  # Пустая строка между вопросами
 
-    if len(chunk_lines) > 1:
+    if len(chunk_lines) > 3:
         await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
 
 

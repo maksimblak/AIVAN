@@ -385,15 +385,18 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
 
 def format_plan_summary(plan: DraftPlan) -> str:
+    from html import escape as html_escape
+
     lines: list[str] = []
 
     title = (plan.title or "Документ").strip()
+    title_escaped = html_escape(title)
 
     # Красивый заголовок документа
     lines.append("✨ <b>Документ готов к созданию</b>")
     lines.append(f"<code>{'━' * 35}</code>")
     lines.append("")
-    lines.append(f"📄 <b>{title}</b>")
+    lines.append(f"📄 <b>{title_escaped}</b>")
     lines.append(f"<code>{'─' * 35}</code>")
     lines.append("")
 
