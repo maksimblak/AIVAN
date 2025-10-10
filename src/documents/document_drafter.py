@@ -388,8 +388,13 @@ def format_plan_summary(plan: DraftPlan) -> str:
     lines: list[str] = []
 
     title = (plan.title or "Документ").strip()
-    lines.append(f"📄 Документ: {title}")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    # Красивый заголовок документа
+    lines.append("✨ <b>Документ готов к созданию</b>")
+    lines.append(f"<code>{'━' * 35}</code>")
+    lines.append("")
+    lines.append(f"📄 <b>{title}</b>")
+    lines.append(f"<code>{'─' * 35}</code>")
     lines.append("")
 
     # Context notes are kept internal, not displayed to users
@@ -405,17 +410,29 @@ def format_plan_summary(plan: DraftPlan) -> str:
     #         lines.append(f"… ещё {remaining} пункт(ов)")
     #     lines.append("")
 
-    lines.append(f"❓ Уточняющих вопросов: {len(plan.questions)}")
+    # Информация о вопросах
+    lines.append(f"❓ <b>Уточняющих вопросов:</b> {len(plan.questions)}")
+
     if plan.questions:
         lines.append("")
-        lines.append("💡 Как отвечать:")
-        lines.append("✅ Напишите все ответы одним сообщением")
+        lines.append(f"<code>{'━' * 35}</code>")
         lines.append("")
-        lines.append("Варианты оформления:")
-        lines.append("  1) Первый ответ")
-        lines.append("  2) Второй ответ")
-        lines.append("  или разделяйте пустой строкой")
+        lines.append("💡 <b>Как отвечать:</b>")
+        lines.append("✅ Напишите все ответы <b>одним сообщением</b>")
+        lines.append("")
+        lines.append("<b>Варианты оформления:</b>")
+        lines.append("  <code>1) Первый ответ</code>")
+        lines.append("  <code>2) Второй ответ</code>")
+        lines.append("  <i>или разделяйте пустой строкой</i>")
+        lines.append("")
+        lines.append(f"<code>{'━' * 35}</code>")
+        lines.append("")
+        lines.append("👇 <i>Вопросы будут отправлены следующим сообщением</i>")
     else:
-        lines.append("✅ Дополнительных уточнений не требуется — можно формировать документ.")
+        lines.append("")
+        lines.append(f"<code>{'━' * 35}</code>")
+        lines.append("")
+        lines.append("✅ <b>Дополнительных уточнений не требуется</b>")
+        lines.append("🚀 Можно формировать документ")
 
     return "\n".join(lines)
