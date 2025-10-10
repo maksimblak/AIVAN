@@ -12,6 +12,7 @@ from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
 from .summarizer import DocumentSummarizer
 from .translator import DocumentTranslator
+from .lawsuit_analyzer import LawsuitAnalyzer
 
 __all__ = [
     "DocumentManager",
@@ -20,6 +21,7 @@ __all__ = [
     "ProcessingError",
     "DocumentSummarizer",
     "RiskAnalyzer",
+    "LawsuitAnalyzer",
     "DocumentChat",
     "DocumentAnonymizer",
     "DocumentTranslator",

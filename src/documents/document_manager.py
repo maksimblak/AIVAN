@@ -18,6 +18,7 @@ from src.core.settings import AppSettings
 from .anonymizer import DocumentAnonymizer
 from .base import DocumentInfo, DocumentResult, DocumentStorage, ProcessingError
 from .document_chat import DocumentChat
+from .lawsuit_analyzer import LawsuitAnalyzer
 from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
 from .storage_backends import ArtifactUploader, S3ArtifactUploader
@@ -46,6 +47,7 @@ class DocumentManager:
         self.risk_analyzer = RiskAnalyzer(openai_service=openai_service)
         self.chat = DocumentChat(openai_service=openai_service, settings=settings)
         self.ocr_converter = OCRConverter(settings=settings)
+        self.lawsuit_analyzer = LawsuitAnalyzer(openai_service=openai_service)
 
         self._operations: Dict[str, Dict[str, Any]] = {
             "summarize": {
@@ -61,6 +63,13 @@ class DocumentManager:
                 "description": "Выявление потенциальных проблем и рекомендаций",
                 "formats": ["TXT", "JSON"],
                 "processor": self.risk_analyzer,
+            },
+            "lawsuit_analysis": {
+                "emoji": "⚖️",
+                "name": "Анализ искового заявления",
+                "description": "Оценивает требования, правовую позицию и риски отказа",
+                "formats": ["TXT", "JSON"],
+                "processor": self.lawsuit_analyzer,
             },
             # "chat": {
             #     "emoji": "💬",
@@ -175,6 +184,7 @@ class DocumentManager:
             "translate": self._format_translation_result,
             "anonymize": self._format_anonymize_result,
             "analyze_risks": self._format_risk_result,
+            "lawsuit_analysis": self._format_lawsuit_result,
             "chat": self._format_chat_loaded,
             "ocr": self._format_ocr_result,
         }.get(operation, self._format_generic_result)
@@ -311,6 +321,16 @@ class DocumentManager:
             path = await self._write_export(base_name, "risk_report", json_payload, ".json")
             exports.append({"path": str(path), "format": "json", "label": "Отчёт"})
 
+        elif operation == "lawsuit_analysis":
+            analysis = result.data.get("analysis") or {}
+            markdown = self._build_lawsuit_markdown(analysis)
+            if markdown:
+                path = await self._write_export(base_name, "lawsuit_analysis", markdown, ".txt")
+                exports.append({"path": str(path), "format": "txt", "label": "Анализ"})
+            json_payload = json.dumps(analysis, ensure_ascii=False, indent=2)
+            path = await self._write_export(base_name, "lawsuit_analysis", json_payload, ".json")
+            exports.append({"path": str(path), "format": "json", "label": "Анализ (JSON)"})
+
         elif operation == "ocr":
             recognized = (result.data.get("recognized_text") or "").strip()
             if recognized:
@@ -417,6 +437,63 @@ class DocumentManager:
                 lines.append(f"• {html_escape(str(rec))}")
         return "\n".join(lines)
 
+    def _format_lawsuit_result(self, data: Dict[str, Any], message: str) -> str:
+        analysis = data.get("analysis") or {}
+        lines: List[str] = ["<b>Анализ искового заявления</b>"]
+
+        summary = str(analysis.get("summary") or "").strip()
+        if summary:
+            lines.append(html_escape(summary))
+
+        parties = analysis.get("parties") or {}
+        party_lines: List[str] = []
+        plaintiff = str(parties.get("plaintiff") or "").strip()
+        defendant = str(parties.get("defendant") or "").strip()
+        if plaintiff:
+            party_lines.append(f"• Истец: {html_escape(plaintiff)}")
+        if defendant:
+            party_lines.append(f"• Ответчик: {html_escape(defendant)}")
+        for item in parties.get("other") or []:
+            text = str(item or "").strip()
+            if text:
+                party_lines.append(f"• Участник: {html_escape(text)}")
+        if party_lines:
+            lines.append("")
+            lines.append("<b>Стороны:</b>")
+            lines.append("\n".join(party_lines))
+
+        def _section(title: str, values: Any) -> None:
+            cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
+            if not cleaned:
+                return
+            lines.append("")
+            lines.append(f"<b>{title}:</b>")
+            lines.append("\n".join(f"• {html_escape(item)}" for item in cleaned))
+
+        _section("Требования", analysis.get("demands"))
+        _section("Правовое обоснование", analysis.get("legal_basis"))
+        _section("Доказательства", analysis.get("evidence"))
+        _section("Сильные стороны", analysis.get("strengths"))
+        _section("Риски и слабые места", analysis.get("risks"))
+        _section("Недостающие элементы", analysis.get("missing_elements"))
+        _section("Рекомендации", analysis.get("recommendations"))
+        _section("Процессуальные заметки", analysis.get("procedural_notes"))
+
+        confidence = str(analysis.get("confidence") or "").strip()
+        if confidence:
+            lines.append("")
+            lines.append(f"<i>Уверенность анализа: {html_escape(confidence)}</i>")
+
+        if data.get("truncated"):
+            lines.append("")
+            lines.append("<i>⚠️ Анализ выполнен по усечённому тексту документа.</i>")
+
+        if message:
+            lines.append("")
+            lines.append(html_escape(message))
+
+        return "\n\n".join(part for part in lines if part)
+
     def _format_chat_loaded(self, data: Dict[str, Any], message: str) -> str:
         info = data.get("document_info") or {}
         metadata = info.get("metadata") or {}
@@ -453,3 +530,48 @@ class DocumentManager:
 
     def _format_generic_result(self, data: Dict[str, Any], message: str) -> str:
         return html_escape(message or "Готово")
+
+    @staticmethod
+    def _build_lawsuit_markdown(analysis: Dict[str, Any]) -> str:
+        lines = ["# Анализ искового заявления", ""]
+
+        summary = str(analysis.get("summary") or "").strip()
+        if summary:
+            lines.extend(["## Резюме", summary, ""])
+
+        parties = analysis.get("parties") or {}
+        party_lines: list[str] = []
+        if parties.get("plaintiff"):
+            party_lines.append(f"- Истец: {parties['plaintiff']}")
+        if parties.get("defendant"):
+            party_lines.append(f"- Ответчик: {parties['defendant']}")
+        for item in parties.get("other") or []:
+            text = str(item or "").strip()
+            if text:
+                party_lines.append(f"- Участник: {text}")
+        if party_lines:
+            lines.extend(["## Стороны", *party_lines, ""])
+
+        def append_block(title: str, values: Any) -> None:
+            cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
+            if not cleaned:
+                return
+            lines.append(f"## {title}")
+            for entry in cleaned:
+                lines.append(f"- {entry}")
+            lines.append("")
+
+        append_block("Требования", analysis.get("demands"))
+        append_block("Правовое обоснование", analysis.get("legal_basis"))
+        append_block("Доказательства", analysis.get("evidence"))
+        append_block("Сильные стороны", analysis.get("strengths"))
+        append_block("Риски и слабые места", analysis.get("risks"))
+        append_block("Недостающие элементы", analysis.get("missing_elements"))
+        append_block("Рекомендации", analysis.get("recommendations"))
+        append_block("Процессуальные заметки", analysis.get("procedural_notes"))
+
+        confidence = str(analysis.get("confidence") or "").strip()
+        if confidence:
+            lines.extend(["", f"_Уверенность анализа: {confidence}_"])
+
+        return "\n".join(lines).strip()
