@@ -1277,12 +1277,10 @@ def _profile_menu_keyboard(subscribe_label: str | None = None) -> InlineKeyboard
             ],
             [
                 InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-            ],
-            [
                 InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
             ],
             [
-                InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main"),
+                InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main"),
             ],
         ]
     )
