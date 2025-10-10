@@ -1325,6 +1325,8 @@ async def cmd_start(message: Message):
 
     welcome_html = sanitize_telegram_html(welcome_raw)
 
+    main_menu_keyboard = _main_menu_keyboard()
+
     media_sent = await _try_send_welcome_media(
         message=message,
         caption_html=welcome_html,
@@ -1338,9 +1340,9 @@ async def cmd_start(message: Message):
         )
 
     await message.answer(
-        _profile_menu_text(),
+        _main_menu_text(),
         parse_mode=ParseMode.HTML,
-        reply_markup=_profile_menu_keyboard(),
+        reply_markup=main_menu_keyboard,
     )
     logger.info("User %s started bot", message.from_user.id)
 
@@ -5810,4 +5812,3 @@ async def run_bot() -> None:
                 logger.error(f"❌ Error closing {service_name}: {e}")
 
         logger.info("👋 AI-Ivan shutdown complete")
-
