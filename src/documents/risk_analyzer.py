@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -172,10 +172,26 @@ class RiskAnalyzer(DocumentProcessor):
     # --------------------------------- API ---------------------------------
 
     async def process(
-        self, file_path: str | Path, custom_criteria: list[str] | None = None, **kwargs
+        self,
+        file_path: str | Path,
+        custom_criteria: list[str] | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        **_: Any,
     ) -> DocumentResult:
         if not self.openai_service:
             raise ProcessingError("OpenAI сервис не инициализирован", "SERVICE_ERROR")
+
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {"stage": stage, "percent": float(percent)}
+            for key, value in payload.items():
+                if value is not None:
+                    data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug("Progress callback failed on stage %s", stage, exc_info=True)
 
         success, text = await FileFormatHandler.extract_text_from_file(file_path)
         if not success:
@@ -185,8 +201,15 @@ class RiskAnalyzer(DocumentProcessor):
         if not cleaned_text.strip():
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
+        await _notify(
+            "text_extracted",
+            12,
+            words=len(cleaned_text.split()),
+        )
+
         # 1) Паттерны (быстро и детерминированно)
         pattern_risks = self._analyze_by_patterns(cleaned_text)
+        await _notify("pattern_scan", 30, risks_found=len(pattern_risks))
 
         # 2) ИИ-анализ (JSON с индексами)
         ai_payload = await self._ai_risk_analysis(cleaned_text, custom_criteria)
@@ -195,9 +218,20 @@ class RiskAnalyzer(DocumentProcessor):
         ai_summary = ai_payload.get("summary", "")
         ai_overall = ai_payload.get("overall_level", "medium")
         ai_recs = ai_payload.get("recommendations", [])
+        await _notify(
+            "ai_analysis",
+            60,
+            risks_found=len(pattern_risks) + len(ai_risks),
+            chunks=ai_payload.get("chunks_analyzed"),
+        )
 
         # 3) Комплаенс/нарушения
         compliance = await self._check_legal_compliance(cleaned_text)
+        await _notify(
+            "compliance_check",
+            78,
+            violations=len(compliance.get("violations", [])),
+        )
 
         # 4) Сведение, дедупликация, агрегация
         combined = self._merge_and_deduplicate(
@@ -206,9 +240,15 @@ class RiskAnalyzer(DocumentProcessor):
             self._violations_to_risks(compliance.get("violations", [])),
         )
         overall = self._calculate_overall_risk_weighted(combined, ai_overall)
+        await _notify("aggregation", 90, risks_found=len(combined))
 
         # 5) Подсветка по спанам
         highlighted_text = self._highlight_with_spans(cleaned_text, combined)
+        await _notify(
+            "highlighting",
+            96,
+            risks_found=len(combined),
+        )
 
         result_data = {
             "overall_risk_level": overall,
@@ -231,6 +271,8 @@ class RiskAnalyzer(DocumentProcessor):
             "original_file": str(file_path),
             "analysis_timestamp": datetime.now().isoformat(),
         }
+
+        await _notify("completed", 100, risks_found=len(combined), overall=overall)
 
         return DocumentResult.success_result(
             data=result_data, message="Анализ рисков успешно завершён"

@@ -12,7 +12,14 @@ from src.core.settings import AppSettings
 from src.core.rag.judicial_rag import JudicialPracticeRAG
 
 
-def _discover_welcome_media() -> WelcomeMedia | None:
+def _discover_welcome_media(settings: AppSettings) -> WelcomeMedia | None:
+    file_id = (settings.welcome_media_file_id or "").strip()
+    if file_id:
+        media_type = (settings.welcome_media_type or "video").strip().lower()
+        if media_type not in {"video", "animation", "photo"}:
+            media_type = "video"
+        return WelcomeMedia(media_type=media_type, file_id=file_id)
+
     images_dir = Path(__file__).resolve().parents[2] / "images"
     if not images_dir.exists():
         return None
@@ -21,11 +28,11 @@ def _discover_welcome_media() -> WelcomeMedia | None:
             continue
         suffix = candidate.suffix.lower()
         if suffix in {".mp4", ".mov", ".m4v", ".webm"}:
-            return WelcomeMedia(candidate, "video")
+            return WelcomeMedia(media_type="video", path=candidate)
         if suffix in {".gif"}:
-            return WelcomeMedia(candidate, "animation")
+            return WelcomeMedia(media_type="animation", path=candidate)
         if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-            return WelcomeMedia(candidate, "photo")
+            return WelcomeMedia(media_type="photo", path=candidate)
     return None
 
 
@@ -67,7 +74,7 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
     fallback_price_stars = _calculate_plan_stars(float(settings.subscription_price_rub), settings)
 
     derived = DerivedRuntime(
-        welcome_media=_discover_welcome_media(),
+        welcome_media=_discover_welcome_media(settings),
         subscription_price_rub_kopeks=(default_plan.price_rub_kopeks if default_plan else fallback_price_rub_kopeks),
         dynamic_price_xtr=(default_plan.price_stars if default_plan else fallback_price_stars),
         admin_ids=set(settings.admin_ids),

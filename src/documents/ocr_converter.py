@@ -1,8 +1,8 @@
 """
-Модуль OCR и конвертации
+Модуль "распознание текста" и конвертации
 Распознавание сканированных документов и преобразование в редактируемый текст.
 Пайплайн: PaddleOCR → (опционально) OpenAI Vision → mock.
-Для PDF: сначала встроенный текст, затем постраничный OCR с конкурентной обработкой.
+Для PDF: сначала встроенный текст, затем постраничное распознание текста с конкурентной обработкой.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from src.core.settings import AppSettings
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 import httpx
 
@@ -44,7 +44,7 @@ class PageResult:
 
 
 class OCRConverter(DocumentProcessor):
-    """OCR распознавание и конвертация документов."""
+    """Распознание текста и конвертация документов."""
 
     def __init__(self, settings: AppSettings | None = None) -> None:
         super().__init__(name="OCRConverter", max_file_size=100 * 1024 * 1024)  # 100 MB
@@ -74,10 +74,25 @@ class OCRConverter(DocumentProcessor):
     # ——————————————————————————————————————
 
     async def process(
-        self, file_path: str | Path, output_format: str = "txt", **kwargs: Any
+        self, file_path: str | Path, output_format: str = "txt", progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None, **kwargs: Any
     ) -> DocumentResult:
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {'stage': stage, 'percent': float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug('Callback режима "распознание текста" failed at %s', stage, exc_info=True)
+
         path = Path(file_path)
         file_extension = path.suffix.lower()
+
+        await _notify('preparing', 10, file_type=file_extension)
 
         try:
             if is_image_file(path):
@@ -85,11 +100,11 @@ class OCRConverter(DocumentProcessor):
                 file_type = "image"
                 pages_info: List[Dict[str, Any]] = []
             elif file_extension == ".pdf":
-                text, confidence, pages_info = await self._ocr_pdf(path)
+                text, confidence, pages_info = await self._ocr_pdf(path, progress_callback=progress_callback)
                 file_type = "pdf"
             else:
                 raise ProcessingError(
-                    f"Неподдерживаемый формат для OCR: {file_extension}", "FORMAT_ERROR"
+                    f"Неподдерживаемый формат для режима \"распознание текста\": {file_extension}", "FORMAT_ERROR"
                 )
 
             if not text or not text.strip():
@@ -116,14 +131,14 @@ class OCRConverter(DocumentProcessor):
 
             return DocumentResult.success_result(
                 data=result_data,
-                message=f"OCR распознавание завершено с уверенностью {confidence:.1f}%",
+                message=f"Распознание текста завершено с уверенностью {confidence:.1f}%",
             )
 
         except ProcessingError:
             raise
         except Exception as e:
-            logger.exception("Ошибка OCR")
-            raise ProcessingError(f"Ошибка OCR: {e}", "OCR_ERROR") from e
+            logger.exception("Ошибка распознания текста")
+            raise ProcessingError(f"Ошибка распознания текста: {e}", "OCR_ERROR") from e
 
     # ——————————————————————————————————————
     # Изображения
@@ -131,7 +146,7 @@ class OCRConverter(DocumentProcessor):
 
     async def _ocr_image(self, image_path: Path) -> Tuple[str, float]:
         """
-        OCR изображения: предобработка → PaddleOCR → (опционально) OpenAI Vision → mock.
+        Распознание текста изображений: предобработка → PaddleOCR → (опционально) OpenAI Vision → mock.
         Используется кэш по контент-хэшу и метрика читабельности.
         """
         sha = await asyncio.to_thread(lambda: hashlib.sha256(image_path.read_bytes()).hexdigest())
@@ -316,7 +331,7 @@ class OCRConverter(DocumentProcessor):
 
     async def _openai_ocr_image(self, image_path: Path, api_key: str) -> Tuple[str, float]:
         """
-        OCR через OpenAI Vision (Chat Completions API).
+        Распознание текста через OpenAI Vision (Chat Completions API).
         Возвращает (plain_text, confidence_heuristic).
         """
         mime = mimetypes.guess_type(str(image_path))[0] or "image/png"
@@ -331,7 +346,7 @@ class OCRConverter(DocumentProcessor):
                 {
                     "role": "system",
                     "content": (
-                        "You are an OCR engine. Extract ALL visible text from the image "
+                        "You are a text recognition (\"распознание текста\") engine. Extract ALL visible text from the image "
                         "in logical reading order. Output plain UTF-8 text only, no commentary."
                     ),
                 },
@@ -381,12 +396,26 @@ class OCRConverter(DocumentProcessor):
     # PDF
     # ——————————————————————————————————————
 
-    async def _ocr_pdf(self, pdf_path: Path) -> Tuple[str, float, List[Dict[str, Any]]]:
+    async def _ocr_pdf(self, pdf_path: Path, progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None) -> Tuple[str, float, List[Dict[str, Any]]]:
         """
         1) Пытаемся извлечь встроенный текст.
-        2) Если качества недостаточно — рендерим все страницы в PNG и OCR-им их конкурентно.
+        2) Если качества недостаточно — рендерим все страницы в PNG и запускаем распознание текста конкурентно.
         Возвращаем (combined_text, avg_confidence, pages_info[]).
         """
+
+        async def _emit(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {'stage': stage, 'percent': float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug('PDF progress callback режима \"распознание текста\" failed at %s', stage, exc_info=True)
+
         logger.info("Начало обработки PDF: %s", pdf_path)
 
         # 1) Встроенный текст
@@ -397,13 +426,15 @@ class OCRConverter(DocumentProcessor):
         if quality >= 0.7 and len(embedded_text.strip()) > 50:
             logger.info("Использован встроенный текст PDF")
             final_emb_conf = self._refine_confidence(embedded_text, embedded_conf)
+            await _emit("ocr_running", 65, pages_total=1, pages_done=1, mode="embedded")
+            await _emit("completed", 100, confidence=float(final_emb_conf), pages_total=1, mode="embedded")
             return embedded_text, float(final_emb_conf), []
 
         # 2) Рендер всех страниц → PNG
         page_images = await self._render_pdf_pages_to_images(pdf_path)
         try:
-            # 3) Конкурентный OCR страниц
-            pages: List[PageResult] = await self._ocr_images_concurrently(page_images)
+            # 3) Конкурентное распознание текста страниц
+            pages: List[PageResult] = await self._ocr_images_concurrently(page_images, progress_callback=progress_callback)
 
             if pages:
                 pages_sorted = sorted(pages, key=lambda p: p.page)
@@ -413,12 +444,12 @@ class OCRConverter(DocumentProcessor):
                 # Гибрид с встроенным текстом, если он был
                 if embedded_text.strip():
                     if len(combined) > len(embedded_text) * 1.5:
-                        logger.info("OCR дал существенно больше текста — берём OCR")
+                        logger.info("Распознание текста дало существенно больше текста — берём результат распознания текста")
                         final_conf = self._refine_confidence(combined, avg_conf)
                         return combined, float(final_conf), [
                             {"page": p.page, "text": p.text, "confidence": float(p.confidence)} for p in pages_sorted
                         ]
-                    merged = f"{embedded_text}\n\n--- OCR ДОПОЛНЕНИЕ ---\n\n{combined}"
+                    merged = f"{embedded_text}\n\n--- ДОПОЛНЕНИЕ \"РАСПОЗНАНИЕ ТЕКСТА\" ---\n\n{combined}"
                     final_merged_conf = self._refine_confidence(merged, (embedded_conf + avg_conf) / 2.0)
                     return merged, float(final_merged_conf), [
                         {"page": p.page, "text": p.text, "confidence": float(p.confidence)} for p in pages_sorted
@@ -493,10 +524,16 @@ class OCRConverter(DocumentProcessor):
             logger.error("Не удалось отрендерить PDF в изображения: %s", e)
             return []
 
-    async def _ocr_images_concurrently(self, image_paths: List[Path]) -> List[PageResult]:
-        """OCR для списка изображений с ограничением конкуренции."""
+    async def _ocr_images_concurrently(self, image_paths: List[Path], progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None) -> List[PageResult]:
+        """Распознание текста для списка изображений с ограничением конкуренции."""
+        total = len(image_paths)
+        if total == 0:
+            return []
+
         sem = asyncio.Semaphore(self.max_pdf_concurrency)
         results: List[PageResult] = []
+        lock = asyncio.Lock()
+        progress = {"done": 0}
 
         async def worker(idx: int, p: Path):
             async with sem:
@@ -505,7 +542,22 @@ class OCRConverter(DocumentProcessor):
                     if text:
                         results.append(PageResult(page=idx + 1, text=text, confidence=float(conf)))
                 except Exception as e:
-                    logger.warning("Ошибка OCR страницы %s: %s", idx + 1, e)
+                    logger.warning("Ошибка распознания текста страницы %s: %s", idx + 1, e)
+                finally:
+                    async with lock:
+                        progress["done"] += 1
+                        if progress_callback:
+                            percent = 45 + (progress["done"] / total) * 40
+                            data = {
+                                "stage": "ocr_page",
+                                "percent": percent,
+                                "pages_total": total,
+                                "pages_done": progress["done"],
+                            }
+                            try:
+                                await progress_callback(data)
+                            except Exception:
+                                logger.debug("Callback распознания текста страницы failed", exc_info=True)
 
         await asyncio.gather(*(worker(i, p) for i, p in enumerate(image_paths)))
         return results
@@ -516,7 +568,7 @@ class OCRConverter(DocumentProcessor):
 
     def _mock_ocr_result(self, file_path: Path) -> Tuple[str, float]:
         return (
-            f"[OCR ЗАГЛУШКА] Содержимое файла {file_path.name} не распознано локальными движками.",
+            f"[РАСПОЗНАНИЕ ТЕКСТА ЗАГЛУШКА] Содержимое файла {file_path.name} не распознано локальными движками.",
             50.0,
         )
 
@@ -529,7 +581,7 @@ class OCRConverter(DocumentProcessor):
         return cleaned
 
     def _apply_ocr_corrections(self, text: str) -> str:
-        """Умные исправления частых OCR-ошибок (минимум ложных срабатываний)."""
+        """Умные исправления частых ошибок режима "распознание текста" (минимум ложных срабатываний)."""
         import re
 
         rules: List[Tuple[str, str]] = [
@@ -580,7 +632,7 @@ class OCRConverter(DocumentProcessor):
         return float(min(1.0, max(0.0, score)))
 
     def _analyze_ocr_quality(self, text: str, confidence: float) -> Dict[str, Any]:
-        """Человеко-понятная оценка качества OCR результата."""
+        """Человеко-понятная оценка качества результата распознания текста."""
         level = "низкое"
         if confidence >= 90:
             level = "отличное"
@@ -601,7 +653,7 @@ class OCRConverter(DocumentProcessor):
         if suspicious_chars > 0:
             recommendations.append("Обнаружены подозрительные символы — требуется ручная проверка")
         if word_count < 10:
-            recommendations.append("Распознано мало текста — проверьте настройки OCR")
+            recommendations.append("Распознано мало текста — проверьте настройки режима \"распознание текста\"")
 
         return {
             "confidence": float(confidence),

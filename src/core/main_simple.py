@@ -15,7 +15,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence
 
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
@@ -47,7 +47,7 @@ from aiogram.types import (
 )
 
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
-from src.bot.document_drafter import (
+from src.documents.document_drafter import (
     DocumentDraftingError,
     build_docx_from_markdown,
     format_plan_summary,
@@ -55,7 +55,7 @@ from src.bot.document_drafter import (
     plan_document,
 )
 from src.bot.status_manager import ProgressStatus, progress_router
-
+from src.bot.retention_notifier import RetentionNotifier
 from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji, sanitize_telegram_html
 from src.core.attachments import QuestionAttachment
@@ -87,6 +87,7 @@ from src.core.settings import AppSettings
 from src.core.app_context import set_settings
 from src.documents.base import ProcessingError
 from src.bot.ratelimit import RateLimiter
+from src.bot.typing_indicator import send_typing_once, typing_action
 
 SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
@@ -98,6 +99,26 @@ VOICE_REPLY_CAPTION = (
 
 PERIOD_OPTIONS = (7, 30, 90)
 PROGRESS_BAR_LENGTH = 10
+FEATURE_LABELS = {
+    "legal_question": "Юридические вопросы",
+    "document_processing": "Обработка документов",
+    "judicial_practice": "Судебная практика",
+    "document_draft": "Составление документов",
+    "voice_message": "Голосовые сообщения",
+    "ocr_processing": "распознание текста",
+    "document_chat": "Чат с документом",
+}
+
+SECTION_DIVIDER = "<code>────────────────────</code>"
+
+def _build_stats_keyboard(has_subscription: bool) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    if not has_subscription:
+        buttons.append([InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 DAY_NAMES = {
     "0": "Вс",
     "1": "Пн",
@@ -167,6 +188,7 @@ task_manager = None
 health_checker = None
 scaling_components = None
 judicial_rag = None
+retention_notifier = None
 
 
 async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, answer_text: str) -> None:
@@ -749,19 +771,93 @@ def _normalize_stats_period(days: int) -> int:
 
 
 def _build_progress_bar(used: int, total: int) -> str:
-    if total <= 0:
-        return "безлимит"
+    if total is None or total <= 0:
+        return "<code>[██████████]</code> ∞ / <b>Безлимит</b>"
+
+    total = max(total, 0)
     used = max(0, min(used, total))
-    ratio = used / total if total else 0
+
+    ratio = used / total if total else 0.0
     filled = min(PROGRESS_BAR_LENGTH, max(0, int(round(ratio * PROGRESS_BAR_LENGTH))))
-    bar = "█" * filled + "░" * (PROGRESS_BAR_LENGTH - filled)
+    bar = f"[{'█' * filled}{'░' * (PROGRESS_BAR_LENGTH - filled)}]"
+    bar_markup = f"<code>{bar}</code>"
+
     remaining = max(0, total - used)
-    return f"{bar} {used}/{total} (осталось {remaining})"
+    if total:
+        remaining_pct = max(0, min(100, int(round((remaining / total) * 100))))
+    else:
+        remaining_pct = 0
+
+    return f"{bar_markup} {used}/{total} · осталось <b>{remaining}</b> ({remaining_pct}%)"
 
 
 def _progress_line(label: str, used: int, total: int) -> str:
-    return f"• {label}: {_build_progress_bar(used, total)}"
+    return f"<b>{label}</b> {_build_progress_bar(used, total)}"
 
+
+def _format_stat_row(label: str, value: str) -> str:
+    return f"<b>{label}</b> · {value}"
+
+
+def _describe_primary_summary(summary: str, unit: str) -> str:
+    if not summary or summary == "—":
+        return "нет данных"
+    if "(" in summary and summary.endswith(")"):
+        label, count = summary.rsplit("(", 1)
+        label = label.strip()
+        count = count[:-1].strip()
+        if count.isdigit():
+            return f"{label} — {count} {unit}"
+        return f"{label} — {count}"
+    return summary
+
+
+def _describe_secondary_summary(summary: str, unit: str) -> str:
+    if not summary:
+        return "нет данных"
+    parts = []
+    for raw in summary.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        tokens = item.split()
+        if len(tokens) >= 2 and tokens[-1].isdigit():
+            count = tokens[-1]
+            label = " ".join(tokens[:-1])
+            parts.append(f"{label} — {count}")
+        else:
+            parts.append(item)
+    if not parts:
+        return "нет данных"
+    return "; ".join(parts)
+
+
+def _peak_summary(
+    counts: dict[str, int],
+    *,
+    mapping: dict[str, str] | None = None,
+    formatter: Callable[[str], str] | None = None,
+    secondary_limit: int = 3,
+) -> tuple[str, str]:
+    if not counts:
+        return "—", ""
+
+    sorted_items = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+
+    def _render(raw_key: str) -> str:
+        label = mapping.get(raw_key, raw_key) if mapping else raw_key
+        return formatter(label) if formatter else label
+
+    primary_key, primary_count = sorted_items[0]
+    primary_label = _render(str(primary_key))
+    primary = f"{primary_label} ({primary_count})"
+
+    secondary_parts: list[str] = []
+    for key, count in sorted_items[1:secondary_limit]:
+        secondary_parts.append(f"{_render(str(key))} {count}")
+
+    secondary = ", ".join(secondary_parts)
+    return primary, secondary
 
 def _top_labels(
     counts: dict[str, int],
@@ -844,13 +940,197 @@ def create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
 
 
 def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
-    """Создаёт клавиатуру для возврата и повторной загрузки OCR."""
+    """Создаёт клавиатуру для возврата и повторной загрузки режима "распознание текста"."""
     return InlineKeyboardMarkup(
         inline_keyboard=[[
             InlineKeyboardButton(text=f"{Emoji.BACK} Назад", callback_data="back_to_menu"),
             InlineKeyboardButton(text=f"{Emoji.DOCUMENT} Загрузить ещё", callback_data=f"ocr_upload_more:{output_format}")
         ]]
     )
+
+
+_BASE_STAGE_LABELS: dict[str, tuple[str, str]] = {
+    "start": ("Подготавливаем обработку", "🚀"),
+    "downloading": ("Скачиваем документ", "⬇️"),
+    "uploaded": ("Файл сохранён", "💾"),
+    "processing": ("Обрабатываем документ", "⏳"),
+    "finalizing": ("Формируем результат", "🧾"),
+    "completed": ("Готово", "✅"),
+    "failed": ("Ошибка обработки", "❌"),
+}
+
+_STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
+    "summarize": {
+        "processing": ("Анализируем структуру", "🧠"),
+        "finalizing": ("Собираем саммари", "📄"),
+    },
+    "analyze_risks": {
+        "processing": ("Анализируем риски", "⚠️"),
+        "pattern_scan": ("Ищем шаблоны рисков", "🧭"),
+        "ai_analysis": ("ИИ анализирует документ", "🤖"),
+        "compliance_check": ("Проверяем требования закона", "⚖️"),
+        "aggregation": ("Сводим результаты", "🗂️"),
+        "highlighting": ("Готовим подсветку", "🔍"),
+    },
+    "anonymize": {
+        "processing": ("Ищем персональные данные", "🕵️"),
+        "finalizing": ("Формируем обезличенную версию", "🧾"),
+    },
+    "translate": {
+        "processing": ("Переводим текст", "🌐"),
+        "finalizing": ("Готовим итоговый перевод", "📝"),
+    },
+    "ocr": {
+        "processing": ("Распознаём текст", "🖨️"),
+        "finalizing": ("Очищаем результат", "🧼"),
+        "ocr_page": ("Распознаём страницы", "📑"),
+    },
+    "chat": {
+        "processing": ("Индексируем документ", "🧠"),
+        "finalizing": ("Готовим чаты", "💬"),
+        "chunking": ("Режем документ на блоки", "🧩"),
+        "indexing": ("Создаём поисковый индекс", "📚"),
+    },
+}
+
+
+def _get_stage_labels(operation: str) -> dict[str, tuple[str, str]]:
+    labels = _BASE_STAGE_LABELS.copy()
+    labels.update(_STAGE_LABEL_OVERRIDES.get(operation, {}))
+    return labels
+
+
+def _format_risk_count(count: int) -> str:
+    count = int(count)
+    suffix = "рисков"
+    if count % 10 == 1 and count % 100 != 11:
+        suffix = "риск"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        suffix = "риска"
+    return f"Найдено {count} {suffix}"
+
+
+def _format_progress_extras(update: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if update.get("risks_found") is not None:
+        parts.append(_format_risk_count(update["risks_found"]))
+    if update.get("violations") is not None:
+        parts.append(f"⚖️ Нарушений: {int(update['violations'])}")
+    if update.get("chunks_total") and update.get("chunk_index"):
+        parts.append(f"🧩 Блок {int(update['chunk_index'])}/{int(update['chunks_total'])}")
+    elif update.get("chunks_total") is not None:
+        parts.append(f"🧩 Блоков: {int(update['chunks_total'])}")
+    if update.get("language_pair"):
+        parts.append(f"🌐 {html_escape(str(update['language_pair']))}")
+    if update.get("mode"):
+        parts.append(f"⚙️ Режим: {html_escape(str(update['mode']))}")
+    if update.get("pages_total") is not None:
+        done = int(update.get("pages_done") or 0)
+        total = int(update["pages_total"])
+        parts.append(f"📑 Страницы: {done}/{total}")
+    if update.get("masked") is not None:
+        parts.append(f"🔐 Заменено: {int(update['masked'])}")
+    if update.get("words") is not None:
+        parts.append(f"📝 Слов: {int(update['words'])}")
+    if update.get("confidence") is not None:
+        parts.append(f"🎯 Точность: {float(update['confidence']):.1f}%")
+    if update.get("note"):
+        parts.append(f"⚠️ {html_escape(str(update['note']))}")
+    return " | ".join(parts)
+
+
+def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
+    data = getattr(result_obj, "data", None) or {}
+    payload: dict[str, Any] = {}
+    if op == "analyze_risks":
+        pattern = len(data.get("pattern_risks", []) or [])
+        ai_risks = len(((data.get("ai_analysis") or {}).get("risks")) or [])
+        payload["risks_found"] = pattern + ai_risks
+        payload["violations"] = len(((data.get("legal_compliance") or {}).get("violations")) or [])
+        payload["overall"] = data.get("overall_risk_level")
+    elif op == "summarize":
+        summary_struct = ((data.get("summary") or {}).get("structured")) or {}
+        payload["words"] = len(((summary_struct.get("summary")) or "").split())
+        payload["chunks_total"] = len(summary_struct.get("key_points") or [])
+    elif op == "anonymize":
+        report = data.get("anonymization_report") or {}
+        masked = report.get("processed_items")
+        if masked is None:
+            stats = report.get("statistics") or {}
+            masked = sum(int(v) for v in stats.values()) if stats else 0
+        payload["masked"] = int(masked or 0)
+    elif op == "translate":
+        meta = data.get("translation_metadata") or {}
+        payload["language_pair"] = meta.get("language_pair")
+        payload["chunks_total"] = meta.get("chunks_processed")
+        payload["mode"] = meta.get("mode")
+    elif op == "ocr":
+        payload["confidence"] = data.get("confidence_score")
+        processing = data.get("processing_info") or {}
+        payload["pages_total"] = processing.get("pages_processed") or len(data.get("pages", []) or [])
+        payload["mode"] = processing.get("file_type")
+    elif op == "chat":
+        info = data.get("document_info") or {}
+        payload["chunks_total"] = info.get("chunks_count")
+    return {k: v for k, v in payload.items() if v not in (None, "", [])}
+
+
+def _make_progress_updater(
+    message: Message,
+    status_msg: Message,
+    *,
+    file_name: str,
+    operation_name: str,
+    file_size_kb: int,
+    stage_labels: dict[str, tuple[str, str]],
+) -> tuple[Callable[[dict[str, Any]], Awaitable[None]], dict[str, Any]]:
+    progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+
+    async def send_progress(update: dict[str, Any]) -> None:
+        nonlocal progress_state, status_msg
+        if not status_msg or not status_msg.message_id:
+            return
+        stage = str(update.get("stage") or progress_state["stage"] or "processing")
+        percent_val = update.get("percent")
+        if percent_val is None:
+            percent = progress_state["percent"]
+        else:
+            percent = max(0, min(100, int(round(float(percent_val)))))
+        if percent < progress_state["percent"] and stage != "failed":
+            percent = progress_state["percent"]
+
+        progress_state["stage"] = stage
+        progress_state["percent"] = percent
+
+        label, icon = stage_labels.get(stage, stage_labels.get("processing", ("Обработка", "⏳")))
+        extras_line = _format_progress_extras(update)
+        elapsed = time.monotonic() - progress_state["started_at"]
+        elapsed_text = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+
+        lines = [
+            f"{icon} {label}: {percent}%",
+            f"🗂️ Файл: <b>{html_escape(file_name)}</b>",
+            f"🛠️ Операция: {html_escape(operation_name)}",
+            f"📊 Размер: {file_size_kb} КБ",
+            f"⏱️ Время: {elapsed_text}",
+        ]
+        if extras_line:
+            lines.append(extras_line)
+
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                text="\n".join(lines),
+                parse_mode=ParseMode.HTML,
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.debug("Progress edit failed: %s", exc)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Unexpected progress update error: %s", exc)
+
+    return send_progress, progress_state
 
 
 async def send_rating_request(message: Message, request_id: int):
@@ -885,6 +1165,104 @@ async def send_rating_request(message: Message, request_id: int):
 
 
 # ============ КОМАНДЫ ============
+
+
+async def _try_send_welcome_media(
+    message: Message,
+    caption_html: str,
+    keyboard: Optional[InlineKeyboardMarkup],
+) -> bool:
+    """Send welcome media via cached file id or local file when available."""
+    if not WELCOME_MEDIA:
+        return False
+
+    media_type = (WELCOME_MEDIA.media_type or "video").lower()
+    media_source = None
+    supports_streaming = False
+    media_caption = caption_html
+
+    if WELCOME_MEDIA.file_id:
+        media_source = WELCOME_MEDIA.file_id
+        supports_streaming = media_type == "video"
+    elif WELCOME_MEDIA.path and WELCOME_MEDIA.path.exists():
+        media_source = FSInputFile(WELCOME_MEDIA.path)
+        supports_streaming = media_type == "video"
+    else:
+        return False
+
+    try:
+        if media_type == "animation":
+            await message.answer_animation(
+                animation=media_source,
+                caption=media_caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        elif media_type == "photo":
+            await message.answer_photo(
+                photo=media_source,
+                caption=media_caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        else:
+            await message.answer_video(
+                video=media_source,
+                caption=media_caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+                supports_streaming=supports_streaming,
+            )
+        return True
+    except Exception as media_error:  # noqa: BLE001
+        logger.warning("Failed to send welcome media: %s", media_error)
+        return False
+
+
+def _profile_menu_text() -> str:
+    return "👤 <b>Мой профиль</b>\n\nВыберите действие:"
+
+
+def _profile_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
+                InlineKeyboardButton(text="🧾 Статус подписки", callback_data="subscription_status"),
+            ],
+            [
+                InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
+                InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
+            ],
+            [
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main"),
+            ],
+        ]
+    )
+
+
+def _main_menu_text() -> str:
+    return (
+        "🏠 <b>Главное меню</b>\n\n"
+        "Выберите действие:"
+    )
+
+
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
+            ],
+            [
+                InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing"),
+            ],
+            [
+                InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
+                InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
+            ],
+        ]
+    )
 
 
 async def cmd_start(message: Message):
@@ -946,41 +1324,24 @@ async def cmd_start(message: Message):
 <b>ПОПРОБУЙТЕ ПРЯМО СЕЙЧАС</b>
 (проверьте меня — напишите вопрос) 👇👇👇"""
 
-    # Создаем inline клавиатуру с кнопками (компактное размещение)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
-            ],
-            [
-                InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
-            ],
-            [
-                InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
-                InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
-            ],
-        ]
+    welcome_html = sanitize_telegram_html(welcome_raw)
+
+    media_sent = await _try_send_welcome_media(
+        message=message,
+        caption_html=welcome_html,
+        keyboard=None,
     )
 
-    if WELCOME_MEDIA and WELCOME_MEDIA.path.exists():
-        try:
-            await message.answer_video(
-                video=FSInputFile(WELCOME_MEDIA.path),
-                caption=sanitize_telegram_html(welcome_raw),  # текст под видео
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-                supports_streaming=True  # чтобы можно было смотреть без полного скачивания
-            )
-            return
-        except Exception as video_error:
-            logger.warning("Failed to send welcome video: %s", video_error)
+    if not media_sent:
+        await message.answer(
+            welcome_html,
+            parse_mode=ParseMode.HTML,
+        )
 
-
-    # финальный фолбэк — просто текст
     await message.answer(
-        sanitize_telegram_html(welcome_raw),
+        _profile_menu_text(),
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
+        reply_markup=_profile_menu_keyboard(),
     )
     logger.info("User %s started bot", message.from_user.id)
 
@@ -1023,6 +1384,16 @@ async def process_question(
     """Главный обработчик юридических вопросов"""
     if not message.from_user:
         return
+
+
+
+    # Выбираем тип индикатора в зависимости от контента
+    if attachments:
+        action = "upload_document"
+    else:
+        action = "typing"
+
+    await send_typing_once(message.bot, message.chat.id, action)
 
     try:
         user_id = _ensure_valid_user_id(message.from_user.id, context="process_question")
@@ -1541,35 +1912,24 @@ async def _send_plan_catalog(message: Message, *, edit: bool = False) -> None:
         await message.answer(text, **kwargs)
 
 
-def _build_stats_keyboard(selected_days: int, has_subscription: bool) -> InlineKeyboardMarkup:
-    period_buttons: list[InlineKeyboardButton] = []
-    for option in PERIOD_OPTIONS:
-        label = f"{option} д"
-        if option == selected_days:
-            label = f"✅ {label}"
-        period_buttons.append(
-            InlineKeyboardButton(text=label, callback_data=f"my_stats:{option}")
-        )
-
-    rows: list[list[InlineKeyboardButton]] = [period_buttons]
-    if not has_subscription:
-        rows.append(
-            [InlineKeyboardButton(text="💳 Купить подписку", callback_data="get_subscription")]
-        )
-    rows.append([InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-async def _generate_user_stats_response(user_id: int, days: int) -> tuple[str, InlineKeyboardMarkup]:
+async def _generate_user_stats_response(
+    user_id: int,
+    days: int,
+    *,
+    stats: dict[str, Any] | None = None,
+    user: Any | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
     if db is None:
         raise RuntimeError("Database is not available")
 
     normalized_days = _normalize_stats_period(days)
-    user = await db.ensure_user(
-        user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
-    )
+    if user is None:
+        user = await db.ensure_user(
+            user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
+        )
 
-    stats = await db.get_user_statistics(user_id, days=normalized_days)
+    if stats is None:
+        stats = await db.get_user_statistics(user_id, days=normalized_days)
     if stats.get("error"):
         raise RuntimeError(stats.get("error"))
 
@@ -1583,7 +1943,6 @@ async def _generate_user_stats_response(user_id: int, days: int) -> tuple[str, I
         max(0, math.ceil((subscription_until_ts - now_ts) / 86400)) if has_subscription else 0
     )
 
-    plan_label = plan_info.plan.name if plan_info else (plan_id or "—")
     subscription_status_text = "❌ Не активна"
     if has_subscription:
         until_text = _format_datetime(subscription_until_ts, default="—")
@@ -1593,6 +1952,15 @@ async def _generate_user_stats_response(user_id: int, days: int) -> tuple[str, I
         subscription_status_text = f"⏰ Истекла {until_text}"
 
     trial_remaining = int(stats.get("trial_remaining", getattr(user, "trial_remaining", 0)) or 0)
+
+    if plan_info:
+        plan_label = plan_info.plan.name
+    elif plan_id:
+        plan_label = plan_id
+    elif trial_remaining > 0:
+        plan_label = "Триал"
+    else:
+        plan_label = "—"
     period_requests = int(stats.get("period_requests", 0) or 0)
     previous_requests = int(stats.get("previous_period_requests", 0) or 0)
     period_successful = int(stats.get("period_successful", 0) or 0)
@@ -1606,6 +1974,11 @@ async def _generate_user_stats_response(user_id: int, days: int) -> tuple[str, I
     hour_counts = stats.get("hour_of_day_counts") or {}
     type_stats = stats.get("request_types") or {}
 
+    day_primary, day_secondary = _peak_summary(day_counts, mapping=DAY_NAMES)
+    hour_primary, hour_secondary = _peak_summary(
+        hour_counts, formatter=_format_hour_label
+    )
+
     last_transaction = stats.get("last_transaction")
 
     created_at_ts = stats.get("created_at") or getattr(user, "created_at", 0)
@@ -1617,95 +1990,91 @@ async def _generate_user_stats_response(user_id: int, days: int) -> tuple[str, I
         subscription_balance_raw = getattr(user, "subscription_requests_balance", None)
     subscription_balance = int(subscription_balance_raw or 0)
 
+    divider = SECTION_DIVIDER
+
     lines = [
         f"{Emoji.STATS} <b>Моя статистика — {normalized_days} дн.</b>",
-        "",
+        divider,
         "👤 <b>Профиль</b>",
-        f"• ID: <code>{user_id}</code>",
-        f"• Статус: {'🛡️ Администратор' if stats.get('is_admin') else '👤 Пользователь'}",
-        f"• Создан: {_format_datetime(created_at_ts)}",
-        f"• Обновлён: {_format_datetime(updated_at_ts)}",
-        f"• Последний запрос: {_format_datetime(last_request_ts)}",
-        f"• Подписка: {subscription_status_text}",
-        f"• План: {plan_label}",
+        _format_stat_row("Дата регистрации", _format_datetime(created_at_ts)),
+                _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("Подписка", subscription_status_text),
+        _format_stat_row("План", plan_label),
     ]
 
-    lines.append("")
+    lines.append(divider)
     lines.append("🔋 <b>Лимиты</b>")
     if TRIAL_REQUESTS > 0:
         trial_used = max(0, TRIAL_REQUESTS - trial_remaining)
         lines.append(_progress_line("Триал", trial_used, TRIAL_REQUESTS))
     else:
-        lines.append("• Триал недоступен")
+        lines.append(_format_stat_row("Триал", "недоступен"))
 
     if plan_info and plan_info.plan.request_quota > 0:
         used = max(0, plan_info.plan.request_quota - subscription_balance)
         lines.append(_progress_line("Подписка", used, plan_info.plan.request_quota))
     elif has_subscription:
-        lines.append("• Подписка: безлимит")
-    else:
-        lines.append("• Подписка не активна")
+        lines.append(_format_stat_row("Подписка", "безлимит"))
 
-    lines.append("")
-    lines.append("📈 <b>Активность</b>")
-    lines.append(f"• Запросов: {_format_trend_value(period_requests, previous_requests)}")
-    lines.append(f"• Успешных: {_format_trend_value(period_successful, previous_successful)}")
-    lines.append(f"• Успешность: {success_rate:.0f}%")
-    lines.append(f"• Ср. время ответа: {_format_response_time(avg_response_time_ms)}")
+    lines.extend([
+        divider,
+        "📈 <b>Активность</b>",
+        _format_stat_row("Запросов", _format_trend_value(period_requests, previous_requests)),
+        _format_stat_row("Успешных", _format_trend_value(period_successful, previous_successful)),
+        _format_stat_row("Успешность", f"{success_rate:.0f}%"),
+        _format_stat_row("Среднее время", _format_response_time(avg_response_time_ms)),
+    ])
     if period_tokens:
-        lines.append(f"• Токены: {_format_number(period_tokens)}")
+        lines.append(_format_stat_row("Токены", _format_number(period_tokens)))
 
-    lines.append("")
-    lines.append("🗓 <b>Когда обращаются</b>")
-    lines.append(f"• Дни: {_top_labels(day_counts, mapping=DAY_NAMES, limit=3)}")
-    lines.append(
-        f"• Часы: {_top_labels(hour_counts, formatter=_format_hour_label, limit=3)}"
-    )
+    lines.append(divider)
+    lines.append("🕒 <b>Когда обращаются</b>")
+    if day_primary != "—":
+        lines.append(_format_stat_row("Самый активный день", _describe_primary_summary(day_primary, "обращений")))
+        if day_secondary:
+            lines.append(_format_stat_row("Другие активные дни", _describe_secondary_summary(day_secondary, "обращений")))
+    else:
+        lines.append(_format_stat_row("Самый активный день", "нет данных"))
 
-    lines.append("")
+    if hour_primary != "—":
+        lines.append(_format_stat_row("Самый активный час", _describe_primary_summary(hour_primary, "обращений")))
+        if hour_secondary:
+            lines.append(_format_stat_row("Другие часы", _describe_secondary_summary(hour_secondary, "обращений")))
+    else:
+        lines.append(_format_stat_row("Самый активный час", "нет данных"))
+
+    lines.append(divider)
     lines.append("📋 <b>Типы запросов</b>")
     if type_stats:
         top_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)[:5]
         for req_type, count in top_types:
-            emoji = Emoji.LAW if req_type == "legal_question" else Emoji.INFO
-            lines.append(f"• {emoji} {req_type}: {count}")
+            share_pct = (count / period_requests * 100) if period_requests else 0.0
+            label = FEATURE_LABELS.get(req_type, req_type)
+            lines.append(_format_stat_row(label, f"{count} ({share_pct:.0f}%)"))
     else:
-        lines.append("• Нет данных")
+        lines.append(_format_stat_row("Типы", "нет данных"))
 
     if last_transaction:
-        lines.append("")
+        lines.append(divider)
         lines.append("💳 <b>Последний платёж</b>")
         currency = last_transaction.get("currency", "RUB") or "RUB"
         amount_minor = last_transaction.get("amount_minor_units")
         if amount_minor is None:
             amount_minor = last_transaction.get("amount")
-        lines.append(f"• Сумма: {_format_currency(amount_minor, currency)}")
-        lines.append(f"• Статус: {last_transaction.get('status', 'unknown')}")
-        lines.append(f"• Дата: {_format_datetime(last_transaction.get('created_at'))}")
+        lines.append(_format_stat_row("Сумма", _format_currency(amount_minor, currency)))
+        lines.append(_format_stat_row("Статус", last_transaction.get("status", "unknown")))
+        lines.append(_format_stat_row("Дата", _format_datetime(last_transaction.get("created_at"))))
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
-                    lines.append(f"• Оплачен тариф: {payload.plan_id}")
+                    lines.append(_format_stat_row("Тариф", payload.plan_id))
             except SubscriptionPayloadError:
                 pass
 
-    recommendations = _build_recommendations(
-        trial_remaining=trial_remaining,
-        has_subscription=has_subscription,
-        subscription_days_left=subscription_days_left,
-        period_requests=period_requests,
-        previous_requests=previous_requests,
-    )
-    if recommendations:
-        lines.append("")
-        lines.append("💡 <b>Рекомендации</b>")
-        for tip in recommendations:
-            lines.append(f"• {tip}")
-
     text = "\n".join(lines)
-    keyboard = _build_stats_keyboard(normalized_days, has_subscription)
+    keyboard = _build_stats_keyboard(has_subscription)
     return text, keyboard
 
 
@@ -2519,6 +2888,7 @@ async def process_voice_message(message: Message):
     if not message.voice:
         return
 
+    # НОВОЕ: Показываем индикатор "записывает голосовое"
     try:
         voice_enabled = settings().voice_mode_enabled
     except RuntimeError:
@@ -2538,8 +2908,10 @@ async def process_voice_message(message: Message):
     try:
         await audio_service.ensure_short_enough(message.voice.duration)
 
-        temp_voice_path = await _download_voice_to_temp(message)
-        transcript = await audio_service.transcribe(temp_voice_path)
+        # Показываем индикатор во время транскрипции и обработки
+        async with typing_action(message.bot, message.chat.id, "record_voice"):
+            temp_voice_path = await _download_voice_to_temp(message)
+            transcript = await audio_service.transcribe(temp_voice_path)
 
         preview = html_escape(transcript[:500])
         if len(transcript) > 500:
@@ -2553,23 +2925,25 @@ async def process_voice_message(message: Message):
         if not response_text:
             return
 
-        try:
-            tts_paths = await audio_service.synthesize(response_text, prefer_male=True)
-        except Exception as tts_error:
-            logger.warning("Text-to-speech failed: %s", tts_error)
-            return
+        # Показываем индикатор "отправляет голосовое" во время генерации TTS
+        async with typing_action(message.bot, message.chat.id, "upload_voice"):
+            try:
+                tts_paths = await audio_service.synthesize(response_text, prefer_male=True)
+            except Exception as tts_error:
+                logger.warning("Text-to-speech failed: %s", tts_error)
+                return
 
-        if not tts_paths:
-            logger.warning("Text-to-speech returned no audio chunks")
-            return
+            if not tts_paths:
+                logger.warning("Text-to-speech returned no audio chunks")
+                return
 
-        for idx, generated_path in enumerate(tts_paths):
-            caption = VOICE_REPLY_CAPTION if idx == 0 else None
-            await message.answer_voice(
-                FSInputFile(generated_path),
-                caption=caption,
-                parse_mode=ParseMode.HTML if caption else None,
-            )
+            for idx, generated_path in enumerate(tts_paths):
+                caption = VOICE_REPLY_CAPTION if idx == 0 else None
+                await message.answer_voice(
+                    FSInputFile(generated_path),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML if caption else None,
+                )
 
     except ValueError as duration_error:
         logger.warning("Voice message duration exceeded: %s", duration_error)
@@ -2595,7 +2969,7 @@ async def process_voice_message(message: Message):
 # ============ СИСТЕМА РЕЙТИНГА ============
 
 async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
-    """Prepare state for another OCR upload after a result message."""
+    """Prepare state for another "распознание текста" upload after a result message."""
     output_format = "txt"
     data = callback.data or ""
     if ":" in data:
@@ -2614,7 +2988,7 @@ async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext):
         await state.set_state(DocumentProcessingStates.waiting_for_document)
 
         await callback.message.answer(
-            f"{Emoji.DOCUMENT} Отправьте следующий файл или фото для OCR.",
+            f"{Emoji.DOCUMENT} Отправьте следующий файл или фото для режима \"распознание текста\".",
             parse_mode=ParseMode.HTML,
         )
         await callback.answer("Готов к загрузке нового документа")
@@ -2847,8 +3221,14 @@ async def handle_search_practice_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        # Создаем сообщение для запроса вопроса
-        await callback.message.answer(
+        instruction_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
+            ]
+        )
+
+        await callback.message.edit_text(
             "🔍 <b>Поиск и аналитика судебной практики</b>\n\n"
             "📝 Опишите ваш юридический вопрос, и я найду релевантную судебную практику:\n\n"
             "• Получите краткую консультацию с 2 ссылками на практику\n"
@@ -2856,6 +3236,7 @@ async def handle_search_practice_callback(callback: CallbackQuery):
             "• Подготовка документов на основе практики\n\n"
             "<i>Напишите ваш вопрос следующим сообщением...</i>",
             parse_mode=ParseMode.HTML,
+            reply_markup=instruction_keyboard,
         )
 
         # Устанавливаем режим поиска практики для пользователя
@@ -2878,28 +3259,10 @@ async def handle_my_profile_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        # Создаем клавиатуру с кнопками профиля
-        profile_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-                    InlineKeyboardButton(text="💎 Статус подписки", callback_data="subscription_status"),
-                ],
-                [
-                    InlineKeyboardButton(text="💳 История платежей", callback_data="payment_history"),
-                    InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
-                ],
-                [
-                    InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main"),
-                ],
-            ]
-        )
-
-        await callback.message.answer(
-            "👤 <b>Мой профиль</b>\n\n"
-            "Выберите действие:",
+        await callback.message.edit_text(
+            _profile_menu_text(),
             parse_mode=ParseMode.HTML,
-            reply_markup=profile_keyboard
+            reply_markup=_profile_menu_keyboard(),
         )
 
     except Exception as e:
@@ -2909,78 +3272,102 @@ async def handle_my_profile_callback(callback: CallbackQuery):
 
 async def handle_my_stats_callback(callback: CallbackQuery):
     """Обработчик кнопки 'Моя статистика'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
+    if not callback.from_user or callback.message is None:
+        await callback.answer("❌ Ошибка данных", show_alert=True)
         return
 
     try:
         await callback.answer()
 
-        # Используем существующую логику из cmd_mystats
         if db is None:
-            await callback.message.answer("Статистика временно недоступна")
+            await callback.message.edit_text(
+                "Статистика временно недоступна",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
         user = await db.ensure_user(
             user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
         )
-
-        # Получаем детальную статистику
         stats = await db.get_user_statistics(user_id, days=30)
 
-        # Форматируем даты
-        def format_timestamp(ts):
-            if not ts or ts == 0:
-                return "Никогда"
-            return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+        try:
+            status_text, keyboard = await _generate_user_stats_response(
+                user_id,
+                days=30,
+                stats=stats,
+                user=user,
+            )
+        except RuntimeError as stats_error:
+            logger.error("Failed to build user stats: %s", stats_error)
+            await callback.message.edit_text(
+                "Статистика временно недоступна",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
+            return
 
-        def format_subscription_status(until_ts):
-            if not until_ts or until_ts == 0:
-                return "❌ Не активна"
-            now = int(time.time())
-            if until_ts > now:
-                dt = datetime.fromtimestamp(until_ts)
-                return f"✅ До {dt.strftime('%d.%m.%Y')}"
-            else:
-                return "⏰ Истекла"
+        def generate_activity_graph(daily_data: Sequence[int]) -> tuple[str, int]:
+            window = list(daily_data)[-7:]
+            if not window:
+                return "", 0
+            max_val = max(window)
+            if max_val <= 0:
+                return "▁" * len(window), sum(window)
+            bars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+            graph = "".join(
+                bars[min(int((value / max_val) * (len(bars) - 1)), len(bars) - 1)]
+                if value > 0
+                else bars[0]
+                for value in window
+            )
+            return graph, sum(window)
 
-        status_text = f"""📊 <b>Моя статистика</b>
+        def format_feature_name(feature: str | None) -> str:
+            feature_names = {
+                "legal_question": "⚖️ Юридические вопросы",
+                "document_processing": "📄 Обработка документов",
+                "judicial_practice": "📚 Судебная практика",
+                "document_draft": "📝 Составление документов",
+                "voice_message": "🎙️ Голосовые сообщения",
+                "ocr_processing": "🔍 распознание текста",
+                "document_chat": "💬 Чат с документом",
+            }
+            if not feature:
+                return "Другие функции"
+            return feature_names.get(feature, feature)
 
-👤 <b>Профиль</b>
-• ID: {user_id}
-• Триал: {stats.get('trial_remaining', 0)} запросов
-• Админ: {"✅" if stats.get('is_admin', False) else "❌"}
-• Создан: {format_timestamp(stats.get('created_at', 0))}
-• Обновлён: {format_timestamp(stats.get('updated_at', 0))}
-• Подписка: {format_subscription_status(stats.get('subscription_until', 0))}
+        extra_sections: list[str] = []
+        divider = "──────────"
 
-📈 <b>Общая статистика</b>
-• Всего запросов: {stats.get('total_requests', 0)}
-• За 30 дней: {stats.get('recent_requests', 0)}
-• Последний запрос: {format_timestamp(stats.get('last_request_at', 0))}
+        def append_section(title: str) -> None:
+            if not extra_sections:
+                extra_sections.append(divider)
+            extra_sections.append(title)
 
-📋 <b>По типам запросов (30 дней)</b>"""
+        daily_activity = stats.get("daily_activity") or []
+        activity_graph, activity_total = generate_activity_graph(daily_activity)
+        if activity_graph:
+            append_section("📈 Активность (7 дн.)")
+            extra_sections.append(f"• {activity_graph} — {activity_total} запросов")
 
-        # Добавляем статистику по типам
-        type_stats = stats.get('request_types', {})
-        if type_stats:
-            for req_type, count in type_stats.items():
-                status_text += f"\n• {req_type}: {count}"
-        else:
-            status_text += "\n• Нет данных"
+        feature_stats = stats.get("feature_stats") or []
+        if feature_stats:
+            append_section("✨ Популярные функции")
+            for feature_data in feature_stats[:5]:
+                feature_name = format_feature_name(feature_data.get("feature"))
+                count = feature_data.get("count", 0)
+                extra_sections.append(f"• {feature_name}: {count}")
 
-        # Добавляем кнопку "Назад"
-        back_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")],
-            ]
-        )
+        if extra_sections:
+            status_text = f"{status_text}\n\n" + "\n".join(extra_sections)
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             status_text,
             parse_mode=ParseMode.HTML,
-            reply_markup=back_keyboard
+            reply_markup=keyboard,
         )
 
     except Exception as e:
@@ -2998,7 +3385,11 @@ async def handle_subscription_status_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer('Сервис временно недоступен')
+            await callback.message.edit_text(
+                "Сервис временно недоступен",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
@@ -3051,7 +3442,7 @@ async def handle_subscription_status_callback(callback: CallbackQuery):
         keyboard_buttons.append([InlineKeyboardButton(text='🔙 Назад к профилю', callback_data='my_profile')])
         subscription_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             status_text,
             parse_mode=ParseMode.HTML,
             reply_markup=subscription_keyboard,
@@ -3070,26 +3461,10 @@ async def handle_back_to_main_callback(callback: CallbackQuery):
     try:
         await callback.answer()
 
-        # Отправляем главное меню (как в команде /start)
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice"),
-                ],
-                [
-                    InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing" ),
-                ],
-                [
-                    InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
-                    InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
-                ],
-            ]
-        )
-
-        await callback.message.answer(
-            "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+        await callback.message.edit_text(
+            _main_menu_text(),
             parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
+            reply_markup=_main_menu_keyboard(),
         )
 
     except Exception as e:
@@ -3107,7 +3482,11 @@ async def handle_payment_history_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer("Сервис временно недоступен")
+            await callback.message.edit_text(
+                "Сервис временно недоступен",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
@@ -3171,7 +3550,7 @@ async def handle_payment_history_callback(callback: CallbackQuery):
             ]
         )
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             history_text,
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard
@@ -3192,14 +3571,22 @@ async def handle_referral_program_callback(callback: CallbackQuery):
         await callback.answer()
 
         if db is None:
-            await callback.message.answer("Сервис временно недоступен")
+            await callback.message.edit_text(
+                "Сервис временно недоступен",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         user_id = callback.from_user.id
         user = await db.get_user(user_id)
 
         if not user:
-            await callback.message.answer("Ошибка получения данных пользователя")
+            await callback.message.edit_text(
+                "Ошибка получения данных пользователя",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_profile_menu_keyboard(),
+            )
             return
 
         referral_code: str | None = None
@@ -3310,7 +3697,7 @@ async def handle_referral_program_callback(callback: CallbackQuery):
 
         referral_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-        await callback.message.answer(
+        await callback.message.edit_text(
             referral_text,
             parse_mode=ParseMode.HTML,
             reply_markup=referral_keyboard
@@ -3426,13 +3813,40 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
         return
 
     try:
+        # Показываем typing indicator для лучшего UX
+        await send_typing_once(callback.bot, callback.message.chat.id, "typing")
+
         await state.clear()
         await state.set_state(DocumentDraftStates.waiting_for_request)
+
         intro_text = (
-            f"{Emoji.MAGIC} <b>Создание юридического документа</b>\n\n"
-            "Кратко опишите, какой документ нужен и для какой ситуации. "
-            "После этого я задам нужные уточнения и подготовлю проект в формате DOCX."
+            f"✨ <b>Создание юридического документа</b>\n"
+            f"<code>{'━' * 35}</code>\n\n"
+
+            f"📋 <b>Как это работает:</b>\n\n"
+
+            f"<b>1️⃣ Опишите задачу</b>\n"
+            f"   └ Расскажите, какой документ нужен\n\n"
+
+            f"<b>2️⃣ Отвечайте на вопросы</b>\n"
+            f"   └ Я уточню детали для точности\n\n"
+
+            f"<b>3️⃣ Получите DOCX</b>\n"
+            f"   └ Готовый документ за минуту\n\n"
+
+            f"<code>{'━' * 35}</code>\n\n"
+
+            f"💡 <i>Совет: Опишите ситуацию максимально подробно — "
+            f"это поможет создать точный документ с первого раза</i>\n\n"
+
+            f"<b>Примеры запросов:</b>\n"
+            f"• Исковое заявление о взыскании долга\n"
+            f"• Договор оказания юридических услуг\n"
+            f"• Жалоба в Роспотребнадзор\n\n"
+
+            f"👇 <b>Опишите, что нужно создать:</b>"
         )
+
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=f"{Emoji.BACK} Отмена", callback_data="doc_draft_cancel")]]
         )
@@ -3447,40 +3861,89 @@ async def handle_doc_draft_cancel(callback: CallbackQuery, state: FSMContext) ->
     """Отмена процесса создания документа."""
     await state.clear()
     with suppress(Exception):
-        await callback.message.answer(f"{Emoji.BACK} Создание документа отменено")
+        await callback.message.answer(
+            f"🚫 <b>Создание документа отменено</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"💡 Вы можете начать заново в любой момент",
+            parse_mode=ParseMode.HTML
+        )
     with suppress(Exception):
-        await callback.answer()
+        await callback.answer("Отменено")
 
 
-async def handle_doc_draft_request(message: Message, state: FSMContext) -> None:
+async def handle_doc_draft_request(
+    message: Message,
+    state: FSMContext,
+    *,
+    text_override: str | None = None,
+) -> None:
     """Обработка исходного запроса юриста."""
-    request_text = (message.text or "").strip()
+    source_text = text_override if text_override is not None else message.text
+    request_text = (source_text or "").strip()
     if not request_text:
-        await message.answer(f"{Emoji.WARNING} Опишите, пожалуйста, какой документ нужен")
+        await message.answer(
+            f"⚠️ <b>Пустой запрос</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"📝 Пожалуйста, опишите какой документ нужен\n\n"
+            f"<i>Например:</i>\n"
+            f"• Договор аренды квартиры\n"
+            f"• Исковое заявление о возврате товара\n"
+            f"• Претензия в управляющую компанию",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     if openai_service is None:
-        await message.answer(f"{Emoji.ERROR} Сервис генерации документов временно недоступен. Попробуйте позже.")
+        await message.answer(
+            f"❌ <b>Сервис недоступен</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"⚠️ Генерация документов временно недоступна\n"
+            f"🔄 Попробуйте позже или обратитесь к администратору",
+            parse_mode=ParseMode.HTML
+        )
         await state.clear()
         return
 
-    status_msg = await message.answer(f"{Emoji.LOADING} Анализирую запрос…")
+    # Показываем индикатор "печатает"
+    await send_typing_once(message.bot, message.chat.id, "typing")
+
+    # Динамический прогресс-бар с автообновлением
+    progress = ProgressStatus(
+        message.bot,
+        message.chat.id,
+        steps=[
+            {"label": "🔍 Определяю тип документа"},
+            {"label": "📝 Формирую план вопросов"},
+            {"label": "✨ Подготавливаю структуру"},
+        ],
+        show_context_toggle=False,
+        show_checklist=True,
+        auto_advance_stages=True,
+        percent_thresholds=[0, 50, 90],
+    )
+
+    await progress.start(auto_cycle=True, interval=1.5)
+
     try:
         plan = await plan_document(openai_service, request_text)
+
+        # Завершаем прогресс успешно
+        await progress.complete()
+        await asyncio.sleep(0.3)  # Короткая пауза для визуального эффекта
     except DocumentDraftingError as err:
-        with suppress(Exception):
-            await status_msg.edit_text(f"{Emoji.ERROR} Не получилось составить план вопросов: {err}")
+        await progress.fail(note=str(err))
         await state.clear()
         return
     except Exception as exc:  # noqa: BLE001
         logger.error("Ошибка планирования документа: %s", exc, exc_info=True)
-        with suppress(Exception):
-            await status_msg.edit_text(f"{Emoji.ERROR} Что-то пошло не так при обращении к модели")
+        await progress.fail(note="Попробуйте еще раз")
         await state.clear()
         return
     else:
         with suppress(Exception):
-            await status_msg.delete()
+            # Удаляем сообщение прогресса после завершения
+            if progress.message_id:
+                await message.bot.delete_message(message.chat.id, progress.message_id)
 
     await state.update_data(
         draft_request=request_text,
@@ -3491,65 +3954,364 @@ async def handle_doc_draft_request(message: Message, state: FSMContext) -> None:
 
     summary = format_plan_summary(plan)
     for chunk in _split_plain_text(summary):
-        await message.answer(chunk)
+        await message.answer(chunk, parse_mode=ParseMode.HTML)
 
     if plan.questions:
         await state.set_state(DocumentDraftStates.asking_details)
-        await _send_next_question(message, state, prefix="Вопрос")
+        await _send_questions_prompt(
+            message,
+            plan.questions,
+            title="Вопросы для подготовки документа",
+        )
     else:
         await state.set_state(DocumentDraftStates.generating)
-        await message.answer(f"{Emoji.LOADING} Деталей достаточно, формирую документ…")
+        await message.answer(
+            f"✅ <b>Информации достаточно!</b>\n"
+            f"<code>{'▰' * 20}</code>\n\n"
+            f"🚀 Приступаю к формированию документа\n"
+            f"⏱ Это займет около минуты",
+            parse_mode=ParseMode.HTML
+        )
         await _finalize_draft(message, state)
 
 
-async def handle_doc_draft_answer(message: Message, state: FSMContext) -> None:
+async def handle_doc_draft_answer(
+    message: Message,
+    state: FSMContext,
+    *,
+    text_override: str | None = None,
+) -> None:
     """Обработка ответов юриста на уточняющие вопросы."""
+    # Показываем typing indicator при обработке ответов
+    await send_typing_once(message.bot, message.chat.id, "typing")
+
     data = await state.get_data()
     plan = data.get("draft_plan") or {}
     questions = plan.get("questions") or []
     index = data.get("current_question_index", 0)
 
     if index >= len(questions):
-        await message.answer(f"{Emoji.WARNING} Все ответы уже получены, приступаю к формированию документа")
+        await message.answer(
+            f"✅ <b>Ответы получены</b>\n"
+            f"<code>{'▰' * 20}</code>\n\n"
+            f"🚀 Приступаю к формированию документа",
+            parse_mode=ParseMode.HTML
+        )
         await state.set_state(DocumentDraftStates.generating)
         await _finalize_draft(message, state)
         return
 
-    answer_text = (message.text or "").strip()
+    source_text = text_override if text_override is not None else message.text
+    answer_text = (source_text or "").strip()
     if not answer_text:
-        await message.answer(f"{Emoji.WARNING} Пожалуйста, введите ответ")
+        await message.answer(
+            f"⚠️ <b>Пустой ответ</b>\n\n"
+            f"📝 Пожалуйста, введите ваш ответ на вопрос",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     answers = data.get("draft_answers") or []
-    answers.append({"question": questions[index]["text"], "answer": answer_text})
-    index += 1
+    bulk_answers = _extract_answer_chunks(answer_text)
 
-    await state.update_data(draft_answers=answers, current_question_index=index)
+    if bulk_answers:
+        remaining_questions = questions[index:]
+        used_count = 0
+        for offset, chunk in enumerate(bulk_answers):
+            if offset >= len(remaining_questions):
+                break
+            question = remaining_questions[offset]
+            answers.append({"question": question.get("text", ""), "answer": chunk})
+            used_count += 1
 
-    if index < len(questions):
-        await _send_next_question(message, state, prefix="Вопрос")
-    else:
-        await state.set_state(DocumentDraftStates.generating)
-        await message.answer(f"{Emoji.LOADING} Спасибо! Формирую документ…")
-        await _finalize_draft(message, state)
+        if used_count > 0:
+            if used_count < len(bulk_answers):
+                extra = "\n".join(bulk_answers[used_count:]).strip()
+                if extra and answers:
+                    answers[-1]["answer"] = f"{answers[-1]['answer']}\n{extra}"
+            index += used_count
+
+            await state.update_data(draft_answers=answers, current_question_index=index)
+            if index < len(questions):
+                missing_numbers = ", ".join(str(i) for i in range(index + 1, len(questions) + 1))
+                await message.answer(
+                    f"⚠️ <b>Неполные ответы</b>\n"
+                    f"<code>{'─' * 30}</code>\n\n"
+                    f"✅ Получено ответов: <b>{index}</b>\n"
+                    f"❌ Осталось вопросов: <b>{len(questions) - index}</b>\n"
+                    f"📝 Номера вопросов: {missing_numbers}\n\n"
+                    f"<b>Как дополнить:</b>\n"
+                    f"• Отправьте недостающие ответы одним сообщением\n"
+                    f"• Отделяйте пустой строкой или нумеруйте",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await state.set_state(DocumentDraftStates.generating)
+                await message.answer(
+                    f"⚙️ <b>Формирование документа...</b>\n"
+                    f"<code>{'▰' * 20}</code>\n\n"
+
+                    f"✅ Все ответы получены\n"
+                    f"🔄 Анализирую информацию\n"
+                    f"📝 Подготавливаю текст\n"
+                    f"📄 Формирую DOCX файл\n\n"
+
+                    f"<i>⏱ Обычно занимает 30-60 секунд</i>",
+                    parse_mode=ParseMode.HTML,
+                )
+                await _finalize_draft(message, state)
+            return
+        # если не удалось сопоставить ни одного ответа — переходим к обычной обработке
+
+    await message.answer(
+        f"⚠️ <b>Неверный формат ответов</b>\n"
+        f"<code>{'─' * 30}</code>\n\n"
+        f"📝 Отправьте ответы <b>одним сообщением</b>\n\n"
+        f"<b>Варианты форматирования:</b>\n\n"
+        f"<b>Вариант 1 - Нумерация:</b>\n"
+        f"<code>1) Первый ответ</code>\n"
+        f"<code>2) Второй ответ</code>\n"
+        f"<code>3) Третий ответ</code>\n\n"
+        f"<b>Вариант 2 - Пустые строки:</b>\n"
+        f"<code>Первый ответ</code>\n"
+        f"<code></code>\n"
+        f"<code>Второй ответ</code>\n"
+        f"<code></code>\n"
+        f"<code>Третий ответ</code>",
+        parse_mode=ParseMode.HTML,
+    )
 
 
-async def _send_next_question(message: Message, state: FSMContext, *, prefix: str) -> None:
-    data = await state.get_data()
-    plan = data.get("draft_plan") or {}
-    questions = plan.get("questions") or []
-    index = data.get("current_question_index", 0)
 
-    if index >= len(questions):
+
+async def _extract_doc_voice_text(message: Message) -> str | None:
+    """Распознать голосовое сообщение в сценарии составления документа."""
+    if not message.voice:
+        return None
+
+    if audio_service is None:
+        await message.answer(f"{Emoji.WARNING} Голосовой режим недоступен, отправьте текстовое сообщение.")
+        return None
+
+    try:
+        voice_enabled = settings().voice_mode_enabled
+    except RuntimeError:
+        voice_enabled = bool(getattr(config, "voice_mode_enabled", False))
+
+    if not voice_enabled:
+        await message.answer(f"{Emoji.WARNING} Голосовой режим сейчас выключен. Пришлите ответ текстом.")
+        return None
+
+    if not message.bot:
+        await message.answer(f"{Emoji.WARNING} Не удалось получить доступ к боту. Ответьте текстом.")
+        return None
+
+    temp_voice_path: Path | None = None
+    try:
+        await audio_service.ensure_short_enough(message.voice.duration)
+
+        async with typing_action(message.bot, message.chat.id, "record_voice"):
+            temp_voice_path = await _download_voice_to_temp(message)
+            transcript = await audio_service.transcribe(temp_voice_path)
+    except ValueError as duration_error:
+        logger.warning("Document draft voice input too long: %s", duration_error)
+        await message.answer(
+            f"{Emoji.WARNING} Голосовое сообщение слишком длинное. Максимальная длительность — {audio_service.max_duration_seconds} секунд."
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to transcribe voice for document draft: %s", exc)
+        await message.answer(
+            f"{Emoji.ERROR} Не получилось распознать голос. Отправьте ответ текстом, пожалуйста."
+        )
+        return None
+    finally:
+        with suppress(Exception):
+            if temp_voice_path:
+                temp_voice_path.unlink()
+
+    preview = html_escape(transcript[:500])
+    if len(transcript) > 500:
+        preview += "…"
+    await message.answer(
+        f"{Emoji.MICROPHONE} Распознанный текст:\n<i>{preview}</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    return transcript
+
+
+async def handle_doc_draft_request_voice(message: Message, state: FSMContext) -> None:
+    """Обработать голосовой запрос на составление документа."""
+    transcript = await _extract_doc_voice_text(message)
+    if transcript is None:
+        return
+    await handle_doc_draft_request(message, state, text_override=transcript)
+
+
+async def handle_doc_draft_answer_voice(message: Message, state: FSMContext) -> None:
+    """Обработать голосовой ответ в сценарии уточняющих вопросов."""
+    transcript = await _extract_doc_voice_text(message)
+    if transcript is None:
+        return
+    await handle_doc_draft_answer(message, state, text_override=transcript)
+
+
+def _extract_answer_chunks(answer_text: str) -> list[str] | None:
+    """Попробовать выделить несколько ответов из свободного текста."""
+    text = (answer_text or "").strip()
+    if not text:
+        return None
+
+    lines = text.splitlines()
+    numbered_pattern = re.compile(r"^\s*(\d+)[\).\:-]\s*(.*)")
+    answers: list[str] = []
+    current: list[str] | None = None
+    has_numbers = False
+
+    for line in lines:
+        match = numbered_pattern.match(line)
+        if match:
+            has_numbers = True
+            if current is not None:
+                chunk = "\n".join(current).strip()
+                if chunk:
+                    answers.append(chunk)
+            current = [match.group(2)]
+        else:
+            if current is not None:
+                current.append(line)
+    if has_numbers:
+        if current:
+            chunk = "\n".join(current).strip()
+            if chunk:
+                answers.append(chunk)
+        return answers if len(answers) > 1 else None
+
+    bullet_pattern = re.compile(r"^\s*[-•]\s*(.*)")
+    answers = []
+    current = None
+    for line in lines:
+        match = bullet_pattern.match(line)
+        if match:
+            if current:
+                chunk = "\n".join(current).strip()
+                if chunk:
+                    answers.append(chunk)
+            current = [match.group(1)]
+        else:
+            if current:
+                current.append(line)
+    if current:
+        chunk = "\n".join(current).strip()
+        if chunk:
+            answers.append(chunk)
+    if len(answers) > 1:
+        return answers
+
+    chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
+    if len(chunks) > 1:
+        return chunks
+
+    return None
+
+async def _send_questions_prompt(
+    message: Message,
+    questions: list[dict[str, Any]],
+    *,
+    title: str,
+) -> None:
+    if not questions:
         return
 
-    question = questions[index]
-    purpose = question.get("purpose")
-    text = question.get("text", "")
-    parts = [f"{Emoji.MAGIC} {prefix} {index + 1}: {text}"]
-    if purpose:
-        parts.append(f"<i>Цель: {purpose}</i>")
-    await message.answer("\n".join(parts), parse_mode=ParseMode.HTML)
+    # Показываем typing indicator перед отправкой вопросов
+    await send_typing_once(message.bot, message.chat.id, "typing")
+
+    # Форматируем вопросы с улучшенным дизайном
+    question_blocks: list[str] = []
+    for idx, question in enumerate(questions, 1):
+        text = html_escape(question.get("text", ""))
+        purpose = question.get("purpose")
+
+        # Чистый и читаемый дизайн без лишних линий
+        block_lines = [
+            f"<b>{idx}. {text}</b>",  # Вопрос жирным шрифтом
+        ]
+
+        if purpose:
+            block_lines.append(f"<i>   💡 {html_escape(purpose)}</i>")  # Цель с отступом
+
+        question_blocks.append("\n".join(block_lines))
+
+    if not question_blocks:
+        return
+
+    # Только список вопросов (инструкция уже в сообщении выше)
+    max_len = 3500
+    chunk_lines: list[str] = [
+        "📋 <b>Вопросы:</b>",
+        f"<code>{'─' * 35}</code>",
+        ""
+    ]
+
+    for block in question_blocks:
+        candidate = chunk_lines + [block, ""]  # Пустая строка между вопросами
+        candidate_text = "\n".join(candidate)
+        if len(candidate_text) > max_len and len(chunk_lines) > 3:
+            await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+            chunk_lines = [
+                "📋 <b>Вопросы (продолжение):</b>",
+                f"<code>{'─' * 35}</code>",
+                "",
+                block,
+                ""
+            ]
+        else:
+            if len(candidate_text) > max_len:
+                # блок слишком большой сам по себе — отправим отдельно
+                await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+                chunk_lines = [
+                    "📋 <b>Вопросы (продолжение):</b>",
+                    f"<code>{'─' * 35}</code>",
+                    "",
+                    block,
+                    ""
+                ]
+            else:
+                chunk_lines.append(block)
+                chunk_lines.append("")  # Пустая строка между вопросами
+
+    if len(chunk_lines) > 3:
+        await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+
+
+
+_TITLE_SANITIZE_RE = re.compile(r"[\\/:*?\"<>|\r\n]+")
+_TITLE_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _prepare_document_titles(raw_title: str | None) -> tuple[str, str, str]:
+    base = (raw_title or "").strip()
+    if not base:
+        base = "Документ"
+    if base.endswith(")") and "(" in base:
+        simplified = re.sub(r"\s*\([^)]*\)\s*$", "", base).strip()
+        if simplified:
+            base = simplified
+    display_title = _TITLE_WHITESPACE_RE.sub(" ", base).strip()
+    if not display_title:
+        display_title = "Документ"
+    caption = f"{Emoji.DOCUMENT} {display_title}"
+
+    file_stub = _TITLE_SANITIZE_RE.sub("_", display_title).strip("._ ")
+    if not file_stub:
+        file_stub = "Документ"
+    max_len = 80
+    if len(file_stub) > max_len:
+        file_stub = file_stub[:max_len].rstrip("._ ")
+        if not file_stub:
+            file_stub = "Документ"
+    filename = f"{file_stub}.docx"
+    return display_title, caption, filename
 
 
 async def _finalize_draft(message: Message, state: FSMContext) -> None:
@@ -3564,8 +4326,10 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    # Показываем индикатор "отправляет документ" во время генерации
     try:
-        result = await generate_document(openai_service, request_text, title, answers)
+        async with typing_action(message.bot, message.chat.id, "upload_document"):
+            result = await generate_document(openai_service, request_text, title, answers)
     except DocumentDraftingError as err:
         await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
         await state.clear()
@@ -3593,7 +4357,11 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
             )
             await state.set_state(DocumentDraftStates.asking_details)
             await message.answer(f"{Emoji.WARNING} Нужно несколько уточнений, чтобы завершить документ.")
-            await _send_next_question(message, state, prefix="Дополнительный вопрос")
+            await _send_questions_prompt(
+                message,
+                extra_questions,
+                title="Дополнительные вопросы",
+            )
             return
 
         issues_text = "\n".join(result.issues) or "Модель не смогла подготовить документ."
@@ -3601,23 +4369,56 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    # Показываем информацию о проверке и предупреждения
     notes: list[str] = []
     if result.validated:
-        notes.append("Проверено:\n- " + "\n- ".join(result.validated))
+        validated_items = "\n".join([f"  ✓ {item}" for item in result.validated])
+        notes.append(
+            f"✅ <b>Проверено:</b>\n{validated_items}"
+        )
+
     if result.issues:
-        notes.append(f"{Emoji.WARNING} На что обратить внимание:\n- " + "\n- ".join(result.issues))
+        issues_items = "\n".join([f"  ⚠️ {item}" for item in result.issues])
+        notes.append(
+            f"⚠️ <b>На что обратить внимание:</b>\n{issues_items}"
+        )
+
     if notes:
-        await message.answer("\n\n".join(notes))
+        info_text = (
+            f"<code>{'━' * 35}</code>\n"
+            f"{chr(10).join(notes)}\n"
+            f"<code>{'━' * 35}</code>"
+        )
+        await message.answer(info_text, parse_mode=ParseMode.HTML)
 
-
+    # Создаем и отправляем документ
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
         tmp_path = Path(tmp_file.name)
     try:
         build_docx_from_markdown(result.markdown, str(tmp_path))
-        caption = f"{Emoji.DOCUMENT} {result.title}" if result.title else f"{Emoji.DOCUMENT} Документ"
-        await message.answer_document(FSInputFile(str(tmp_path)), caption=caption)
+        display_title, caption, filename = _prepare_document_titles(result.title or title)
+
+        # Красивое сообщение с документом
+        final_caption = (
+            f"📄 <b>{display_title}</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"✨ Документ успешно создан!\n"
+            f"📎 Формат: DOCX\n\n"
+            f"<i>💡 Проверьте содержимое и при необходимости внесите правки</i>"
+        )
+
+        await message.answer_document(
+            FSInputFile(str(tmp_path), filename=filename),
+            caption=final_caption,
+            parse_mode=ParseMode.HTML
+        )
     except DocumentDraftingError as err:
-        await message.answer(f"{Emoji.ERROR} Не удалось сформировать DOCX: {err}")
+        await message.answer(
+            f"❌ <b>Ошибка формирования DOCX</b>\n"
+            f"<code>{'─' * 30}</code>\n\n"
+            f"⚠️ {err}",
+            parse_mode=ParseMode.HTML
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
     await state.clear()
@@ -3654,13 +4455,13 @@ async def handle_document_processing(callback: CallbackQuery):
         message_text = (
             "🗂️ <b>Работа с документами</b>\n\n"
             "Автоматическая обработка и анализ ваших документов с помощью ИИ\n\n"
-            "🔹 <b>Что можно делать:</b>\n"
-            "• Создавать краткие выжимки больших документов\n"
-            "• Находить риски и проблемы в договорах\n"
-            "• Задавать вопросы по содержанию файлов\n"
-            "• Переводить на другие языки\n"
-            "• Обезличивать персональные данные\n"
-            "• Распознавать текст со сканов и фото\n\n"
+            "🔹 <b>Что можно делать:</b>\n\n"
+            "• <b>Краткое резюме</b> — превращает объёмные документы в короткие выжимки\n"
+            "• <b>Риск-анализ</b> — находит опасные формулировки и проблемные места в договорах\n"
+            "• <b>Диалог с файлом</b> — отвечает на вопросы по содержанию документа\n"
+            "• <b>Перевод</b> — переносит текст на выбранный язык\n"
+            "• <b>Обезличивание</b> — скрывает персональные данные и конфиденциальные сведения\n"
+            "• <b>Распознание текста</b> — извлекает текст со сканов и фотографий\n\n"
             "👇 <b>Выберите нужную операцию:</b>"
         )
 
@@ -3679,6 +4480,9 @@ async def handle_document_processing(callback: CallbackQuery):
 async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора операции с документом"""
     try:
+        # Показываем typing indicator
+        await send_typing_once(callback.bot, callback.message.chat.id, "typing")
+
         operation = callback.data.replace("doc_operation_", "")
         operation_info = document_manager.get_operation_info(operation)
 
@@ -3768,7 +4572,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
                 "Международных договоров, документооборота с зарубежными партнерами"
             ),
             "ocr": (
-                "👁️ <b>OCR - распознавание текста</b>\n\n"
+                "👁️ <b>Режим \"распознание текста\"</b>\n\n"
                 "⚙️ <b>Как это работает:</b>\n"
                 "• Извлекает текст из сканированных документов\n"
                 "• Распознает текст на изображениях и PDF\n"
@@ -3826,6 +4630,46 @@ async def handle_back_to_menu(callback: CallbackQuery, state: FSMContext):
         await callback.answer(f"Ошибка: {e}")
         logger.error(f"Ошибка в handle_back_to_menu: {e}", exc_info=True)
 
+
+async def handle_retention_quick_question(callback: CallbackQuery):
+    """Обработка кнопки 'Задать вопрос' из retention уведомления"""
+    try:
+        await callback.answer()
+        await callback.message.answer(
+            f"{Emoji.ROBOT} <b>Отлично!</b>\n\n"
+            "Просто напиши свой вопрос, и я отвечу на него.\n\n"
+            f"{Emoji.INFO} <i>Пример:</i> Что делать, если нарушили права потребителя?",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_retention_quick_question: {e}", exc_info=True)
+
+
+async def handle_retention_show_features(callback: CallbackQuery):
+    """Обработка кнопки 'Все возможности' из retention уведомления"""
+    try:
+        await callback.answer()
+
+        features_text = (
+            f"{Emoji.ROBOT} <b>Что я умею:</b>\n\n"
+            f"{Emoji.QUESTION} <b>Юридические консультации</b>\n"
+            "Отвечаю на вопросы по любым правовым темам\n\n"
+            f"📄 <b>Работа с документами</b>\n"
+            "• Анализ договоров и документов\n"
+            "• Поиск рисков и проблем\n"
+            "• Режим \"распознание текста\" — извлечение текста из фото\n"
+            "• Составление документов\n\n"
+            f"📚 <b>Судебная практика</b>\n"
+            "Поиск релевантных судебных решений\n\n"
+            f"{Emoji.MICROPHONE} <b>Голосовые сообщения</b>\n"
+            "Отправь голосовое — получишь голосовой ответ\n\n"
+            f"{Emoji.INFO} Просто напиши вопрос или выбери действие!"
+        )
+
+        await callback.message.answer(features_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error in handle_retention_show_features: {e}", exc_info=True)
+
 # --- progress router hookup ---
 def register_progressbar(dp: Dispatcher) -> None:
     dp.include_router(progress_router)
@@ -3847,7 +4691,8 @@ async def cmd_askdoc(message: Message) -> None:
 
     question = parts[1].strip()
     try:
-        result = await document_manager.answer_chat_question(message.from_user.id, question)
+        async with typing_action(message.bot, message.chat.id, "typing"):
+            result = await document_manager.answer_chat_question(message.from_user.id, question)
     except ProcessingError as exc:
         await message.answer(f"{Emoji.WARNING} {html_escape(exc.message)}", parse_mode=ParseMode.HTML)
         return
@@ -3882,153 +4727,173 @@ async def handle_document_upload(message: Message, state: FSMContext):
             await message.answer("❌ Ошибка: документ не найден")
             return
 
-        # Получаем данные из состояния
-        data = await state.get_data()
-        operation = data.get("document_operation")
-        options = dict(data.get("operation_options") or {})
-        output_format = str(options.get("output_format", "txt"))
-        output_format = str(options.get("output_format", "txt"))
+        # НОВОЕ: Показываем индикатор "отправляет документ"
+        async with typing_action(message.bot, message.chat.id, "upload_document"):
+            # Получаем данные из состояния
+            data = await state.get_data()
+            operation = data.get("document_operation")
+            options = dict(data.get("operation_options") or {})
+            output_format = str(options.get("output_format", "txt"))
+            output_format = str(options.get("output_format", "txt"))
 
-        if not operation:
-            await message.answer("❌ Операция не выбрана. Начните заново с /start")
-            await state.clear()
-            return
+            if not operation:
+                await message.answer("❌ Операция не выбрана. Начните заново с /start")
+                await state.clear()
+                return
 
-        # Переходим в состояние обработки
-        await state.set_state(DocumentProcessingStates.processing_document)
+            # Переходим в состояние обработки
+            await state.set_state(DocumentProcessingStates.processing_document)
 
-        # Информация о файле
-        file_name = message.document.file_name or "unknown"
-        file_size = message.document.file_size or 0
-        mime_type = message.document.mime_type or "application/octet-stream"
+            # Информация о файле
+            file_name = message.document.file_name or "unknown"
+            file_size = message.document.file_size or 0
+            mime_type = message.document.mime_type or "application/octet-stream"
 
-        # Проверяем размер файла (максимум 50MB)
-        max_size = 50 * 1024 * 1024
-        if file_size > max_size:
-            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-            await message.answer(
-                f"{Emoji.ERROR} Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
-            await state.clear()
-            return
-
-        # Показываем статус обработки
-        operation_info = document_manager.get_operation_info(operation) or {}
-        operation_name = operation_info.get("name", operation)
-
-        status_msg = await message.answer(
-            f"📄 Обрабатываем документ <b>{html_escape(file_name)}</b>...\n\n"
-            f"⏳ Операция: {html_escape(operation_name)}\n"
-            f"📊 Размер: {file_size // 1024} КБ",
-            parse_mode=ParseMode.HTML,
-        )
-
-        try:
-            # Скачиваем файл
-            file_info = await message.bot.get_file(message.document.file_id)
-            file_path = file_info.file_path
-
-            if not file_path:
-                raise ProcessingError("Не удалось получить путь к файлу", "FILE_ERROR")
-
-            file_content = await message.bot.download_file(file_path)
-
-            documents_dir = Path("documents")
-            documents_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(file_name).name or "document"
-            unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-            stored_path = documents_dir / unique_name
-
-            file_bytes = file_content.read()
-            stored_path.write_bytes(file_bytes)
-
-            try:
-                result = await document_manager.process_document(
-                    user_id=message.from_user.id,
-                    file_content=file_bytes,
-                    original_name=file_name,
-                    mime_type=mime_type,
-                    operation=operation,
-                    **options,
-                )
-            finally:
-                with suppress(Exception):
-                    stored_path.unlink(missing_ok=True)
-
-            # Удаляем статусное сообщение
-            try:
-                await status_msg.delete()
-            except:
-                pass
-
-            if result.success:
-                # Форматируем результат для Telegram
-                formatted_result = document_manager.format_result_for_telegram(result, operation)
-
-                # Отправляем результат
-                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-
-                exports = result.data.get("exports") or []
-                for export in exports:
-                    export_path = export.get("path")
-                    if not export_path:
-                        error_msg = export.get("error")
-                        if error_msg:
-                            await message.answer(f"{Emoji.WARNING} {error_msg}")
-                        continue
-                    label = export.get("label") or export.get("name")
-                    file_name = Path(export_path).name
-                    format_tag = str(export.get("format", "file")).upper()
-                    parts = [f"📄 {format_tag}"]
-                    if label:
-                        parts.append(str(label))
-                    parts.append(file_name)
-                    caption = " • ".join(part for part in parts if part)
-                    try:
-                        await message.answer_document(FSInputFile(export_path), caption=caption)
-                    except Exception as send_error:
-                        logger.error(
-                            f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
-                        )
-                        await message.answer(
-                            f"Не удалось отправить файл {file_name}"
-                        )
-                    finally:
-                        with suppress(Exception):
-                            Path(export_path).unlink(missing_ok=True)
-
-                logger.info(
-                    f"Successfully processed document {file_name} for user {message.from_user.id}"
-                )
-            else:
+            # Проверяем размер файла (максимум 50MB)
+            max_size = 50 * 1024 * 1024
+            if file_size > max_size:
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
+                    f"{Emoji.ERROR} Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
+                await state.clear()
+                return
 
-        except Exception as e:
-            # Удаляем статусное сообщение в случае ошибки
-            try:
-                await status_msg.delete()
-            except:
-                pass
+            # Показываем статус обработки
+            operation_info = document_manager.get_operation_info(operation) or {}
+            operation_name = operation_info.get("name", operation)
+            file_size_kb = max(1, file_size // 1024)
 
-            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-            await message.answer(
-                f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
+            stage_labels = _get_stage_labels(operation)
+
+            status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
+
+            send_progress, progress_state = _make_progress_updater(
+                message,
+                status_msg,
+                file_name=file_name,
+                operation_name=operation_name,
+                file_size_kb=file_size_kb,
+                stage_labels=stage_labels,
             )
-            logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
-        finally:
-            # Очищаем состояние
-            await state.clear()
+            await send_progress({"stage": "start", "percent": 5})
+
+            try:
+                await send_progress({"stage": "downloading", "percent": 18})
+                # Скачиваем файл
+                file_info = await message.bot.get_file(message.document.file_id)
+                file_path = file_info.file_path
+
+                if not file_path:
+                    raise ProcessingError("Не удалось получить путь к файлу", "FILE_ERROR")
+
+                file_content = await message.bot.download_file(file_path)
+
+                documents_dir = Path("documents")
+                documents_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = Path(file_name).name or "document"
+                unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+                stored_path = documents_dir / unique_name
+
+                file_bytes = file_content.read()
+                stored_path.write_bytes(file_bytes)
+                await send_progress({"stage": "uploaded", "percent": 32})
+
+                try:
+                    await send_progress({"stage": "processing", "percent": 45})
+                    result = await document_manager.process_document(
+                        user_id=message.from_user.id,
+                        file_content=file_bytes,
+                        original_name=file_name,
+                        mime_type=mime_type,
+                        operation=operation,
+                        progress_callback=send_progress,
+                        **options,
+                    )
+                finally:
+                    with suppress(Exception):
+                        stored_path.unlink(missing_ok=True)
+
+                await send_progress({"stage": "finalizing", "percent": 90})
+
+                if result.success:
+                    # Форматируем результат для Telegram
+                    formatted_result = document_manager.format_result_for_telegram(result, operation)
+
+                    # Отправляем результат
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+                    exports = result.data.get("exports") or []
+                    for export in exports:
+                        export_path = export.get("path")
+                        if not export_path:
+                            error_msg = export.get("error")
+                            if error_msg:
+                                await message.answer(f"{Emoji.WARNING} {error_msg}")
+                            continue
+                        label = export.get("label") or export.get("name")
+                        file_name = Path(export_path).name
+                        format_tag = str(export.get("format", "file")).upper()
+                        parts = [f"📄 {format_tag}"]
+                        if label:
+                            parts.append(str(label))
+                        parts.append(file_name)
+                        caption = " • ".join(part for part in parts if part)
+                        try:
+                            await message.answer_document(FSInputFile(export_path), caption=caption)
+                        except Exception as send_error:
+                            logger.error(
+                                f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
+                            )
+                            await message.answer(
+                                f"Не удалось отправить файл {file_name}"
+                            )
+                        finally:
+                            with suppress(Exception):
+                                Path(export_path).unlink(missing_ok=True)
+
+                    completion_payload = _build_completion_payload(operation, result)
+                    await send_progress({'stage': 'completed', 'percent': 100, **completion_payload})
+                    with suppress(Exception):
+                        await asyncio.sleep(0.6)
+                        await status_msg.delete()
+
+                    logger.info(
+                        f"Successfully processed document {file_name} for user {message.from_user.id}"
+                    )
+                else:
+                    await send_progress({'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message})
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(
+                        f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+                    with suppress(Exception):
+                        await status_msg.delete()
+
+            except Exception as e:
+                # Удаляем статусное сообщение в случае ошибки
+                try:
+                    await status_msg.delete()
+                except:
+                    pass
+
+                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                await message.answer(
+                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+                logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
+
+            finally:
+                # Очищаем состояние
+                await state.clear()
 
     except Exception as e:
         reply_markup = None
@@ -4044,158 +4909,183 @@ async def handle_document_upload(message: Message, state: FSMContext):
 
 
 async def handle_photo_upload(message: Message, state: FSMContext):
-    """Обработка загруженной фотографии для OCR"""
+    """Обработка загруженной фотографии для режима "распознание текста"."""
     try:
         if not message.photo:
             await message.answer("❌ Ошибка: фотография не найдена")
             return
 
-        # Получаем данные из состояния
-        data = await state.get_data()
-        operation = data.get("document_operation")
-        options = dict(data.get("operation_options") or {})
-        output_format = str(options.get("output_format", "txt"))
-        output_format = str(options.get("output_format", "txt"))
+        # Показываем индикатор "отправляет фото"
+        async with typing_action(message.bot, message.chat.id, "upload_photo"):
+            # Получаем данные из состояния
+            data = await state.get_data()
+            operation = data.get("document_operation")
+            options = dict(data.get("operation_options") or {})
+            output_format = str(options.get("output_format", "txt"))
+            output_format = str(options.get("output_format", "txt"))
 
-        if not operation:
-            await message.answer("❌ Операция не выбрана. Начните заново с /start")
-            await state.clear()
-            return
+            if not operation:
+                await message.answer("❌ Операция не выбрана. Начните заново с /start")
+                await state.clear()
+                return
 
-        # Переходим в состояние обработки
-        await state.set_state(DocumentProcessingStates.processing_document)
+            # Переходим в состояние обработки
+            await state.set_state(DocumentProcessingStates.processing_document)
 
-        # Получаем самую большую версию фотографии
-        photo = message.photo[-1]
-        file_name = f"photo_{photo.file_id}.jpg"
-        file_size = photo.file_size or 0
-        mime_type = "image/jpeg"
+            # Получаем самую большую версию фотографии
+            photo = message.photo[-1]
+            file_name = f"photo_{photo.file_id}.jpg"
+            file_size = photo.file_size or 0
+            mime_type = "image/jpeg"
 
-        # Проверяем размер файла (максимум 20MB для фотографий)
-        max_size = 20 * 1024 * 1024
-        if file_size > max_size:
-            await message.answer(
-                f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
+            # Проверяем размер файла (максимум 20MB для фотографий)
+            max_size = 20 * 1024 * 1024
+            if file_size > max_size:
+                await message.answer(
+                    f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
+                )
+                await state.clear()
+                return
+
+            # Показываем статус обработки
+            operation_info = document_manager.get_operation_info(operation) or {}
+            operation_name = operation_info.get("name", operation)
+
+            file_size_kb = max(1, file_size // 1024)
+            stage_labels = _get_stage_labels(operation)
+
+            status_msg = await message.answer(
+                f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
+                f"⏳ Операция: {html_escape(operation_name)}\n"
+                f"📏 Размер: {file_size_kb} КБ",
+                parse_mode=ParseMode.HTML,
             )
-            await state.clear()
-            return
 
-        # Показываем статус обработки
-        operation_info = document_manager.get_operation_info(operation) or {}
-        operation_name = operation_info.get("name", operation)
-
-        status_msg = await message.answer(
-            f"📷 Обрабатываем фотографию для OCR...\n\n"
-            f"⏳ Операция: {html_escape(operation_name)}\n"
-            f"📏 Размер: {file_size // 1024} КБ",
-            parse_mode=ParseMode.HTML,
-        )
-
-        try:
-            # Скачиваем фотографию
-            file_info = await message.bot.get_file(photo.file_id)
-            file_path = file_info.file_path
-
-            if not file_path:
-                raise ProcessingError("Не удалось получить путь к фотографии", "FILE_ERROR")
-
-            file_content = await message.bot.download_file(file_path)
-
-            documents_dir = Path("documents")
-            documents_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(file_name).name or "photo.jpg"
-            unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-            stored_path = documents_dir / unique_name
-
-            file_bytes = file_content.read()
-            stored_path.write_bytes(file_bytes)
+            send_progress, progress_state = _make_progress_updater(
+                message,
+                status_msg,
+                file_name=file_name,
+                operation_name=operation_name,
+                file_size_kb=file_size_kb,
+                stage_labels=stage_labels,
+            )
 
             try:
-                result = await document_manager.process_document(
-                    user_id=message.from_user.id,
-                    file_content=file_bytes,
-                    original_name=file_name,
-                    mime_type=mime_type,
-                    operation=operation,
-                    **options,
-                )
-            finally:
-                with suppress(Exception):
-                    stored_path.unlink(missing_ok=True)
+                await send_progress({"stage": "start", "percent": 5})
 
-            # Удаляем статусное сообщение
-            try:
-                await status_msg.delete()
-            except:
-                pass
+                # Скачиваем фотографию
+                file_info = await message.bot.get_file(photo.file_id)
+                file_path = file_info.file_path
 
-            if result.success:
-                # Форматируем результат для Telegram
-                formatted_result = document_manager.format_result_for_telegram(result, operation)
+                if not file_path:
+                    raise ProcessingError("Не удалось получить путь к фотографии", "FILE_ERROR")
 
-                # Отправляем результат
-                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                file_content = await message.bot.download_file(file_path)
 
-                # Отправляем экспортированные файлы, если есть
-                exports = result.data.get("exports") or []
-                for export in exports:
-                    export_path = export.get("path")
-                    if not export_path:
-                        error_msg = export.get("error")
-                        if error_msg:
-                            await message.answer(f"{Emoji.WARNING} {error_msg}")
-                        continue
-                    label = export.get("label") or export.get("name")
-                    file_name = Path(export_path).name
-                    format_tag = str(export.get("format", "file")).upper()
-                    parts = [f"📄 {format_tag}"]
-                    if label:
-                        parts.append(str(label))
-                    parts.append(file_name)
-                    caption = " • ".join(part for part in parts if part)
-                    try:
-                        await message.answer_document(FSInputFile(export_path), caption=caption)
-                    except Exception as send_error:
-                        logger.error(
-                            f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
-                        )
-                        await message.answer(
-                            f"Не удалось отправить файл {file_name}"
-                        )
-                    finally:
-                        with suppress(Exception):
-                            Path(export_path).unlink(missing_ok=True)
+                documents_dir = Path("documents")
+                documents_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = Path(file_name).name or "photo.jpg"
+                unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+                stored_path = documents_dir / unique_name
 
-                logger.info(
-                    f"Successfully processed photo {file_name} for user {message.from_user.id}"
-                )
-            else:
+                file_bytes = file_content.read()
+                stored_path.write_bytes(file_bytes)
+                await send_progress({"stage": "uploaded", "percent": 32})
+
+                try:
+                    await send_progress({"stage": "processing", "percent": 45})
+                    result = await document_manager.process_document(
+                        user_id=message.from_user.id,
+                        file_content=file_bytes,
+                        original_name=file_name,
+                        mime_type=mime_type,
+                        operation=operation,
+                        progress_callback=send_progress,
+                        **options,
+                    )
+                finally:
+                    with suppress(Exception):
+                        stored_path.unlink(missing_ok=True)
+
+                await send_progress({"stage": "finalizing", "percent": 90})
+
+                if result.success:
+                    # Форматируем результат для Telegram
+                    formatted_result = document_manager.format_result_for_telegram(result, operation)
+
+                    # Отправляем результат
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+                    # Отправляем экспортированные файлы, если есть
+                    exports = result.data.get("exports") or []
+                    for export in exports:
+                        export_path = export.get("path")
+                        if not export_path:
+                            error_msg = export.get("error")
+                            if error_msg:
+                                await message.answer(f"{Emoji.WARNING} {error_msg}")
+                            continue
+                        label = export.get("label") or export.get("name")
+                        file_name = Path(export_path).name
+                        format_tag = str(export.get("format", "file")).upper()
+                        parts = [f"📄 {format_tag}"]
+                        if label:
+                            parts.append(str(label))
+                        parts.append(file_name)
+                        caption = " • ".join(part for part in parts if part)
+                        try:
+                            await message.answer_document(FSInputFile(export_path), caption=caption)
+                        except Exception as send_error:
+                            logger.error(
+                                f"Не удалось отправить файл {export_path}: {send_error}", exc_info=True
+                            )
+                            await message.answer(
+                                f"Не удалось отправить файл {file_name}"
+                            )
+                        finally:
+                            with suppress(Exception):
+                                Path(export_path).unlink(missing_ok=True)
+
+                    completion_payload = _build_completion_payload(operation, result)
+                    await send_progress({"stage": "completed", "percent": 100, **completion_payload})
+                    with suppress(Exception):
+                        await asyncio.sleep(0.6)
+                        await status_msg.delete()
+
+                    logger.info(
+                        f"Successfully processed photo {file_name} for user {message.from_user.id}"
+                    )
+                else:
+                    await send_progress(
+                        {"stage": "failed", "percent": progress_state["percent"], "note": result.message}
+                    )
+                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    await message.answer(
+                        f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+
+            except Exception as e:
+                # Удаляем статусное сообщение
+                try:
+                    await send_progress({"stage": "failed", "percent": progress_state["percent"], "note": str(e)})
+                    await status_msg.delete()
+                except:
+                    pass
+
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
+                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
+                logger.error(f"Error processing photo {file_name}: {e}", exc_info=True)
 
-        except Exception as e:
-            # Удаляем статусное сообщение
-            try:
-                await status_msg.delete()
-            except:
-                pass
-
-            reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-            await message.answer(
-                f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
-            logger.error(f"Error processing photo {file_name}: {e}", exc_info=True)
-
-        finally:
-            # Очищаем состояние
-            await state.clear()
+            finally:
+                # Очищаем состояние
+                await state.clear()
 
     except Exception as e:
         await message.answer(f"❌ Произошла ошибка: {str(e)}")
@@ -4727,13 +5617,19 @@ async def run_bot() -> None:
     await task_manager.start_all()
     logger.info("Started %s background tasks", len(task_manager.tasks))
 
+    # Запускаем retention notifier
+    global retention_notifier
+    retention_notifier = RetentionNotifier(bot, db)
+    await retention_notifier.start()
+    logger.info("✉️ Retention notifier started")
+
     refresh_runtime_globals()
 
     # Команды
     await bot.set_my_commands(
         [
             BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
-            BotCommand(command="buy", description=f"{Emoji.MAGIC} Купить подписку"),
+            BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
             BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
             BotCommand(command="mystats", description="📊 Моя статистика"),
             BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
@@ -4778,6 +5674,10 @@ async def run_bot() -> None:
     dp.callback_query.register(handle_copy_referral_callback, F.data.startswith("copy_referral_"))
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
 
+    # Обработчики retention уведомлений
+    dp.callback_query.register(handle_retention_quick_question, F.data == "quick_question")
+    dp.callback_query.register(handle_retention_show_features, F.data == "show_features")
+
     # Обработчики системы документооборота
     dp.callback_query.register(handle_doc_draft_start, F.data == "doc_draft_start")
     dp.callback_query.register(handle_doc_draft_cancel, F.data == "doc_draft_cancel")
@@ -4789,7 +5689,13 @@ async def run_bot() -> None:
         handle_doc_draft_request, DocumentDraftStates.waiting_for_request, F.text
     )
     dp.message.register(
+        handle_doc_draft_request_voice, DocumentDraftStates.waiting_for_request, F.voice
+    )
+    dp.message.register(
         handle_doc_draft_answer, DocumentDraftStates.asking_details, F.text
+    )
+    dp.message.register(
+        handle_doc_draft_answer_voice, DocumentDraftStates.asking_details, F.voice
     )
     dp.message.register(
         handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
@@ -4857,6 +5763,13 @@ async def run_bot() -> None:
         logger.info("🔧 Shutting down services...")
         set_system_status("stopping")
 
+        # Останавливаем retention notifier
+        if retention_notifier:
+            try:
+                await retention_notifier.stop()
+            except Exception as e:
+                logger.error(f"Error stopping retention notifier: {e}")
+
         # Останавливаем фоновые задачи
         try:
             await task_manager.stop_all()
@@ -4898,3 +5811,4 @@ async def run_bot() -> None:
                 logger.error(f"❌ Error closing {service_name}: {e}")
 
         logger.info("👋 AI-Ivan shutdown complete")
+

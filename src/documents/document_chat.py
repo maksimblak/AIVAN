@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence
 
 from src.core.settings import AppSettings
 
@@ -116,8 +116,22 @@ class DocumentChat(DocumentProcessor):
 
     # ------------------------------- Загрузка/хранилище -------------------------------
 
-    async def load_document(self, file_path: str | Path, document_id: str | None = None) -> str:
+    async def load_document(self, file_path: str | Path, document_id: str | None = None, progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None) -> str:
         """Загрузить документ для чата и вернуть идентификатор сессии."""
+
+        async def _notify(stage: str, percent: float, **payload: Any) -> None:
+            if not progress_callback:
+                return
+            data: dict[str, Any] = {"stage": stage, "percent": float(percent)}
+            for key, value in payload.items():
+                if value is None:
+                    continue
+                data[key] = value
+            try:
+                await progress_callback(data)
+            except Exception:
+                logger.debug("DocChat progress callback failed at %s", stage, exc_info=True)
+
         if not document_id:
             document_id = f"doc_{int(datetime.now().timestamp())}"
 
@@ -129,10 +143,14 @@ class DocumentChat(DocumentProcessor):
         if not cleaned_text.strip():
             raise ProcessingError("Документ не содержит текста", "EMPTY_DOCUMENT")
 
+        await _notify("text_extracted", 20, words=len(cleaned_text.split()))
+
         chunk_texts = TextProcessor.split_into_chunks(
             cleaned_text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap
         )
+        await _notify("chunking", 45, chunks=len(chunk_texts))
         chunks_indexed = self._index_chunks(cleaned_text, chunk_texts)
+        await _notify("indexing", 75, chunks=len(chunk_texts))
 
         self.loaded_documents[document_id] = {
             "text": cleaned_text,
@@ -144,12 +162,13 @@ class DocumentChat(DocumentProcessor):
         }
 
         logger.info("Документ %s загружен с ID: %s", file_path, document_id)
+        await _notify("completed", 100, chunks=len(chunk_texts))
         return document_id
 
-    async def process(self, file_path: str | Path, **kwargs) -> DocumentResult:
+    async def process(self, file_path: str | Path, progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None, **kwargs) -> DocumentResult:
         """Совместимость с интерфейсом DocumentProcessor — загрузка документа."""
         try:
-            document_id = await self.load_document(file_path)
+            document_id = await self.load_document(file_path, progress_callback=progress_callback)
             return DocumentResult.success_result(
                 data={
                     "document_id": document_id,

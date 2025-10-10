@@ -11,7 +11,7 @@ import uuid
 from dataclasses import asdict
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 from src.core.settings import AppSettings
 
@@ -78,14 +78,14 @@ class DocumentManager:
             },
             "translate": {
                 "emoji": "🌐",
-                "name": "Перевод",
+                "name": "Перевод текста",
                 "description": "Перевод текста на выбранный язык",
                 "formats": ["TXT"],
                 "processor": self.translator,
             },
             "ocr": {
                 "emoji": "📷",
-                "name": "OCR",
+                "name": "Распознание текста",
                 "description": "Распознавание текста на изображениях и PDF",
                 "formats": ["TXT"],
                 "processor": self.ocr_converter,
@@ -118,6 +118,7 @@ class DocumentManager:
         original_name: str,
         mime_type: str,
         operation: str,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         **options: Any,
     ) -> DocumentResult:
         meta = self._operations.get(operation)
@@ -143,7 +144,10 @@ class DocumentManager:
 
         processor = meta.get("processor")
         try:
-            result = await processor.safe_process(doc_info.file_path, **options)
+            safe_kwargs = dict(options)
+            if progress_callback is not None:
+                safe_kwargs["progress_callback"] = progress_callback
+            result = await processor.safe_process(doc_info.file_path, **safe_kwargs)
         except ProcessingError as exc:
             self._safe_unlink(doc_info.file_path)
             logger.warning("Processor error (%s): %s", operation, exc)

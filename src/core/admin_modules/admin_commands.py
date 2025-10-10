@@ -14,7 +14,11 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.bot.ui_components import Emoji
-from src.core.admin_modules.admin_analytics import AdminAnalytics
+from src.core.admin_modules.admin_analytics import (
+    AdminAnalytics,
+    PLAN_SEGMENT_DEFS,
+    PLAN_SEGMENT_ORDER,
+)
 from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, require_admin, set_admin_ids
 from src.core.admin_modules.admin_alerts_commands import alerts_router
 from src.core.admin_modules.admin_behavior_commands import behavior_router
@@ -57,6 +61,13 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     segments = await analytics.get_user_segments()
     conversion_metrics = await analytics.get_conversion_metrics()
 
+    plan_lines = []
+    for plan_id in PLAN_SEGMENT_ORDER:
+        segment = segments.get(f'plan_{plan_id}')
+        if segment:
+            plan_lines.append(f"{PLAN_SEGMENT_DEFS[plan_id]['button']}: <b>{segment.user_count}</b>")
+    plan_block = ("\n" + "\n".join(plan_lines)) if plan_lines else ""
+
     return f"""
 <b>🎛 АДМИН-ПАНЕЛЬ</b>
 
@@ -67,8 +78,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
 📉 Отток: <b>{segments['churned'].user_count}</b>
 💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
 🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
-🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>
-👑 VIP-пользователи: <b>{segments['vip'].user_count}</b>
+🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>{plan_block}
 
 <b>📈 Конверсия Триал → Оплата:</b>
 • Всего триал-пользователей: {conversion_metrics.total_trial_users}
@@ -87,23 +97,33 @@ admin_router = Router()
 
 def create_analytics_menu() -> InlineKeyboardMarkup:
     """Создание главного меню аналитики"""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⚡ Суперактивные", callback_data="admin_segment:power_users"),
-                InlineKeyboardButton(text="⚠️ Группа риска", callback_data="admin_segment:at_risk"),
-            ],
-            [
-                InlineKeyboardButton(text="📉 Отток", callback_data="admin_segment:churned"),
-                InlineKeyboardButton(text="💰 Переходы в оплату", callback_data="admin_segment:trial_converters"),
-            ],
-            [
-                InlineKeyboardButton(text="🚫 Только бесплатные", callback_data="admin_segment:freeloaders"),
-                InlineKeyboardButton(text="🆕 Новые пользователи", callback_data="admin_segment:new_users"),
-            ],
-            [
-                InlineKeyboardButton(text="👑 VIP", callback_data="admin_segment:vip"),
-            ],
+    rows = [
+        [
+            InlineKeyboardButton(text="⚡ Суперактивные", callback_data="admin_segment:power_users"),
+            InlineKeyboardButton(text="⚠️ Группа риска", callback_data="admin_segment:at_risk"),
+        ],
+        [
+            InlineKeyboardButton(text="📉 Отток", callback_data="admin_segment:churned"),
+            InlineKeyboardButton(text="💰 Переходы в оплату", callback_data="admin_segment:trial_converters"),
+        ],
+        [
+            InlineKeyboardButton(text="🚫 Только бесплатные", callback_data="admin_segment:freeloaders"),
+            InlineKeyboardButton(text="🆕 Новые пользователи", callback_data="admin_segment:new_users"),
+        ],
+    ]
+
+    plan_buttons = [
+        InlineKeyboardButton(
+            text=PLAN_SEGMENT_DEFS[plan_id]['button'],
+            callback_data=f"admin_segment:plan_{plan_id}",
+        )
+        for plan_id in PLAN_SEGMENT_ORDER
+    ]
+    if plan_buttons:
+        rows.append(plan_buttons)
+
+    rows.extend(
+        [
             [
                 InlineKeyboardButton(text="📊 Аналитика конверсии", callback_data="admin_stats:conversion"),
                 InlineKeyboardButton(text="📈 Ежедневная статистика", callback_data="admin_stats:daily"),
@@ -116,6 +136,8 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @admin_router.message(Command("admin"))

@@ -27,8 +27,9 @@ if False:  # pragma: no cover - hints only
 
 @dataclass(frozen=True)
 class WelcomeMedia:
-    path: Path
     media_type: str
+    path: Path | None = None
+    file_id: str | None = None
 
 
 
