@@ -3358,6 +3358,7 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                 hint_text=hint_text,
             ),
             parse_mode=ParseMode.HTML,
+            reply_markup=_profile_menu_keyboard(subscribe_label),
         )
 
     except Exception as e:
