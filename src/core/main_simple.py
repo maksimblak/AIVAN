@@ -3343,7 +3343,8 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                     subscribe_label = "❌ Отменить подписку"
                 else:
                     trial_remaining = int(getattr(user_record, "trial_remaining", 0) or 0)
-                    status_text = f"нет активной подписки — триал {trial_remaining} запросов"
+                    status_text = "нет активной подписки"
+                    tariff_text = f"триал — {trial_remaining} запросов"
                     hint_text = "Оформите подписку, чтобы получить дополнительные запросы, приоритет и поддержку"
             except Exception as profile_error:  # pragma: no cover - fallback
                 logger.debug("Failed to build profile header: %s", profile_error, exc_info=True)
