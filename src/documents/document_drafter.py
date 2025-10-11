@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -334,6 +335,47 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                 run.text = chunk
 
     list_mode: str | None = None
+    metadata_buffer: list[tuple[str, str]] = []
+
+    def flush_metadata(force_plain: bool = False) -> None:
+        nonlocal metadata_buffer
+        if not metadata_buffer:
+            return
+
+        if not force_plain and len(metadata_buffer) >= 2:
+            table = document.add_table(rows=0, cols=2)
+            with suppress(Exception):
+                table.style = "Table Grid"
+            for field, value in metadata_buffer:
+                row = table.add_row()
+                field_cell, value_cell = row.cells
+
+                field_paragraph = field_cell.paragraphs[0]
+                field_paragraph.paragraph_format.space_before = Pt(0)
+                field_paragraph.paragraph_format.space_after = Pt(0)
+                field_paragraph.paragraph_format.first_line_indent = Cm(0)
+                field_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                field_run = field_paragraph.add_run(field)
+                field_run.bold = True
+
+                value_paragraph = value_cell.paragraphs[0]
+                value_paragraph.paragraph_format.space_before = Pt(0)
+                value_paragraph.paragraph_format.space_after = Pt(0)
+                value_paragraph.paragraph_format.first_line_indent = Cm(0)
+                value_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                _add_runs(value_paragraph, value)
+
+            document.add_paragraph("")
+        else:
+            for field, value in metadata_buffer:
+                paragraph = document.add_paragraph(style="Normal")
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                paragraph.paragraph_format.first_line_indent = Cm(0)
+                paragraph.paragraph_format.left_indent = Cm(0)
+                paragraph.paragraph_format.space_after = Pt(6)
+                _add_runs(paragraph, f"{field}: {value}")
+
+        metadata_buffer = []
 
     for raw_line in markdown.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         line = raw_line.rstrip()
@@ -342,6 +384,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             line = line[:-1].rstrip()
 
         if not line:
+            flush_metadata()
             document.add_paragraph("")
             list_mode = None
             continue
@@ -356,6 +399,22 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             _add_runs(title_paragraph, plain_line)
             list_mode = None
             continue
+
+        colon_match = None
+        if list_mode is None and plain_line:
+            if (
+                not plain_line.startswith(("-", "*", "•", "#"))
+                and not re.match(r"^\d+[.)]", plain_line)
+            ):
+                colon_match = re.match(r"^([^:]{1,80}):\s+(.+)$", plain_line)
+        if colon_match:
+            field = colon_match.group(1).strip()
+            value = colon_match.group(2).strip()
+            if value:
+                metadata_buffer.append((field, value))
+                continue
+
+        flush_metadata()
 
         if line.startswith("# "):
             content = line[2:].strip()
@@ -418,6 +477,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                 paragraph.paragraph_format.first_line_indent = Cm(1.25)
         _add_runs(paragraph, line.strip())
         list_mode = None
+
+    flush_metadata()
 
     document.save(output_path)
 
