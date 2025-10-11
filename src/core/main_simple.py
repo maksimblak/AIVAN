@@ -2157,18 +2157,8 @@ async def _generate_user_stats_response(
         "📈 <b>Активность</b>",
         "",
         _format_stat_row("  📝 Запросов", _format_trend_value(period_requests, previous_requests)),
-        _format_stat_row("  ✅ Успешных", _format_trend_value(period_successful, previous_successful)),
-        _format_stat_row("  📊 Успешность", f"{success_rate:.0f}%"),
-        _format_stat_row("  ⏱️ Среднее время", _format_response_time(avg_response_time_ms)),
+        "",
     ])
-    if period_tokens:
-        lines.append(_format_stat_row("  🔤 Токены", _format_number(period_tokens)))
-
-    lines.append("")
-    lines.append(divider)
-    lines.append("")
-    lines.append("🕒 <b>Когда обращаются</b>")
-    lines.append("")
     if day_primary != "—":
         lines.append(_format_stat_row("  📅 Активный день", _describe_primary_summary(day_primary, "обращений")))
         if day_secondary:
