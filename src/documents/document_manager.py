@@ -13,6 +13,7 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
 
+from src.core.excel_export import build_risk_excel
 from src.core.settings import AppSettings
 
 from .anonymizer import DocumentAnonymizer
@@ -331,6 +332,13 @@ class DocumentManager:
             json_payload = json.dumps(result.data, ensure_ascii=False, indent=2)
             path = await self._write_export(base_name, "risk_report", json_payload, ".json")
             exports.append({"path": str(path), "format": "json", "label": "Отчёт"})
+            try:
+                excel_path = build_risk_excel(result.data, file_stub=f"{base_name}_risks")
+                exports.append({"path": str(excel_path), "format": "xlsx", "label": "Отчёт (XLSX)"})
+            except RuntimeError as exc:
+                logger.warning("Excel export unavailable for risk analysis: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to build Excel risk report: %s", exc, exc_info=True)
 
         elif operation == "lawsuit_analysis":
             analysis = result.data.get("analysis") or {}

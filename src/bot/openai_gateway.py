@@ -67,6 +67,18 @@ def _infer_model_caps(model: str) -> dict[str, bool]:
 
 
 
+def _normalise_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Deep-convert Mapping instances into plain dict/list structures."""
+    def _convert(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {str(k): _convert(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_convert(item) for item in value]
+        return value
+
+    return {str(key): _convert(val) for key, val in data.items()}
+
+
 def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
     summary = str(data.get('summary') or '').strip()
     analysis = str(data.get('analysis') or '').strip()
@@ -110,7 +122,14 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
     return combined
 
 
-def _extract_text_from_content(content: Any) -> str | None:
+def _extract_text_from_content(
+    content: Any,
+    structured_sink: list[Mapping[str, Any]] | None = None,
+) -> str | None:
+    def _store(candidate: Mapping[str, Any] | None) -> None:
+        if candidate and structured_sink is not None and not structured_sink:
+            structured_sink.append(_normalise_mapping(candidate))
+
     text_value = getattr(content, 'text', None)
     if text_value:
         return text_value
@@ -124,6 +143,7 @@ def _extract_text_from_content(content: Any) -> str | None:
         if candidate is None and isinstance(content, dict):
             candidate = content.get(key)
         if isinstance(candidate, Mapping):
+            _store(candidate)
             formatted = _format_structured_legal_response(candidate)
             if formatted:
                 return formatted
@@ -132,9 +152,11 @@ def _extract_text_from_content(content: Any) -> str | None:
     if json_schema is None and isinstance(content, dict):
         json_schema = content.get('json_schema')
     if isinstance(json_schema, Mapping):
+        _store(json_schema)
         for key in ('parsed', 'data'):
             candidate = json_schema.get(key)
             if isinstance(candidate, Mapping):
+                _store(candidate)
                 formatted = _format_structured_legal_response(candidate)
                 if formatted:
                     return formatted
@@ -700,6 +722,8 @@ async def _ask_legal_internal(
                         return {"ok": False, "error": last_err}
                     await asyncio.sleep(0.6)
 
+        structured_payload: dict[str, Any] | None = None
+
         while True:
             retry_payload = False
             for payload in attempts:
@@ -736,8 +760,9 @@ async def _ask_legal_internal(
                             final = await s.get_final_response()
                             usage_info = getattr(final, "usage", None)
                             text = getattr(final, "output_text", None)
+                            items = getattr(final, "output", []) or []
+                            structured_collector: list[Mapping[str, Any]] = []
                             if not text:
-                                items = getattr(final, "output", []) or []
                                 chunks: list[str] = []
                                 for it in items:
                                     contents = []
@@ -747,14 +772,28 @@ async def _ask_legal_internal(
                                         contents = it.get("content") or []
                                     before = len(chunks)
                                     for c in contents:
-                                        extracted = _extract_text_from_content(c)
+                                        extracted = _extract_text_from_content(c, structured_collector)
                                         if extracted:
                                             chunks.append(extracted)
                                     if not contents or len(chunks) == before:
-                                        extracted_item = _extract_text_from_content(it)
+                                        extracted_item = _extract_text_from_content(it, structured_collector)
                                         if extracted_item:
                                             chunks.append(extracted_item)
                                 text = "\n\n".join(chunks) if chunks else ""
+                            else:
+                                for it in items:
+                                    contents = []
+                                    if hasattr(it, "content") and getattr(it, "content"):
+                                        contents = getattr(it, "content")
+                                    elif isinstance(it, dict):
+                                        contents = it.get("content") or []
+                                    if contents:
+                                        for c in contents:
+                                            _extract_text_from_content(c, structured_collector)
+                                    else:
+                                        _extract_text_from_content(it, structured_collector)
+                            if not structured_payload and structured_collector:
+                                structured_payload = structured_collector[0]
 
                             final_raw = (text or accumulated_text or "").strip()
                             logger.debug("OpenAI raw response (stream): %s", final_raw)
@@ -769,7 +808,12 @@ async def _ask_legal_internal(
                                     logger.warning("Final callback error: %s", cb_err)
 
                             if formatted_final:
-                                return {"ok": True, "text": formatted_final, "usage": usage_info}
+                                return {
+                                    "ok": True,
+                                    "text": formatted_final,
+                                    "usage": usage_info,
+                                    "structured": structured_payload,
+                                }
 
                             logger.warning("OpenAI stream returned no text; trying next payload option")
                             last_err = "empty_response"
@@ -777,12 +821,32 @@ async def _ask_legal_internal(
 
                     resp = await oai.responses.create(**payload)
                     text = getattr(resp, "output_text", None)
+                    items = getattr(resp, "output", []) or []
+                    structured_collector: list[Mapping[str, Any]] = []
+                    if items:
+                        for it in items:
+                            contents = []
+                            if hasattr(it, "content") and getattr(it, "content"):
+                                contents = getattr(it, "content")
+                            elif isinstance(it, dict):
+                                contents = it.get("content") or []
+                            if contents:
+                                for c in contents:
+                                    _extract_text_from_content(c, structured_collector)
+                            else:
+                                _extract_text_from_content(it, structured_collector)
+                    if not structured_payload and structured_collector:
+                        structured_payload = structured_collector[0]
                     if text and text.strip():
                         raw = text.strip()
                         logger.debug("OpenAI raw response: %s", raw)
-                        return {"ok": True, "text": raw, "usage": getattr(resp, "usage", None)}
+                        return {
+                            "ok": True,
+                            "text": raw,
+                            "usage": getattr(resp, "usage", None),
+                            "structured": structured_payload,
+                        }
 
-                    items = getattr(resp, "output", []) or []
                     chunks: list[str] = []
                     for it in items:
                         contents = []
@@ -792,11 +856,11 @@ async def _ask_legal_internal(
                             contents = it.get("content") or []
                         before = len(chunks)
                         for c in contents:
-                            extracted = _extract_text_from_content(c)
+                            extracted = _extract_text_from_content(c, structured_collector)
                             if extracted:
                                 chunks.append(extracted)
                         if not contents or len(chunks) == before:
-                            extracted_item = _extract_text_from_content(it)
+                            extracted_item = _extract_text_from_content(it, structured_collector)
                             if extracted_item:
                                 chunks.append(extracted_item)
                     if chunks:
@@ -806,6 +870,7 @@ async def _ask_legal_internal(
                             "ok": True,
                             "text": joined,
                             "usage": getattr(resp, "usage", None),
+                            "structured": structured_payload,
                         }
 
                     logger.warning("OpenAI response contained no text output; trying next payload option")
@@ -851,4 +916,4 @@ async def _ask_legal_internal(
                 continue
             break
 
-        return {"ok": False, "error": last_err or "unknown_error"}
+        return {"ok": False, "error": last_err or "unknown_error", "structured": structured_payload}

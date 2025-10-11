@@ -15,8 +15,9 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 import uuid
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional, Sequence
 
+from src.core.excel_export import build_practice_excel
 from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
 
@@ -1810,6 +1811,7 @@ async def process_question(
                 sources_lines.append(f"{idx}. {header}")
             sources_footer = "\n".join(sources_lines)
 
+        text_to_send = ""
         if use_streaming and had_stream_content and stream_manager is not None:
             final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
             combined_stream_text = (final_stream_text.rstrip() + sources_footer + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
@@ -1826,6 +1828,31 @@ async def process_question(
                     raw_text=combined_text,
                     reply_to_message_id=message.message_id,
                 )
+
+        if practice_mode:
+            practice_excel_path: Path | None = None
+            try:
+                structured_payload = (
+                    result.get("structured") if isinstance(result, dict) and isinstance(result.get("structured"), Mapping) else None
+                )
+                excel_source = final_answer_text or text_to_send or ""
+                if excel_source or rag_fragments:
+                    practice_excel_path = build_practice_excel(
+                        summary_html=excel_source,
+                        fragments=rag_fragments,
+                        structured=structured_payload,
+                        file_stub="practice_report",
+                    )
+                    await message.answer_document(
+                        FSInputFile(str(practice_excel_path)),
+                        caption="📊 Отчёт по судебной практике (XLSX)",
+                        parse_mode=ParseMode.HTML,
+                    )
+            except Exception as excel_error:  # noqa: BLE001
+                logger.warning("Failed to build practice Excel", exc_info=True)
+            finally:
+                if practice_excel_path is not None:
+                    practice_excel_path.unlink(missing_ok=True)
 
         # Сообщения про квоту/подписку
             with suppress(Exception):
