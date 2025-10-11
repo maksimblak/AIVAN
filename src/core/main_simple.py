@@ -4219,10 +4219,10 @@ async def handle_doc_draft_answer(
         return
 
     answers = data.get("draft_answers") or []
-    bulk_answers = _extract_answer_chunks(answer_text)
+    remaining_questions = questions[index:]
+    bulk_answers = _extract_answer_chunks(answer_text, expected_count=len(remaining_questions))
 
     if bulk_answers:
-        remaining_questions = questions[index:]
         used_count = 0
         for offset, chunk in enumerate(bulk_answers):
             if offset >= len(remaining_questions):
@@ -4387,14 +4387,14 @@ async def handle_doc_draft_answer_voice(message: Message, state: FSMContext) -> 
     await handle_doc_draft_answer(message, state, text_override=transcript)
 
 
-def _extract_answer_chunks(answer_text: str) -> list[str] | None:
-    """Попробовать выделить несколько ответов из свободного текста."""
+def _extract_answer_chunks(answer_text: str, *, expected_count: int | None = None) -> list[str] | None:
+    """Split a combined answer message into separate answers."""
     text = (answer_text or "").strip()
     if not text:
         return None
 
     lines = text.splitlines()
-    numbered_pattern = re.compile(r"^\s*(\d+)[\).\:-]\s*(.*)")
+    numbered_pattern = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
     answers: list[str] = []
     current: list[str] | None = None
     has_numbers = False
@@ -4418,7 +4418,7 @@ def _extract_answer_chunks(answer_text: str) -> list[str] | None:
                 answers.append(chunk)
         return answers if len(answers) > 1 else None
 
-    bullet_pattern = re.compile(r"^\s*[-•]\s*(.*)")
+    bullet_pattern = re.compile(r"^\s*[-\u2022]\s*(.*)")
     answers = []
     current = None
     for line in lines:
@@ -4442,6 +4442,48 @@ def _extract_answer_chunks(answer_text: str) -> list[str] | None:
     chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
     if len(chunks) > 1:
         return chunks
+
+    if expected_count is not None and expected_count < 2:
+        return None
+
+    heading_pattern = re.compile(r"^\s*(?![-\u2022])(?!\d+[\).:-])([A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u0451\u0030-\u0039][^:]{0,80}):\s*(.*)$")
+    candidates: list[str] = []
+    current: list[str] = []
+    heading_boundaries = 0
+
+    for line in lines:
+        match = heading_pattern.match(line)
+        is_heading = False
+        if match:
+            heading_text = match.group(1).strip()
+            if heading_text and len(heading_text) <= 80 and len(heading_text.split()) <= 8 and not re.search(r"[.!?]", heading_text):
+                is_heading = True
+
+        if is_heading and current:
+            chunk = "\n".join(current).strip()
+            if chunk:
+                candidates.append(chunk)
+            current = [line]
+            heading_boundaries += 1
+            continue
+
+        if not current and not line.strip():
+            continue
+
+        if not current:
+            current = [line]
+        else:
+            current.append(line)
+
+    if current:
+        chunk = "\n".join(current).strip()
+        if chunk:
+            candidates.append(chunk)
+
+    if heading_boundaries >= 1 and len(candidates) > 1:
+        max_allowed = expected_count + 3 if expected_count is not None else None
+        if max_allowed is None or len(candidates) <= max_allowed:
+            return candidates
 
     return None
 
@@ -5067,6 +5109,16 @@ async def cmd_enddoc(message: Message) -> None:
         await message.answer(f"{Emoji.WARNING} Активная сессия не найдена.")
 
 
+GENERIC_INTERNAL_ERROR_HTML = (
+    "<i>\u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u044f\u044f "
+    "\u043e\u0448\u0438\u0431\u043a\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.</i>"
+)
+GENERIC_INTERNAL_ERROR_TEXT = (
+    "\u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u044f\u044f "
+    "\u043e\u0448\u0438\u0431\u043a\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435."
+)
+
+
 async def handle_document_upload(message: Message, state: FSMContext):
     """Обработка загружённого документа"""
     try:
@@ -5231,11 +5283,11 @@ async def handle_document_upload(message: Message, state: FSMContext):
                     pass
 
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                await message.answer(
-                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(e))}",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup,
-                )
+                    await message.answer(
+                        f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
                 logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
             finally:
@@ -5247,7 +5299,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
         if 'operation' in locals() and operation == "ocr":
             reply_markup = _build_ocr_reply_markup(locals().get('output_format', 'txt'))
         await message.answer(
-            f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n{html_escape(str(e))}",
+            f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
         )
@@ -5417,14 +5469,16 @@ async def handle_photo_upload(message: Message, state: FSMContext):
             except Exception as e:
                 # Удаляем статусное сообщение
                 try:
-                    await send_progress({"stage": "failed", "percent": progress_state["percent"], "note": str(e)})
+                    await send_progress(
+                        {"stage": "failed", "percent": progress_state["percent"], "note": GENERIC_INTERNAL_ERROR_TEXT}
+                    )
                     await status_msg.delete()
                 except:
                     pass
 
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
-                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(e))}",
+                    f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
@@ -5435,7 +5489,7 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                 await state.clear()
 
     except Exception as e:
-        await message.answer(f"❌ Произошла ошибка: {str(e)}")
+        await message.answer("\u274c \u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u044f\u044f \u043e\u0448\u0438\u0431\u043a\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.")
         logger.error(f"Error in handle_photo_upload: {e}", exc_info=True)
         await state.clear()
 
