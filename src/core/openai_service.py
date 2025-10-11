@@ -17,7 +17,10 @@ try:
 except Exception:  # noqa: BLE001
     oai_ask_legal_stream = None  # type: ignore
 
-from src.bot.openai_gateway import format_legal_response_text
+from src.bot.openai_gateway import (
+    close_async_openai_client,
+    format_legal_response_text,
+)
 from src.core.attachments import QuestionAttachment
 
 from .cache import ResponseCache
@@ -284,3 +287,4 @@ class OpenAIService:
     async def close(self) -> None:
         if self.cache:
             await self.cache.close()
+        await close_async_openai_client()

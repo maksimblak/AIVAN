@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+from contextlib import asynccontextmanager
 from src.core.app_context import get_settings
 from src.core.settings import AppSettings
 
@@ -11,7 +12,7 @@ import html
 from html.parser import HTMLParser
 import inspect
 import re
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -56,6 +57,9 @@ _SETTINGS: AppSettings = get_settings()
 
 MODEL_CAPABILITIES: dict[str, dict[str, bool]] = {}
 _VALIDATED_MODELS: set[str] = set()
+
+_client_lock = asyncio.Lock()
+_shared_async_client: AsyncOpenAI | None = None
 
 
 def _infer_model_caps(model: str) -> dict[str, bool]:
@@ -168,7 +172,14 @@ def _extract_text_from_content(
 
 StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
-__all__ = ["ask_legal", "ask_legal_stream", "format_legal_response_text", "_make_async_client"]
+__all__ = [
+    "ask_legal",
+    "ask_legal_stream",
+    "format_legal_response_text",
+    "get_async_openai_client",
+    "shared_openai_client",
+    "close_async_openai_client",
+]
 
 
 def _get_env_float(name: str, default: float) -> float:
@@ -271,7 +282,7 @@ def _build_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(**client_kwargs)
 
 
-async def _make_async_client() -> AsyncOpenAI:
+async def _create_async_client() -> AsyncOpenAI:
     api_key = (
         _SETTINGS.openai_api_key
         or _SETTINGS.get_str("OPENAI_KEY")
@@ -311,6 +322,51 @@ async def _make_async_client() -> AsyncOpenAI:
     except Exception:
         await http_client.aclose()
         raise
+
+
+async def get_async_openai_client() -> AsyncOpenAI:
+    """Return a shared AsyncOpenAI client instance."""
+    global _shared_async_client
+
+    client = _shared_async_client
+    if client is not None:
+        return client
+
+    async with _client_lock:
+        client = _shared_async_client
+        if client is None:
+            client = await _create_async_client()
+            _shared_async_client = client
+        return client
+
+
+@asynccontextmanager
+async def shared_openai_client() -> AsyncIterator[AsyncOpenAI]:
+    """Async context manager yielding the shared AsyncOpenAI client."""
+    client = await get_async_openai_client()
+    try:
+        yield client
+    finally:
+        # The shared client is retained for reuse; shutdown occurs separately.
+        pass
+
+
+async def close_async_openai_client() -> None:
+    """Close the shared AsyncOpenAI client if it was created."""
+    global _shared_async_client
+
+    client_to_close: AsyncOpenAI | None = None
+    async with _client_lock:
+        client_to_close = _shared_async_client
+        _shared_async_client = None
+
+    if client_to_close is None:
+        return
+
+    try:
+        await client_to_close.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to close OpenAI client: %s", exc)
 
 
 
@@ -680,7 +736,7 @@ async def _ask_legal_internal(
     if not _SETTINGS.get_bool("DISABLE_WEB", False):
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
-    async with await _make_async_client() as oai:
+    async with shared_openai_client() as oai:
         stored_schema = model_caps.get("supports_schema")
         if stored_schema is None:
             schema_supported = "response_format" in inspect.signature(oai.responses.create).parameters

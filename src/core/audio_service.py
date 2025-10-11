@@ -13,10 +13,10 @@ from typing import Any, Optional
 
 from openai import APIStatusError, AsyncOpenAI
 
-try:
-    from src.bot.openai_gateway import _make_async_client as _gateway_make_async_client  # type: ignore
-except Exception:  # noqa: BLE001
-    _gateway_make_async_client = None
+try:  # pragma: no cover - optional dependency
+    from src.bot.openai_gateway import get_async_openai_client as _gateway_get_openai_client  # type: ignore
+except Exception:  # noqa: BLE001 - gateway not available during some tests
+    _gateway_get_openai_client = None
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,15 @@ def _create_temp_file_sync(suffix: str) -> Path:
         tmp.close()
 
 
-async def _acquire_client() -> AsyncOpenAI:
-    """Reuse gateway client factory when available to keep proxy/timeouts consistent."""
-    if _gateway_make_async_client is not None:
-        return await _gateway_make_async_client()
-    return AsyncOpenAI()
+async def _acquire_client() -> tuple[AsyncOpenAI, bool]:
+    """Reuse shared gateway client when available; return client with ownership flag."""
+    if _gateway_get_openai_client is not None:
+        try:
+            client = await _gateway_get_openai_client()
+            return client, False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Falling back to standalone OpenAI client: %s", exc)
+    return AsyncOpenAI(), True
 
 
 class AudioService:
@@ -82,6 +86,7 @@ class AudioService:
             self._backend_config = "auto"
         self._client_lock = asyncio.Lock()
         self._client: AsyncOpenAI | None = None
+        self._client_owned = False
 
     def _decide_backend(self) -> str:
         if self._backend_config == "auto":
@@ -112,15 +117,23 @@ class AudioService:
         if client is not None:
             return client
         async with self._client_lock:
-            if self._client is None:
-                self._client = await _acquire_client()
-            return self._client
+            client = self._client
+            if client is None:
+                client_obj, owned = await _acquire_client()
+                self._client = client_obj
+                self._client_owned = owned
+                client = client_obj
+            return client
 
     async def aclose(self) -> None:
         client = self._client
         if client is None:
             return
         self._client = None
+        owned = self._client_owned
+        self._client_owned = False
+        if not owned:
+            return
         close_method = getattr(client, "close", None)
         try:
             if callable(close_method):

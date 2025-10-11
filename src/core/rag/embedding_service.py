@@ -3,7 +3,7 @@
 import logging
 from typing import Iterable, Sequence
 
-from src.bot.openai_gateway import _make_async_client
+from src.bot.openai_gateway import shared_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class EmbeddingService:
             return []
 
         try:
-            async with await _make_async_client() as client:
+            async with shared_openai_client() as client:
                 response = await client.embeddings.create(model=self.model, input=payload)
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to obtain embeddings: %s", exc)
