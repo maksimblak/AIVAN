@@ -118,15 +118,24 @@ class DocumentManager:
     # ------------------------------------------------------------------ API ---
 
     def get_supported_operations(self) -> Dict[str, Dict[str, Any]]:
-        return {
-            key: {
+        operations: Dict[str, Dict[str, Any]] = {}
+        for key, meta in self._operations.items():
+            processor = meta.get("processor")
+            upload_formats: List[str] = []
+            if processor is not None:
+                supported = getattr(processor, "supported_formats", None)
+                if supported:
+                    upload_formats = [fmt.lstrip(".").upper() for fmt in supported]
+
+            operations[key] = {
                 "emoji": meta.get("emoji"),
                 "name": meta.get("name"),
                 "description": meta.get("description"),
                 "formats": meta.get("formats", []),
             }
-            for key, meta in self._operations.items()
-        }
+            if upload_formats:
+                operations[key]["upload_formats"] = upload_formats
+        return operations
 
     def get_operation_info(self, operation: str) -> Dict[str, Any] | None:
         return self.get_supported_operations().get(operation)

@@ -4221,7 +4221,12 @@ async def handle_doc_draft_answer(
 
     answers = data.get("draft_answers") or []
     remaining_questions = questions[index:]
-    bulk_answers = _extract_answer_chunks(answer_text, expected_count=len(remaining_questions))
+    question_headings = [str(q.get("text", "") or "") for q in remaining_questions]
+    bulk_answers = _extract_answer_chunks(
+        answer_text,
+        expected_count=len(remaining_questions),
+        question_headings=question_headings,
+    )
 
     if bulk_answers:
         used_count = 0
@@ -4388,13 +4393,27 @@ async def handle_doc_draft_answer_voice(message: Message, state: FSMContext) -> 
     await handle_doc_draft_answer(message, state, text_override=transcript)
 
 
-def _extract_answer_chunks(answer_text: str, *, expected_count: int | None = None) -> list[str] | None:
+def _extract_answer_chunks(
+    answer_text: str,
+    *,
+    expected_count: int | None = None,
+    question_headings: Sequence[str] | None = None,
+) -> list[str] | None:
     """Split a combined answer message into separate answers."""
-    text = (answer_text or "").strip()
+    text = (answer_text or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = (
+        text.replace("\u00A0", " ")
+        .replace("\u202F", " ")
+        .replace("\u2007", " ")
+        .replace("\u2060", "")
+        .replace("\ufeff", "")
+    )
+    text = text.strip()
     if not text:
         return None
 
-    lines = text.splitlines()
+    lines = text.split("\n")
     numbered_pattern = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
     answers: list[str] = []
     current: list[str] | None = None
@@ -4417,31 +4436,64 @@ def _extract_answer_chunks(answer_text: str, *, expected_count: int | None = Non
             chunk = "\n".join(current).strip()
             if chunk:
                 answers.append(chunk)
-        return answers if len(answers) > 1 else None
+        if len(answers) > 1:
+            return answers
 
     bullet_pattern = re.compile(r"^\s*[-\u2022]\s*(.*)")
-    answers = []
-    current = None
-    for line in lines:
-        match = bullet_pattern.match(line)
-        if match:
-            if current:
-                chunk = "\n".join(current).strip()
-                if chunk:
-                    answers.append(chunk)
-            current = [match.group(1)]
-        else:
-            if current:
-                current.append(line)
-    if current:
-        chunk = "\n".join(current).strip()
-        if chunk:
-            answers.append(chunk)
-    if len(answers) > 1:
-        return answers
+    first_nonempty = next((line for line in lines if line.strip()), "")
+    if bullet_pattern.match(first_nonempty):
+        answers = []
+        current = None
+        for line in lines:
+            match = bullet_pattern.match(line)
+            if match:
+                if current:
+                    chunk = "\n".join(current).strip()
+                    if chunk:
+                        answers.append(chunk)
+                current = [match.group(1)]
+            else:
+                if current:
+                    current.append(line)
+        if current:
+            chunk = "\n".join(current).strip()
+            if chunk:
+                answers.append(chunk)
+        if len(answers) > 1:
+            return answers
 
-    chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
+    chunks = [
+        chunk.strip()
+        for chunk in re.split(r"(?:\n[ \t\u00A0\u2007\u202F\u2060]*){2,}", text)
+        if chunk.strip()
+    ]
     if len(chunks) > 1:
+        if question_headings:
+            normalized = [
+                re.sub(r"\s+", " ", heading or "").strip().lower()
+                for heading in question_headings
+            ]
+            normalized = [h for h in normalized if h]
+
+            def _normalize_line(line: str) -> str:
+                return re.sub(r"\s+", " ", (line or "").strip()).lower()
+
+            merged: list[str] = []
+            idx = 0
+            for chunk in chunks:
+                first_line = chunk.split("\n", 1)[0]
+                first_norm = _normalize_line(first_line)
+                if idx < len(normalized) and first_norm == normalized[idx]:
+                    merged.append(chunk)
+                    idx += 1
+                elif merged:
+                    merged[-1] = f"{merged[-1]}\n\n{chunk}"
+                else:
+                    merged.append(chunk)
+            if merged and len(merged) > 1:
+                return merged
+            if merged:
+                chunks = merged
         return chunks
 
     if expected_count is not None and expected_count < 2:
@@ -4799,7 +4851,11 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext):
         emoji = operation_info.get("emoji", "📄")
         name = operation_info.get("name", operation)
         description = operation_info.get("description", "")
-        formats = ", ".join(operation_info.get("formats", []))
+        upload_formats = operation_info.get("upload_formats")
+        if upload_formats:
+            formats = ", ".join(upload_formats)
+        else:
+            formats = ", ".join(operation_info.get("formats", []))
 
         # Создаем подробное описание для каждой операции
         detailed_descriptions = {
