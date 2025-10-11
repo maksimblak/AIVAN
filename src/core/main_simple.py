@@ -1844,7 +1844,8 @@ async def process_question(
                 )
                 excel_source = final_answer_text or text_to_send or ""
                 if excel_source or rag_fragments:
-                    practice_excel_path = build_practice_excel(
+                    practice_excel_path = await asyncio.to_thread(
+                        build_practice_excel,
                         summary_html=excel_source,
                         fragments=rag_fragments,
                         structured=structured_payload,
@@ -4764,7 +4765,7 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
         tmp_path = Path(tmp_file.name)
     try:
-        build_docx_from_markdown(result.markdown, str(tmp_path))
+        await asyncio.to_thread(build_docx_from_markdown, result.markdown, str(tmp_path))
         display_title, caption, filename = _prepare_document_titles(result.title or title)
 
         # Красивое сообщение с документом

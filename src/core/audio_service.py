@@ -32,6 +32,15 @@ _DEFAULT_TTS_CHUNK_CHAR_LIMIT = 6000
 _KWARG_ERROR_RE = re.compile(r"unexpected keyword argument '([^']+)'")
 
 
+def _create_temp_file_sync(suffix: str) -> Path:
+    """Create a temporary file and return its path (blocking helper for thread usage)."""
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        return Path(tmp.name)
+    finally:
+        tmp.close()
+
+
 async def _acquire_client() -> AsyncOpenAI:
     """Reuse gateway client factory when available to keep proxy/timeouts consistent."""
     if _gateway_make_async_client is not None:
@@ -138,11 +147,7 @@ class AudioService:
         async with client as oai:
             try:
                 for chunk in slices:
-                    tmp = tempfile.NamedTemporaryFile(
-                        suffix=f".{file_extension}", delete=False
-                    )
-                    tmp_path = Path(tmp.name)
-                    tmp.close()
+                    tmp_path = await self._create_temp_file(f".{file_extension}")
                     speech = await self._create_speech_payload(
                         oai=oai,
                         text=chunk,
@@ -399,7 +404,10 @@ class AudioService:
             data = bytes(speech)
         if data is None:
             raise RuntimeError("Unsupported speech response payload")
-        target_path.write_bytes(data)
+        await asyncio.to_thread(target_path.write_bytes, data)
+
+    async def _create_temp_file(self, suffix: str) -> Path:
+        return await asyncio.to_thread(_create_temp_file_sync, suffix)
 
     def _split_text_into_chunks(self, text: str) -> list[str]:
         normalized = (text or "").strip()
