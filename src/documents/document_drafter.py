@@ -196,7 +196,16 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     ]
     notes = [str(note).strip() for note in data.get("context_notes") or [] if str(note).strip()]
 
-    need_more = bool(data.get("need_more_info"))
+    need_more_raw = data.get("need_more_info")
+    if isinstance(need_more_raw, bool):
+        need_more = need_more_raw
+    elif isinstance(need_more_raw, str):
+        lowered = need_more_raw.strip().lower()
+        need_more = lowered in {"true", "yes", "1", "y"}
+    elif need_more_raw is None:
+        need_more = False
+    else:
+        need_more = bool(need_more_raw)
     if not need_more:
         questions = []
 

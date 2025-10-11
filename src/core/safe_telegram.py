@@ -20,7 +20,16 @@ logger = logging.getLogger(__name__)
 def format_safe_html(raw_text: str) -> str:
     """Sanitize text for Telegram while preserving simple markup and line breaks."""
     normalized = (raw_text or "").replace("\r\n", "\n")
-    normalized = normalized.replace('\\n', '\n')
+    # Convert double-escaped newlines (`\\n\\n`) eagerly, but treat isolated
+    # `\n` sequences conservatively so that file paths like `C:\new_case`
+    # stay intact. Single `\n` shifts only when followed by whitespace,
+    # bullet markers or punctuation typically used to start a new block.
+    normalized = normalized.replace("\\n\\n", "\n\n")
+    normalized = re.sub(
+        r"\\n(?=(?:\s|$|[-–—•*]|[0-9]+[.)]|<[A-Za-z]|\\n))",
+        "\n",
+        normalized,
+    )
     normalized = normalized.replace(' ', ' ').replace('‑', '-')
     normalized = re.sub(r'<br\s*/?>', '\n', normalized, flags=re.IGNORECASE)
 
@@ -130,6 +139,18 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
                     split_at = slice_part.rfind(" ")
                     if 0 < split_at < slice_len:
                         slice_len = split_at + 1
+                        slice_part = text_chunk[:slice_len]
+                    elif slice_len < len(text_chunk):
+                        # Avoid cutting an HTML entity like &nbsp; or &#128512; in half.
+                        last_amp = slice_part.rfind("&")
+                        if last_amp != -1:
+                            entity_candidate = slice_part[last_amp:]
+                            if ";" not in entity_candidate:
+                                slice_len = last_amp
+                                slice_part = text_chunk[:slice_len]
+                    if slice_len == 0:
+                        # Fall back to a hard cut to guarantee progress.
+                        slice_len = min(space_left, len(text_chunk))
                         slice_part = text_chunk[:slice_len]
                     append_token(slice_part)
                     text_chunk = text_chunk[slice_len:]

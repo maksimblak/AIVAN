@@ -4243,21 +4243,45 @@ async def handle_doc_draft_answer(
             return
         # если не удалось сопоставить ни одного ответа — переходим к обычной обработке
 
+    if index < len(questions):
+        current_question = questions[index]
+        answers.append({"question": current_question.get("text", ""), "answer": answer_text})
+        index += 1
+
+        await state.update_data(draft_answers=answers, current_question_index=index)
+
+        if index < len(questions):
+            next_question = questions[index]
+            next_text = html_escape(next_question.get("text", ""))
+            purpose = next_question.get("purpose")
+
+            lines = [
+                f"{Emoji.SUCCESS} <b>Ответ принят</b>",
+                f"<code>{'▰' * 20}</code>",
+                "",
+                f"{Emoji.QUESTION} <b>Вопрос {index + 1} из {len(questions)}</b>",
+                next_text,
+            ]
+            if purpose:
+                lines.append(f"<i>💡 {html_escape(str(purpose))}</i>")
+            await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+        else:
+            await state.set_state(DocumentDraftStates.generating)
+            await message.answer(
+                f"⚙️ <b>Формирование документа...</b>\n"
+                f"<code>{'▰' * 20}</code>\n\n"
+                f"✅ Все ответы получены\n"
+                f"🔄 Анализирую информацию\n"
+                f"📝 Подготавливаю текст\n"
+                f"📄 Формирую DOCX файл\n\n"
+                f"<i>⏱ Обычно занимает 30-60 секунд</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            await _finalize_draft(message, state)
+        return
+
     await message.answer(
-        f"⚠️ <b>Неверный формат ответов</b>\n"
-        f"<code>{'─' * 30}</code>\n\n"
-        f"📝 Отправьте ответы <b>одним сообщением</b>\n\n"
-        f"<b>Варианты форматирования:</b>\n\n"
-        f"<b>Вариант 1 - Нумерация:</b>\n"
-        f"<code>1) Первый ответ</code>\n"
-        f"<code>2) Второй ответ</code>\n"
-        f"<code>3) Третий ответ</code>\n\n"
-        f"<b>Вариант 2 - Пустые строки:</b>\n"
-        f"<code>Первый ответ</code>\n"
-        f"<code></code>\n"
-        f"<code>Второй ответ</code>\n"
-        f"<code></code>\n"
-        f"<code>Третий ответ</code>",
+        f"{Emoji.WARNING} Не удалось обработать ответ. Попробуйте ещё раз.",
         parse_mode=ParseMode.HTML,
     )
 
