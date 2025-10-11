@@ -63,10 +63,10 @@ ENV PYTHONPATH=/app \
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "print('health: ok')" || exit 1
+    CMD python -m telegram_legal_bot.healthcheck || exit 1
 
 # Экспонирование портов (если планируется web интерфейс)
 EXPOSE 8000
 
 # Запуск приложения
-CMD ["python", "src/core/main_simple.py"]
+CMD ["python", "-m", "telegram_legal_bot.main"]

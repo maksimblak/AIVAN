@@ -10,11 +10,26 @@ from src.core.app_context import get_settings
 from src.core.settings import AppSettings
 
 
+PLACEHOLDER_PREFIXES = ("__REQUIRED", "changeme", "<REPLACE", "REPLACE_ME")
+
+
+def _is_missing(value: str | None) -> bool:
+    if value is None:
+        return True
+    trimmed = value.strip()
+    if not trimmed:
+        return True
+    for prefix in PLACEHOLDER_PREFIXES:
+        if trimmed.upper().startswith(prefix.upper()):
+            return True
+    return False
+
+
 def _check_required_settings(settings: AppSettings) -> dict[str, Any]:
     missing: list[str] = []
-    if not settings.telegram_bot_token:
+    if _is_missing(settings.telegram_bot_token):
         missing.append("TELEGRAM_BOT_TOKEN")
-    if not settings.openai_api_key:
+    if _is_missing(settings.openai_api_key):
         missing.append("OPENAI_API_KEY")
 
     return {
