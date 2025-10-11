@@ -64,10 +64,11 @@ DOCUMENT_GENERATOR_SYSTEM_PROMPT = """
 1. Проверь, достаточно ли данных. Если чего-то не хватает, верни status = "need_more_info" и сформируй follow_up_questions с уточнениями.
 2. Если данных достаточно, составь документ в Markdown, опираясь на найденный образец и профессиональные стандарты. Соблюдай структуру, стиль и формулировки, характерные для соответствующего вида документа.
 3. Структура `document_markdown`:
-   • В начале размести блок реквизитов строками формата `Поле: Значение` (например: `Суд: ...`, `Истец: ...`, `Ответчик: ...`, `Цена иска: ...`, `Госпошлина: ...`, при необходимости — `Дата: ...`, `Подпись: ...`). Не используй псевдографику и обратные слэши для переносов.
+   • В начале размести блок реквизитов строками формата `Поле: Значение` (обязательно включи: `Суд`, `Истец`, `Ответчик`, `Цена иска` или аналогичную стоимость, `Госпошлина`/сбор, `Дата`, `Подпись` с расшифровкой; при наличии — `Банковские реквизиты`, `Способ подачи`). Не используй псевдографику и обратные слэши.
    • После реквизитов сделай пустую строку и добавь заголовок документа через `# {название}`.
    • Основные разделы оформляй подзаголовками `## …`, внутри разделов используй пронумерованные списки `1.` для ключевых пунктов и маркированные списки `-` для подпунктов.
    • Итоговые блоки (просительная часть, приложения, подпись) также подай в виде структурированных списков, без `\` в конце строк.
+   • Для таблиц расчетов или смет используй Markdown-таблицы (`| колонка | колонка |`), чтобы данные можно было корректно перенести в Word.
 4. Перед выдачей результата выполни самопроверку: перечисли учтённые ключевые данные и выявленные риски/пробелы.
 
 Формат ответа — валидный JSON вида:
@@ -337,6 +338,14 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     list_mode: str | None = None
     metadata_buffer: list[tuple[str, str]] = []
 
+    def _is_table_row(text: str) -> bool:
+        stripped = text.strip()
+        return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+    def _parse_table_row(text: str) -> list[str]:
+        cells = [cell.strip() for cell in text.strip()[1:-1].split("|")]
+        return cells
+
     def flush_metadata(force_plain: bool = False) -> None:
         nonlocal metadata_buffer
         if not metadata_buffer:
@@ -377,7 +386,13 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
         metadata_buffer = []
 
-    for raw_line in markdown.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    idx = 0
+    total_lines = len(lines)
+
+    while idx < total_lines:
+        raw_line = lines[idx]
+        idx += 1
         line = raw_line.rstrip()
 
         if line.endswith("\\"):
@@ -400,19 +415,63 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             list_mode = None
             continue
 
-        colon_match = None
         if list_mode is None and plain_line:
             if (
                 not plain_line.startswith(("-", "*", "•", "#"))
                 and not re.match(r"^\d+[.)]", plain_line)
             ):
                 colon_match = re.match(r"^([^:]{1,80}):\s+(.+)$", plain_line)
-        if colon_match:
-            field = colon_match.group(1).strip()
-            value = colon_match.group(2).strip()
-            if value:
-                metadata_buffer.append((field, value))
-                continue
+                if colon_match:
+                    field = colon_match.group(1).strip()
+                    value = colon_match.group(2).strip()
+                    if value:
+                        metadata_buffer.append((field, value))
+                        continue
+
+        if _is_table_row(line):
+            flush_metadata()
+            table_lines = [line]
+            while idx < total_lines:
+                peek_line = lines[idx].rstrip()
+                if _is_table_row(peek_line):
+                    table_lines.append(peek_line)
+                    idx += 1
+                else:
+                    break
+
+            parsed_rows = [_parse_table_row(row) for row in table_lines]
+            if len(parsed_rows) >= 2 and all(
+                re.fullmatch(r":?-{3,}:?", cell.replace(" ", ""))
+                for cell in parsed_rows[1]
+            ):
+                data_rows = [parsed_rows[0]] + parsed_rows[2:]
+            else:
+                data_rows = parsed_rows
+
+            if data_rows:
+                num_cols = max(len(row) for row in data_rows)
+                table = document.add_table(rows=0, cols=num_cols)
+                with suppress(Exception):
+                    table.style = "Table Grid"
+                for row_idx, cells in enumerate(data_rows):
+                    row = table.add_row()
+                    for col in range(num_cols):
+                        cell_text = cells[col].strip() if col < len(cells) else ""
+                        cell = row.cells[col]
+                        paragraph = cell.paragraphs[0]
+                        paragraph.paragraph_format.space_before = Pt(0)
+                        paragraph.paragraph_format.space_after = Pt(0)
+                        paragraph.paragraph_format.first_line_indent = Cm(0)
+                        paragraph.alignment = (
+                            WD_ALIGN_PARAGRAPH.CENTER if row_idx == 0 else WD_ALIGN_PARAGRAPH.LEFT
+                        )
+                        _add_runs(paragraph, cell_text)
+                        if row_idx == 0:
+                            for run in paragraph.runs:
+                                run.bold = True
+                document.add_paragraph("")
+            list_mode = None
+            continue
 
         flush_metadata()
 
