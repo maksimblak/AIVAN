@@ -92,6 +92,12 @@ from src.bot.ratelimit import RateLimiter
 from src.bot.typing_indicator import send_typing_once, typing_action
 
 SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[\.\!\?])\s+")
+_NUMBERED_ANSWER_RE = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
+_BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022]\s*(.*)")
+_HEADING_PATTERN_RE = re.compile(
+    r"^\s*(?![-\u2022])(?!\d+[\).:-])([A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u0451\u0030-\u0039][^:]{0,80}):\s*(.*)$"
+)
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
 
 VOICE_REPLY_CAPTION = (
@@ -539,7 +545,7 @@ def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
 
     # 3) если всё ещё длинно — режем по предложениям
     final: list[str] = []
-    sent_re = re.compile(r"(?<=[\.\!\?])\s+")
+    sent_re = _SENTENCE_BOUNDARY_RE
     for block in next_stage:
         if len(block) <= hard_limit:
             final.append(block)
@@ -4414,7 +4420,7 @@ def _extract_answer_chunks(
         return None
 
     lines = text.split("\n")
-    numbered_pattern = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
+    numbered_pattern = _NUMBERED_ANSWER_RE
     answers: list[str] = []
     current: list[str] | None = None
     has_numbers = False
@@ -4439,7 +4445,7 @@ def _extract_answer_chunks(
         if len(answers) > 1:
             return answers
 
-    bullet_pattern = re.compile(r"^\s*[-\u2022]\s*(.*)")
+    bullet_pattern = _BULLET_ANSWER_RE
     first_nonempty = next((line for line in lines if line.strip()), "")
     if bullet_pattern.match(first_nonempty):
         answers = []
@@ -4493,7 +4499,7 @@ def _extract_answer_chunks(
     if expected_count is not None and expected_count < 2:
         return None
 
-    heading_pattern = re.compile(r"^\s*(?![-\u2022])(?!\d+[\).:-])([A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u0451\u0030-\u0039][^:]{0,80}):\s*(.*)$")
+    heading_pattern = _HEADING_PATTERN_RE
     candidates: list[str] = []
     current: list[str] = []
     heading_boundaries = 0

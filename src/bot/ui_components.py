@@ -159,22 +159,13 @@ def escape_markdown_v2(text: str) -> str:
 
 # --- Telegram HTML sanitizer (allowlist) ---
 ALLOWED_TAGS = {"b","strong","i","em","u","ins","s","strike","del","code","pre","a","br","tg-spoiler","blockquote"}
-
-
-
-
-def sanitize_telegram_html(html: str) -> str:
-    """Sanitize Telegram HTML while keeping allowed markup balanced."""
-    if not html:
-        return ""
-
-    tag_re = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>", re.IGNORECASE)
-    href_re = re.compile(
-        r"href\s*=\s*(\"([^\"]*)\"|'([^']*)'|([^\s\"'=`<>]+))",
-        re.IGNORECASE,
-    )
-
-    simple_tags = {
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>", re.IGNORECASE)
+_HREF_RE = re.compile(
+    r"href\s*=\s*(\"([^\"]*)\"|'([^']*)'|([^\s\"'=`<>]+))",
+    re.IGNORECASE,
+)
+_SIMPLE_TAGS = frozenset(
+    {
         "b",
         "strong",
         "i",
@@ -189,6 +180,14 @@ def sanitize_telegram_html(html: str) -> str:
         "tg-spoiler",
         "blockquote",
     }
+)
+
+
+
+def sanitize_telegram_html(html: str) -> str:
+    """Sanitize Telegram HTML while keeping allowed markup balanced."""
+    if not html:
+        return ""
 
     parts: list[str] = []
     open_stack: list[str] = []
@@ -203,7 +202,7 @@ def sanitize_telegram_html(html: str) -> str:
         return token.replace('&', '&amp;').replace('<', '&lt;')
 
 
-    for match in tag_re.finditer(html):
+    for match in _TAG_RE.finditer(html):
         start_pos, end_pos = match.span()
         _append_text(html[cursor:start_pos])
 
@@ -224,7 +223,7 @@ def sanitize_telegram_html(html: str) -> str:
             elif name == "a":
                 href_value = ""
                 if attrs:
-                    href_match = href_re.search(attrs)
+                    href_match = _HREF_RE.search(attrs)
                     if href_match:
                         href_candidate = next(
                             (group for group in href_match.groups()[1:] if group),

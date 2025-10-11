@@ -15,7 +15,9 @@ from src.bot.ui_components import sanitize_telegram_html
 
 logger = logging.getLogger(__name__)
 
-
+_HTML_TOKEN_RE = re.compile(r"<[^>]+>|[^<]+")
+_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>")
+_SELF_CLOSING_TAGS = frozenset({"br"})
 
 def format_safe_html(raw_text: str) -> str:
     """Sanitize text for Telegram while preserving simple markup and line breaks."""
@@ -63,10 +65,6 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
     if not html:
         return ["—"]
 
-    token_re = re.compile(r"<[^>]+>|[^<]+")
-    tag_re = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>")
-    self_closing = {"br"}
-
     chunks: list[str] = []
     open_stack: list[tuple[str, str, str]] = []
     current_parts: list[str] = []
@@ -94,16 +92,16 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
         current_parts = [prefix] if prefix else []
         current_len = len(prefix)
 
-    for match in token_re.finditer(html):
+    for match in _HTML_TOKEN_RE.finditer(html):
         token = match.group(0)
-        tag_match = tag_re.fullmatch(token)
+        tag_match = _HTML_TAG_RE.fullmatch(token)
         if tag_match:
             is_closing = bool(tag_match.group(1))
             tag_name_raw = tag_match.group(2)
             tag_name = tag_name_raw.lower()
 
             if not is_closing:
-                if tag_name in self_closing:
+                if tag_name in _SELF_CLOSING_TAGS:
                     if current_len + len(token) > hard_limit:
                         flush_chunk()
                     append_token(token)
