@@ -629,15 +629,3 @@ class ScalingManager:
                 "max_nodes": self.max_nodes,
             },
         }
-
-
-
-
-
-
-
-
-
-
-
-
