@@ -110,6 +110,11 @@ DOCUMENT_GENERATOR_USER_TEMPLATE = """
 _JSON_START_RE = re.compile(r"[{\[]")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _JSON_DECODER = json.JSONDecoder()
+_INLINE_MARKUP_RE = re.compile(r"(\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_|`.+?`)", re.DOTALL)
+_BULLET_ITEM_RE = re.compile(r"^([-*•])\s+(.*)")
+_NUMBERED_ITEM_RE = re.compile(r"^\d+[.)]\s+(.*)")
+_METADATA_LINE_RE = re.compile(r"^([^:]{1,80}):\s+(.+)$")
+_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 
 
 def _strip_code_fences(payload: str) -> str:
@@ -317,8 +322,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     _ensure_font("Heading 3", size=12, bold=True)
 
     def _add_runs(paragraph, text: str) -> None:
-        pattern = re.compile(r"(\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_|`.+?`)", re.DOTALL)
-        for chunk in pattern.split(text):
+        for chunk in _INLINE_MARKUP_RE.split(text):
             if not chunk:
                 continue
             run = paragraph.add_run()
@@ -405,7 +409,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             continue
 
         plain_line = line.strip()
-        if plain_line and plain_line.lower().startswith("исковое заявление"):
+        plain_lower = plain_line.lower()
+        if plain_line and plain_lower.startswith("исковое заявление"):
             title_paragraph = document.add_paragraph(style="Title")
             title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             title_paragraph.paragraph_format.space_before = Pt(12)
@@ -418,9 +423,9 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
         if list_mode is None and plain_line:
             if (
                 not plain_line.startswith(("-", "*", "•", "#"))
-                and not re.match(r"^\d+[.)]", plain_line)
+                and not _NUMBERED_ITEM_RE.match(plain_line)
             ):
-                colon_match = re.match(r"^([^:]{1,80}):\s+(.+)$", plain_line)
+                colon_match = _METADATA_LINE_RE.match(plain_line)
                 if colon_match:
                     field = colon_match.group(1).strip()
                     value = colon_match.group(2).strip()
@@ -441,7 +446,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
             parsed_rows = [_parse_table_row(row) for row in table_lines]
             if len(parsed_rows) >= 2 and all(
-                re.fullmatch(r":?-{3,}:?", cell.replace(" ", ""))
+                _TABLE_SEPARATOR_RE.fullmatch(cell.replace(" ", ""))
                 for cell in parsed_rows[1]
             ):
                 data_rows = [parsed_rows[0]] + parsed_rows[2:]
@@ -503,8 +508,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             list_mode = None
             continue
 
-        bullet_match = re.match(r"^([-*•])\s+(.*)", line)
-        number_match = re.match(r"^\d+[.)]\s+(.*)", line)
+        bullet_match = _BULLET_ITEM_RE.match(line)
+        number_match = _NUMBERED_ITEM_RE.match(line)
         if bullet_match:
             paragraph = document.add_paragraph(style="List Bullet")
             paragraph.paragraph_format.first_line_indent = Pt(0)
@@ -527,14 +532,13 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             paragraph.paragraph_format.left_indent = Cm(1.25)
             paragraph.paragraph_format.first_line_indent = Cm(0)
         else:
-            plain_line = line.strip()
             if ":" in plain_line and not plain_line.endswith(":"):
                 paragraph.paragraph_format.first_line_indent = Cm(0)
                 paragraph.paragraph_format.left_indent = Cm(0)
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
             else:
                 paragraph.paragraph_format.first_line_indent = Cm(1.25)
-        _add_runs(paragraph, line.strip())
+        _add_runs(paragraph, plain_line)
         list_mode = None
 
     flush_metadata()
