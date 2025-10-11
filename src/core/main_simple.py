@@ -2069,17 +2069,27 @@ async def _generate_user_stats_response(
     divider = SECTION_DIVIDER
 
     lines = [
-        f"{Emoji.STATS} <b>Моя статистика — {normalized_days} дн.</b>",
+        "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+        f"┃  {Emoji.STATS} <b>Моя статистика</b>       ┃",
+        "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
+        "",
+        f"📅 <i>Период: последние {normalized_days} дней</i>",
+        "",
         divider,
+        "",
         "👤 <b>Профиль</b>",
-        _format_stat_row("Дата регистрации", _format_datetime(created_at_ts)),
-                _format_stat_row("Последний запрос", _format_datetime(last_request_ts)),
-        _format_stat_row("Подписка", subscription_status_text),
-        _format_stat_row("План", plan_label),
+        "",
+        _format_stat_row("  📆 Регистрация", _format_datetime(created_at_ts)),
+        _format_stat_row("  🕐 Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("  💳 Подписка", subscription_status_text),
+        _format_stat_row("  🏷️ План", plan_label),
     ]
 
+    lines.append("")
     lines.append(divider)
+    lines.append("")
     lines.append("🔋 <b>Лимиты</b>")
+    lines.append("")
     if TRIAL_REQUESTS > 0:
         trial_used = max(0, TRIAL_REQUESTS - trial_remaining)
         lines.append(_progress_line("Триал", trial_used, TRIAL_REQUESTS))
@@ -2088,64 +2098,76 @@ async def _generate_user_stats_response(
 
     if plan_info and plan_info.plan.request_quota > 0:
         used = max(0, plan_info.plan.request_quota - subscription_balance)
-        lines.append(_progress_line("Подписка", used, plan_info.plan.request_quota))
+        lines.append(_progress_line("  📊 Подписка", used, plan_info.plan.request_quota))
     elif has_subscription:
-        lines.append(_format_stat_row("Подписка", "безлимит"))
+        lines.append(_format_stat_row("  📊 Подписка", "безлимит ♾️"))
 
     lines.extend([
+        "",
         divider,
+        "",
         "📈 <b>Активность</b>",
-        _format_stat_row("Запросов", _format_trend_value(period_requests, previous_requests)),
-        _format_stat_row("Успешных", _format_trend_value(period_successful, previous_successful)),
-        _format_stat_row("Успешность", f"{success_rate:.0f}%"),
-        _format_stat_row("Среднее время", _format_response_time(avg_response_time_ms)),
+        "",
+        _format_stat_row("  📝 Запросов", _format_trend_value(period_requests, previous_requests)),
+        _format_stat_row("  ✅ Успешных", _format_trend_value(period_successful, previous_successful)),
+        _format_stat_row("  📊 Успешность", f"{success_rate:.0f}%"),
+        _format_stat_row("  ⏱️ Среднее время", _format_response_time(avg_response_time_ms)),
     ])
     if period_tokens:
-        lines.append(_format_stat_row("Токены", _format_number(period_tokens)))
+        lines.append(_format_stat_row("  🔤 Токены", _format_number(period_tokens)))
 
+    lines.append("")
     lines.append(divider)
+    lines.append("")
     lines.append("🕒 <b>Когда обращаются</b>")
+    lines.append("")
     if day_primary != "—":
-        lines.append(_format_stat_row("Самый активный день", _describe_primary_summary(day_primary, "обращений")))
+        lines.append(_format_stat_row("  📅 Активный день", _describe_primary_summary(day_primary, "обращений")))
         if day_secondary:
-            lines.append(_format_stat_row("Другие активные дни", _describe_secondary_summary(day_secondary, "обращений")))
+            lines.append(_format_stat_row("  📆 Другие дни", _describe_secondary_summary(day_secondary, "обращений")))
     else:
-        lines.append(_format_stat_row("Самый активный день", "нет данных"))
+        lines.append(_format_stat_row("  📅 Активный день", "нет данных"))
 
     if hour_primary != "—":
-        lines.append(_format_stat_row("Самый активный час", _describe_primary_summary(hour_primary, "обращений")))
+        lines.append(_format_stat_row("  🕐 Активный час", _describe_primary_summary(hour_primary, "обращений")))
         if hour_secondary:
-            lines.append(_format_stat_row("Другие часы", _describe_secondary_summary(hour_secondary, "обращений")))
+            lines.append(_format_stat_row("  🕑 Другие часы", _describe_secondary_summary(hour_secondary, "обращений")))
     else:
-        lines.append(_format_stat_row("Самый активный час", "нет данных"))
+        lines.append(_format_stat_row("  🕐 Активный час", "нет данных"))
 
+    lines.append("")
     lines.append(divider)
+    lines.append("")
     lines.append("📋 <b>Типы запросов</b>")
+    lines.append("")
     if type_stats:
         top_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)[:5]
         for req_type, count in top_types:
             share_pct = (count / period_requests * 100) if period_requests else 0.0
             label = FEATURE_LABELS.get(req_type, req_type)
-            lines.append(_format_stat_row(label, f"{count} ({share_pct:.0f}%)"))
+            lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
     else:
-        lines.append(_format_stat_row("Типы", "нет данных"))
+        lines.append(_format_stat_row("  • Типы", "нет данных"))
 
     if last_transaction:
+        lines.append("")
         lines.append(divider)
+        lines.append("")
         lines.append("💳 <b>Последний платёж</b>")
+        lines.append("")
         currency = last_transaction.get("currency", "RUB") or "RUB"
         amount_minor = last_transaction.get("amount_minor_units")
         if amount_minor is None:
             amount_minor = last_transaction.get("amount")
-        lines.append(_format_stat_row("Сумма", _format_currency(amount_minor, currency)))
-        lines.append(_format_stat_row("Статус", last_transaction.get("status", "unknown")))
-        lines.append(_format_stat_row("Дата", _format_datetime(last_transaction.get("created_at"))))
+        lines.append(_format_stat_row("  💰 Сумма", _format_currency(amount_minor, currency)))
+        lines.append(_format_stat_row("  ✅ Статус", last_transaction.get("status", "unknown")))
+        lines.append(_format_stat_row("  📅 Дата", _format_datetime(last_transaction.get("created_at"))))
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
-                    lines.append(_format_stat_row("Тариф", payload.plan_id))
+                    lines.append(_format_stat_row("  🏷️ Тариф", payload.plan_id))
             except SubscriptionPayloadError:
                 pass
 
@@ -3680,46 +3702,67 @@ async def handle_referral_program_callback(callback: CallbackQuery):
         referrals_count = getattr(user, 'referrals_count', 0)
 
         referral_lines: list[str] = [
-            "👥 <b>Реферальная программа</b>",
+            "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+            "┃  👥 <b>Реферальная программа</b>  ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
             "",
             "🎁 <b>Ваши бонусы</b>",
-            f"• Бонусных дней: {referral_bonus_days}",
-            f"• Приглашено друзей: {referrals_count}",
-            f"• С активной подпиской: {active_referrals}",
+            "",
+            f"  🎉 Бонусных дней: <b>{referral_bonus_days}</b>",
+            f"  👫 Приглашено друзей: <b>{referrals_count}</b>",
+            f"  ✅ С активной подпиской: <b>{active_referrals}</b>",
             "",
         ]
 
         if referral_link:
             referral_lines.extend([
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "",
                 "🔗 <b>Ваша реферальная ссылка</b>",
+                "",
                 f"<code>{referral_link}</code>",
+                "",
             ])
         elif share_code:
             safe_code = html_escape(share_code)
             referral_lines.extend([
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "",
                 "🔗 <b>Ваш реферальный код</b>",
+                "",
                 f"<code>ref_{safe_code}</code>",
-                "Отправьте его друзьям, чтобы они указали код при запуске бота.",
+                "",
+                "<i>Отправьте его друзьям, чтобы они\nуказали код при запуске бота</i>",
+                "",
             ])
         else:
             referral_lines.extend([
-                "🔗 <b>Реферальная ссылка временно недоступна</b>",
-                "Попробуйте позже или обратитесь в поддержку.",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "",
+                "⚠️ <b>Ссылка временно недоступна</b>",
+                "",
+                "<i>Попробуйте позже или обратитесь\nв поддержку</i>",
+                "",
             ])
 
         referral_lines.extend([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             "💡 <b>Как это работает</b>",
-            "• Поделитесь ссылкой с друзьями",
-            "• За каждого друга получите 3 дня подписки",
-            "• Друг получит скидку 20% на первую покупку",
+            "",
+            "  1️⃣ Поделитесь ссылкой с друзьями",
+            "  2️⃣ За каждого друга получите 3 дня",
+            "  3️⃣ Друг получит скидку 20%",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             "📈 <b>Ваши рефералы</b>",
+            "",
         ])
 
         if referrals:
-            referral_lines.append(f"• Всего: {total_referrals}")
-            referral_lines.append(f"• С подпиской: {active_referrals}")
+            referral_lines.append(f"  📊 Всего: <b>{total_referrals}</b>")
+            referral_lines.append(f"  💎 С подпиской: <b>{active_referrals}</b>")
 
             # Показываем последних рефералов
             recent_referrals = referrals[:5]
