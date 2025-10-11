@@ -62,7 +62,12 @@ DOCUMENT_GENERATOR_SYSTEM_PROMPT = """
 
 1. Проверь, достаточно ли данных. Если чего-то не хватает, верни status = "need_more_info" и сформируй follow_up_questions с уточнениями.
 2. Если данных достаточно, составь документ в Markdown, опираясь на найденный образец и профессиональные стандарты. Соблюдай структуру, стиль и формулировки, характерные для соответствующего вида документа.
-3. Перед выдачей результата выполни самопроверку: перечисли учтённые ключевые данные и выявленные риски/пробелы.
+3. Структура `document_markdown`:
+   • В начале размести блок реквизитов строками формата `Поле: Значение` (например: `Суд: ...`, `Истец: ...`, `Ответчик: ...`, `Цена иска: ...`, `Госпошлина: ...`, при необходимости — `Дата: ...`, `Подпись: ...`). Не используй псевдографику и обратные слэши для переносов.
+   • После реквизитов сделай пустую строку и добавь заголовок документа через `# {название}`.
+   • Основные разделы оформляй подзаголовками `## …`, внутри разделов используй пронумерованные списки `1.` для ключевых пунктов и маркированные списки `-` для подпунктов.
+   • Итоговые блоки (просительная часть, приложения, подпись) также подай в виде структурированных списков, без `\` в конце строк.
+4. Перед выдачей результата выполни самопроверку: перечисли учтённые ключевые данные и выявленные риски/пробелы.
 
 Формат ответа — валидный JSON вида:
 {
@@ -301,7 +306,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             r_fonts.set(qn("w:eastAsia"), "Times New Roman")
     normal_paragraph = normal_style.paragraph_format
     normal_paragraph.space_after = Pt(6)
-    normal_paragraph.first_line_indent = Cm(1.25)
+    normal_paragraph.first_line_indent = Cm(0)
     normal_paragraph.line_spacing = 1.5
 
     _ensure_font("Title", size=16, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
@@ -330,11 +335,25 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
     list_mode: str | None = None
 
-    for raw_line in markdown.splitlines():
+    for raw_line in markdown.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         line = raw_line.rstrip()
+
+        if line.endswith("\\"):
+            line = line[:-1].rstrip()
 
         if not line:
             document.add_paragraph("")
+            list_mode = None
+            continue
+
+        plain_line = line.strip()
+        if plain_line and plain_line.lower().startswith("исковое заявление"):
+            title_paragraph = document.add_paragraph(style="Title")
+            title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title_paragraph.paragraph_format.space_before = Pt(12)
+            title_paragraph.paragraph_format.space_after = Pt(12)
+            title_paragraph.paragraph_format.keep_with_next = True
+            _add_runs(title_paragraph, plain_line)
             list_mode = None
             continue
 
@@ -366,13 +385,13 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             list_mode = None
             continue
 
-        bullet_match = re.match(r"^[-*]\s+(.*)", line)
+        bullet_match = re.match(r"^([-*•])\s+(.*)", line)
         number_match = re.match(r"^\d+[.)]\s+(.*)", line)
         if bullet_match:
             paragraph = document.add_paragraph(style="List Bullet")
             paragraph.paragraph_format.first_line_indent = Pt(0)
             paragraph.paragraph_format.left_indent = Cm(0.75)
-            _add_runs(paragraph, bullet_match.group(1).strip())
+            _add_runs(paragraph, bullet_match.group(2).strip())
             list_mode = "bullet"
             continue
         if number_match:
@@ -385,8 +404,18 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
         paragraph = document.add_paragraph(style="Normal")
         paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.space_after = Pt(6)
         if list_mode:
-            paragraph.paragraph_format.first_line_indent = Cm(1.25)
+            paragraph.paragraph_format.left_indent = Cm(1.25)
+            paragraph.paragraph_format.first_line_indent = Cm(0)
+        else:
+            plain_line = line.strip()
+            if ":" in plain_line and not plain_line.endswith(":"):
+                paragraph.paragraph_format.first_line_indent = Cm(0)
+                paragraph.paragraph_format.left_indent = Cm(0)
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            else:
+                paragraph.paragraph_format.first_line_indent = Cm(1.25)
         _add_runs(paragraph, line.strip())
         list_mode = None
 
