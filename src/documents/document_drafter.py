@@ -393,6 +393,16 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     document.save(output_path)
 
 
+def _pluralize_questions(count: int) -> str:
+    """Склонение слова 'вопрос' в зависимости от числа."""
+    if count % 10 == 1 and count % 100 != 11:
+        return "вопрос"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "вопроса"
+    else:
+        return "вопросов"
+
+
 def format_plan_summary(plan: DraftPlan) -> str:
     from html import escape as html_escape
 
@@ -406,33 +416,49 @@ def format_plan_summary(plan: DraftPlan) -> str:
     lines.append("┃  📋 <b>Подготовка документа</b>   ┃")
     lines.append("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛")
     lines.append("")
-    lines.append(f"📄 <b>{title_escaped}</b>")
-    lines.append("")
-    lines.append("")
-    lines.append(f"❓ <b>Уточняющих вопросов:</b> <i>{len(plan.questions)}</i>")
+    lines.append(f"<b>Документ:</b> {title_escaped}")
     lines.append("")
 
     if plan.questions:
-        lines.append("")
-        lines.append("💡 <b>Как отвечать:</b>")
-        lines.append("")
-        lines.append("   ✅ Напишите все ответы <b>одним сообщением</b>")
+        lines.append(f"<b>Требуется информация:</b> {len(plan.questions)} {_pluralize_questions(len(plan.questions))}")
         lines.append("")
         lines.append("")
-        lines.append("📝 <b>Варианты оформления:</b>")
+        lines.append("┌─────────────────────────────┐")
+        lines.append("│ 💡 <b>Инструкция по ответу</b>     │")
+        lines.append("└─────────────────────────────┘")
         lines.append("")
-        lines.append("   • Пронумеруйте ответы:")
-        lines.append("     <code>1) Первый ответ</code>")
-        lines.append("     <code>2) Второй ответ</code>")
+        lines.append("<b>Как отвечать:</b>")
         lines.append("")
-        lines.append("   • Или разделяйте пустой строкой")
+        lines.append("  ✓ Напишите все ответы в одном")
+        lines.append("    сообщении, не разделяя их")
+        lines.append("")
+        lines.append("<b>Формат ответов:</b>")
+        lines.append("")
+        lines.append("  <b>Вариант 1</b> — нумерация:")
+        lines.append("  <code>1) Ваш первый ответ</code>")
+        lines.append("  <code>2) Ваш второй ответ</code>")
+        lines.append("  <code>3) Ваш третий ответ</code>")
+        lines.append("")
+        lines.append("  <b>Вариант 2</b> — пустая строка:")
+        lines.append("  <code>Первый ответ</code>")
+        lines.append("  <code></code>")
+        lines.append("  <code>Второй ответ</code>")
         lines.append("")
         lines.append("")
-        lines.append("👇 <i>Вопросы будут отправлены следующим сообщением</i>")
+        lines.append("👇 <i>Вопросы отправлены отдельным</i>")
+        lines.append("   <i>сообщением ниже</i>")
     else:
+        lines.append("<b>Статус:</b> Готов к созданию ✅")
         lines.append("")
-        lines.append("✅ <b>Дополнительных уточнений не требуется</b>")
         lines.append("")
-        lines.append("🚀 <i>Можно приступать к формированию документа</i>")
+        lines.append("┌─────────────────────────────┐")
+        lines.append("│ ✅ <b>Всё готово!</b>               │")
+        lines.append("└─────────────────────────────┘")
+        lines.append("")
+        lines.append("Дополнительная информация")
+        lines.append("не требуется.")
+        lines.append("")
+        lines.append("🚀 Можно приступать к")
+        lines.append("   формированию документа")
 
     return "\n".join(lines)
