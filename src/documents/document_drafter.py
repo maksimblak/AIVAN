@@ -147,22 +147,32 @@ def _extract_json(text: Any) -> Any:
 
     cleaned_text = _strip_code_fences(text)
 
-    def _try_parse(candidate: str) -> Any:
-        candidate = candidate.strip()
-        if not candidate:
-            raise json.JSONDecodeError("Empty JSON candidate", candidate, 0)
-        normalized = _TRAILING_COMMA_RE.sub(r"\1", candidate)
-        obj, _ = _JSON_DECODER.raw_decode(normalized)
-        return obj
+    def _decode_from_index(source: str, start_index: int = 0) -> Any:
+        idx = start_index
+        length = len(source)
+        while idx < length and source[idx].isspace():
+            idx += 1
+        if idx >= length:
+            raise json.JSONDecodeError("Empty JSON candidate", source, idx)
+        try:
+            obj, _ = _JSON_DECODER.raw_decode(source, idx)
+            return obj
+        except (json.JSONDecodeError, ValueError) as primary_err:
+            candidate = source[idx:].strip()
+            if not candidate:
+                raise json.JSONDecodeError("Empty JSON candidate", source, idx) from primary_err
+            normalized = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+            obj, _ = _JSON_DECODER.raw_decode(normalized)
+            return obj
 
     try:
-        return _try_parse(cleaned_text)
+        return _decode_from_index(cleaned_text)
     except (json.JSONDecodeError, ValueError) as err:
         logger.debug("Primary JSON parse failed, scanning for nested JSON: %s", err)
         for match in _JSON_START_RE.finditer(cleaned_text):
             start_idx = match.start()
             try:
-                return _try_parse(cleaned_text[start_idx:])
+                return _decode_from_index(cleaned_text, start_idx)
             except (json.JSONDecodeError, ValueError):
                 continue
 
@@ -197,17 +207,7 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
 
     data = _extract_json(raw_text)
     title = str(data.get("document_title") or "Документ").strip()
-    questions = [
-        {
-            "id": str(q.get("id") or f"q{i+1}"),
-            "text": str(q.get("text") or "").strip(),
-            "purpose": str(q.get("purpose") or "").strip(),
-        }
-        for i, q in enumerate(data.get("questions") or [])
-        if str(q.get("text") or "").strip()
-    ]
     notes = [str(note).strip() for note in data.get("context_notes") or [] if str(note).strip()]
-
     need_more_raw = data.get("need_more_info")
     if isinstance(need_more_raw, bool):
         need_more = need_more_raw
@@ -218,8 +218,22 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
         need_more = False
     else:
         need_more = bool(need_more_raw)
-    if not need_more:
-        questions = []
+    questions: list[dict[str, str]] = []
+    if need_more:
+        raw_questions = data.get("questions") or []
+        for idx, raw in enumerate(raw_questions):
+            text = str(raw.get("text") or "").strip()
+            if not text:
+                continue
+            purpose = str(raw.get("purpose") or "").strip()
+            question_id = str(raw.get("id") or f"q{idx + 1}")
+            questions.append(
+                {
+                    "id": question_id,
+                    "text": text,
+                    "purpose": purpose,
+                }
+            )
 
     return DraftPlan(title=title or "Документ", questions=questions, notes=notes)
 

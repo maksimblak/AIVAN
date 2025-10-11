@@ -69,11 +69,14 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
     open_stack: list[tuple[str, str, str]] = []
     current_parts: list[str] = []
     current_len = 0
+    has_visible_text = False
 
-    def append_token(token: str) -> None:
-        nonlocal current_len
+    def append_token(token: str, *, visible: bool = False) -> None:
+        nonlocal current_len, has_visible_text
         current_parts.append(token)
         current_len += len(token)
+        if visible and not has_visible_text and token.strip():
+            has_visible_text = True
 
     def reopen_prefix() -> str:
         return "".join(info[1] for info in open_stack)
@@ -82,7 +85,7 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
         return "".join(info[2] for info in reversed(open_stack))
 
     def flush_chunk() -> None:
-        nonlocal current_parts, current_len
+        nonlocal current_parts, current_len, has_visible_text
         if not current_parts and not open_stack:
             return
         chunk_body = "".join(current_parts)
@@ -90,17 +93,18 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
         chunk_full = chunk_body + closings
 
         # Skip chunks that reopen tags but do not contain visible text.
-        visible_text = re.sub(r"<[^>]+>", "", chunk_body).strip()
-        if not visible_text:
+        if not has_visible_text:
             prefix = reopen_prefix()
             current_parts = [prefix] if prefix else []
             current_len = len(prefix)
+            has_visible_text = False
             return
 
         chunks.append(chunk_full if chunk_full.strip() else "—")
         prefix = reopen_prefix()
         current_parts = [prefix] if prefix else []
         current_len = len(prefix)
+        has_visible_text = False
 
     for match in _HTML_TOKEN_RE.finditer(html):
         token = match.group(0)
@@ -139,7 +143,7 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
                     flush_chunk()
                     space_left = hard_limit - current_len
                 if len(text_chunk) <= space_left:
-                    append_token(text_chunk)
+                    append_token(text_chunk, visible=bool(text_chunk.strip()))
                     text_chunk = ""
                 else:
                     slice_len = space_left
@@ -160,7 +164,7 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
                         # Fall back to a hard cut to guarantee progress.
                         slice_len = min(space_left, len(text_chunk))
                         slice_part = text_chunk[:slice_len]
-                    append_token(slice_part)
+                    append_token(slice_part, visible=bool(slice_part.strip()))
                     text_chunk = text_chunk[slice_len:]
                     flush_chunk()
 
