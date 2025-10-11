@@ -4470,30 +4470,24 @@ def _extract_answer_chunks(
     if len(chunks) > 1:
         if question_headings:
             normalized = [
-                re.sub(r"\s+", " ", heading or "").strip().lower()
+                re.sub(r"\s+", " ", (heading or "")).strip().lower()
                 for heading in question_headings
             ]
-            normalized = [h for h in normalized if h]
 
             def _normalize_line(line: str) -> str:
-                return re.sub(r"\s+", " ", (line or "").strip()).lower()
+                return re.sub(r"\s+", " ", (line or "")).strip().lower()
 
-            merged: list[str] = []
+            ordered: list[str] = []
             idx = 0
             for chunk in chunks:
                 first_line = chunk.split("\n", 1)[0]
                 first_norm = _normalize_line(first_line)
-                if idx < len(normalized) and first_norm == normalized[idx]:
-                    merged.append(chunk)
+                if idx < len(normalized) and normalized[idx] and first_norm == normalized[idx]:
+                    ordered.append(chunk)
                     idx += 1
-                elif merged:
-                    merged[-1] = f"{merged[-1]}\n\n{chunk}"
                 else:
-                    merged.append(chunk)
-            if merged and len(merged) > 1:
-                return merged
-            if merged:
-                chunks = merged
+                    ordered.append(chunk)
+            return ordered
         return chunks
 
     if expected_count is not None and expected_count < 2:
