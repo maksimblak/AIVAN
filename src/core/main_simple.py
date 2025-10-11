@@ -799,6 +799,54 @@ def _format_stat_row(label: str, value: str) -> str:
     return f"<b>{label}</b> · {value}"
 
 
+def _translate_payment_status(status: str) -> str:
+    """Переводит статус платежа на русский язык"""
+    status_map = {
+        "pending": "⏳ Ожидание",
+        "processing": "🔄 Обработка",
+        "succeeded": "✅ Успешно",
+        "success": "✅ Успешно",
+        "completed": "✅ Завершён",
+        "failed": "❌ Ошибка",
+        "cancelled": "🚫 Отменён",
+        "canceled": "🚫 Отменён",
+        "refunded": "↩️ Возврат",
+        "unknown": "❓ Неизвестно",
+    }
+    return status_map.get(status.lower(), status)
+
+
+def _translate_plan_name(plan_id: str) -> str:
+    """Переводит название тарифа на русский язык"""
+    # Словарь для перевода базовых названий тарифов
+    plan_map = {
+        "basic": "Базовый",
+        "standard": "Стандарт",
+        "premium": "Премиум",
+        "pro": "Про",
+        "trial": "Триал",
+    }
+
+    # Словарь для перевода периодов
+    period_map = {
+        "1m": "1 месяц",
+        "3m": "3 месяца",
+        "6m": "6 месяцев",
+        "12m": "1 год",
+        "1y": "1 год",
+    }
+
+    # Разбираем plan_id (например, "standard_1m" -> "Стандарт • 1 месяц")
+    parts = plan_id.split("_")
+    if len(parts) >= 2:
+        plan_name = plan_map.get(parts[0].lower(), parts[0].capitalize())
+        period = period_map.get(parts[1].lower(), parts[1])
+        return f"{plan_name} • {period}"
+
+    # Если не удалось разобрать, пробуем найти в словаре целиком
+    return plan_map.get(plan_id.lower(), plan_id)
+
+
 def _describe_primary_summary(summary: str, unit: str) -> str:
     if not summary or summary == "—":
         return "нет данных"
@@ -2160,14 +2208,21 @@ async def _generate_user_stats_response(
         if amount_minor is None:
             amount_minor = last_transaction.get("amount")
         lines.append(_format_stat_row("  💰 Сумма", _format_currency(amount_minor, currency)))
-        lines.append(_format_stat_row("  ✅ Статус", last_transaction.get("status", "unknown")))
+
+        # Переводим статус на русский
+        status = last_transaction.get("status", "unknown")
+        translated_status = _translate_payment_status(status)
+        lines.append(_format_stat_row("  📊 Статус", translated_status))
+
         lines.append(_format_stat_row("  📅 Дата", _format_datetime(last_transaction.get("created_at"))))
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
-                    lines.append(_format_stat_row("  🏷️ Тариф", payload.plan_id))
+                    # Переводим название тарифа на русский
+                    translated_plan = _translate_plan_name(payload.plan_id)
+                    lines.append(_format_stat_row("  🏷️ Тариф", translated_plan))
             except SubscriptionPayloadError:
                 pass
 
