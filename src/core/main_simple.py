@@ -4690,26 +4690,34 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         return
 
     # Показываем информацию о проверке и предупреждения
-    notes: list[str] = []
+    summary_sections: list[str] = []
     if result.validated:
-        validated_items = "\n".join([f"  ✓ {item}" for item in result.validated])
-        notes.append(
-            f"✅ <b>Проверено:</b>\n{validated_items}"
+        validated_lines = "\n".join(
+            f"• {html_escape(str(item).strip())}"
+            for item in result.validated
+            if str(item).strip()
         )
+        if validated_lines:
+            summary_sections.append(
+                f"{Emoji.SUCCESS} <b>Проверено</b>\n{validated_lines}"
+            )
 
     if result.issues:
-        issues_items = "\n".join([f"  ⚠️ {item}" for item in result.issues])
-        notes.append(
-            f"⚠️ <b>На что обратить внимание:</b>\n{issues_items}"
+        issue_lines = "\n".join(
+            f"• {html_escape(str(item).strip())}"
+            for item in result.issues
+            if str(item).strip()
         )
+        if issue_lines:
+            summary_sections.append(
+                f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issue_lines}"
+            )
 
-    if notes:
-        info_text = (
-            f"<code>{'━' * 35}</code>\n"
-            f"{chr(10).join(notes)}\n"
-            f"<code>{'━' * 35}</code>"
+    if summary_sections:
+        await message.answer(
+            "\n\n".join(summary_sections),
+            parse_mode=ParseMode.HTML,
         )
-        await message.answer(info_text, parse_mode=ParseMode.HTML)
 
     # Создаем и отправляем документ
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
