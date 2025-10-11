@@ -11,6 +11,7 @@ import logging
 import math
 import time
 import tempfile
+import shutil
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -118,6 +119,19 @@ FEATURE_LABELS = {
 }
 
 SECTION_DIVIDER = "<code>────────────────────</code>"
+
+
+def _create_temp_file_path(suffix: str) -> Path:
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        return Path(tmp.name)
+    finally:
+        tmp.close()
+
+
+def _write_stream_to_path(stream, target: Path) -> None:
+    with target.open("wb") as destination:
+        shutil.copyfileobj(stream, destination, length=128 * 1024)
 
 def _build_stats_keyboard(has_subscription: bool) -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
@@ -3116,13 +3130,11 @@ async def _download_voice_to_temp(message: Message) -> Path:
     if not file_path:
         raise RuntimeError("Telegram did not return a file path for the voice message")
 
-    temp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
-    temp_path = Path(temp.name)
-    temp.close()
+    temp_path = await asyncio.to_thread(_create_temp_file_path, ".ogg")
 
     file_stream = await message.bot.download_file(file_path)
     try:
-        temp_path.write_bytes(file_stream.read())
+        await asyncio.to_thread(_write_stream_to_path, file_stream, temp_path)
     finally:
         close_method = getattr(file_stream, "close", None)
         if callable(close_method):
@@ -6317,6 +6329,10 @@ async def run_bot() -> None:
             (
                 "OpenAI service",
                 lambda: getattr(openai_service, "close", None) and openai_service.close(),
+            ),
+            (
+                "Audio service",
+                lambda: getattr(audio_service, "aclose", None) and audio_service.aclose(),
             ),
             (
                 "Response cache",

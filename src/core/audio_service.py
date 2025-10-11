@@ -80,6 +80,8 @@ class AudioService:
         if self._backend_config not in {"auto", "speech", "responses"}:
             logger.warning("Unsupported TTS backend '%s'; falling back to 'auto'", tts_backend)
             self._backend_config = "auto"
+        self._client_lock = asyncio.Lock()
+        self._client: AsyncOpenAI | None = None
 
     def _decide_backend(self) -> str:
         if self._backend_config == "auto":
@@ -105,17 +107,45 @@ class AudioService:
             )
         return _DEFAULT_TTS_FORMAT
 
+    async def _get_client(self) -> AsyncOpenAI:
+        client = self._client
+        if client is not None:
+            return client
+        async with self._client_lock:
+            if self._client is None:
+                self._client = await _acquire_client()
+            return self._client
+
+    async def aclose(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        self._client = None
+        close_method = getattr(client, "close", None)
+        try:
+            if callable(close_method):
+                result = close_method()
+                if asyncio.iscoroutine(result):
+                    await result
+                return
+            aclose_method = getattr(client, "aclose", None)
+            if callable(aclose_method):
+                result = aclose_method()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception:
+            logger.debug("Failed to close AudioService OpenAI client", exc_info=True)
+
     async def transcribe(self, file_path: Path, *, language: Optional[str] = None) -> str:
         """Convert voice message to text using configured STT model."""
-        client = await _acquire_client()
-        async with client as oai:
-            with file_path.open("rb") as audio_file:
-                response = await oai.audio.transcriptions.create(
-                    model=self.stt_model,
-                    file=audio_file,
-                    response_format="text",
-                    language=language,
-                )
+        client = await self._get_client()
+        with file_path.open("rb") as audio_file:
+            response = await client.audio.transcriptions.create(
+                model=self.stt_model,
+                file=audio_file,
+                response_format="text",
+                language=language,
+            )
         if isinstance(response, str):
             text = response.strip()
         else:
@@ -137,30 +167,30 @@ class AudioService:
         if not slices:
             raise ValueError("Text-to-speech received empty input")
 
-        client = await _acquire_client()
+        client = await self._get_client()
         api_format, file_extension = self._resolve_tts_format()
         voice_to_use = voice_override or (
             self.tts_voice_male if prefer_male and self.tts_voice_male else self.tts_voice
         )
 
         paths: list[Path] = []
-        async with client as oai:
-            try:
-                for chunk in slices:
-                    tmp_path = await self._create_temp_file(f".{file_extension}")
-                    speech = await self._create_speech_payload(
-                        oai=oai,
-                        text=chunk,
-                        voice=voice_to_use,
-                        api_format=api_format,
-                    )
-                    await self._store_speech_response(speech, tmp_path)
-                    paths.append(tmp_path)
-            except Exception:
-                for path in paths:
-                    with suppress(Exception):
-                        path.unlink()
-                raise
+        oai = client
+        try:
+            for chunk in slices:
+                tmp_path = await self._create_temp_file(f".{file_extension}")
+                speech = await self._create_speech_payload(
+                    oai=oai,
+                    text=chunk,
+                    voice=voice_to_use,
+                    api_format=api_format,
+                )
+                await self._store_speech_response(speech, tmp_path)
+                paths.append(tmp_path)
+        except Exception:
+            for path in paths:
+                with suppress(Exception):
+                    path.unlink()
+            raise
 
         if len(paths) > 1:
             logger.info(

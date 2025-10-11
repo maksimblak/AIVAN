@@ -68,6 +68,8 @@ class OCRConverter(DocumentProcessor):
 
         # In-memory кэш: (sha256, engine) -> (text, conf)
         self._cache: Dict[Tuple[str, str], Tuple[str, float]] = {}
+        self._paddle_instances: Dict[Tuple[str, int], Any] = {}
+        self._paddle_lock = asyncio.Lock()
 
     # ——————————————————————————————————————
     # Публичный метод обработки
@@ -261,6 +263,23 @@ class OCRConverter(DocumentProcessor):
             logger.debug("Предобработка изображения не выполнена: %s", e)
             return None
 
+    async def _ensure_paddle_engine(self, paddle_cls: Any, lang: str, det_limit: int) -> Any:
+        key = (lang.lower(), int(det_limit))
+        engine = self._paddle_instances.get(key)
+        if engine is not None:
+            return engine
+        async with self._paddle_lock:
+            engine = self._paddle_instances.get(key)
+            if engine is not None:
+                return engine
+
+            def _create() -> Any:
+                return paddle_cls(use_angle_cls=True, lang=lang, det_limit_side_len=det_limit)
+
+            engine = await asyncio.to_thread(_create)
+            self._paddle_instances[key] = engine
+            return engine
+
     async def _paddleocr_image(self, image_path: Path) -> tuple[str, float]:
         """
         PaddleOCR с адаптивным языком: пробуем базовый и EN, берём лучший.
@@ -284,7 +303,7 @@ class OCRConverter(DocumentProcessor):
         best_text, best_conf = "", 0.0
         for lang in langs_try:
             try:
-                ocr = PaddleOCR(use_angle_cls=True, lang=lang, det_limit_side_len=det_limit)
+                ocr = await self._ensure_paddle_engine(PaddleOCR, lang, det_limit)
                 result = await asyncio.to_thread(ocr.ocr, str(image_path), True)
                 text, conf = self._collect_paddle_result(result)
                 logger.info("PaddleOCR lang=%s → conf=%.1f, len=%d", lang, conf, len(text))
