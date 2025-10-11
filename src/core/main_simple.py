@@ -4646,21 +4646,54 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    progress: ProgressStatus | None = None
+    try:
+        progress = ProgressStatus(
+            message.bot,
+            message.chat.id,
+            steps=[
+                {"label": "Готовим черновик"},
+                {"label": "Проверяем структуру"},
+                {"label": "Формируем DOCX"},
+                {"label": "Отправляем файл"},
+            ],
+            show_context_toggle=False,
+            show_checklist=True,
+            auto_advance_stages=True,
+            min_edit_interval=0.5,
+            percent_thresholds=[0, 55, 80, 95],
+        )
+        await progress.start(auto_cycle=True, interval=1.4)
+        await progress.update_stage(percent=5, step=1)
+    except Exception as progress_err:  # pragma: no cover - индикатор не критичен
+        logger.debug("Failed to start document drafting progress: %s", progress_err)
+        progress = None
+
     # Показываем индикатор "отправляет документ" во время генерации
     try:
         async with typing_action(message.bot, message.chat.id, "upload_document"):
             result = await generate_document(openai_service, request_text, title, answers)
     except DocumentDraftingError as err:
+        if progress:
+            await progress.fail(note=str(err))
         await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
         await state.clear()
         return
     except Exception as exc:  # noqa: BLE001
         logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
+        if progress:
+            await progress.fail(note="Сбой при генерации документа")
         await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
         await state.clear()
         return
 
+    if progress:
+        await progress.update_stage(percent=65, step=2)
+
     if result.status != "ok":
+        if progress:
+            note = "Нужны дополнительные уточнения" if result.follow_up_questions else "Не удалось завершить документ"
+            await progress.fail(note=note)
         if result.follow_up_questions:
             extra_questions = [
                 {"id": f"f{i+1}", "text": item, "purpose": "Дополнительное уточнение"}
@@ -4720,6 +4753,8 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         )
 
     # Создаем и отправляем документ
+    if progress:
+        await progress.update_stage(percent=85, step=3)
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
         tmp_path = Path(tmp_file.name)
     try:
@@ -4735,12 +4770,23 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
             f"<i>💡 Проверьте содержимое и при необходимости внесите правки</i>"
         )
 
+        if progress:
+            await progress.update_stage(percent=95, step=4)
+
         await message.answer_document(
             FSInputFile(str(tmp_path), filename=filename),
             caption=final_caption,
             parse_mode=ParseMode.HTML
         )
+        if progress:
+            await progress.complete(note="Документ готов")
+            await asyncio.sleep(0.3)
+            with suppress(Exception):
+                if progress.message_id:
+                    await message.bot.delete_message(message.chat.id, progress.message_id)
     except DocumentDraftingError as err:
+        if progress:
+            await progress.fail(note=str(err))
         await message.answer(
             f"❌ <b>Ошибка формирования DOCX</b>\n"
             f"<code>{'─' * 30}</code>\n\n"
