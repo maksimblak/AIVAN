@@ -1249,22 +1249,39 @@ def _profile_menu_text(
     name_html = html_escape(_display_name(user))
 
     card_lines: list[str] = [
-        "📇 <b>Профиль</b>",
-        "━━━━━━━━━━━━━━━━",
-        f"🧑‍💼 <b>Имя:</b> {name_html}",
+        "┏━━━━━━━━━━━━━━━━━━━━━┓",
+        "┃   📇 <b>Ваш профиль</b>      ┃",
+        "┗━━━━━━━━━━━━━━━━━━━━━┛",
+        "",
+        f"👤 <b>Пользователь</b>",
+        f"   └ {name_html}",
     ]
 
-    if status_text:
-        card_lines.append(f"💳 <b>Статус:</b> {html_escape(status_text)}")
-    if tariff_text:
-        card_lines.append(f"🏷️ <b>Тариф:</b> {html_escape(tariff_text)}")
-    if hint_text:
-        card_lines.append(f"💡 {html_escape(hint_text)}")
+    if status_text or tariff_text:
+        card_lines.append("")
+        card_lines.append("📊 <b>Подписка</b>")
 
-    card_lines.append("")
-    card_lines.append("🔰 <i>Обучение как пользоваться ИИ-ИВАНОМ — команда /help</i>")
-    card_lines.append("")
-    card_lines.append("Выберите действие:")
+    if status_text:
+        card_lines.append(f"   ├ Статус: {status_text}")
+    if tariff_text:
+        prefix = "   └" if not status_text else "   └"
+        card_lines.append(f"{prefix} Тариф: {tariff_text}")
+
+    if hint_text:
+        card_lines.append("")
+        card_lines.append(f"💡 <b>Совет:</b> {html_escape(hint_text)}")
+
+    card_lines.extend([
+        "",
+        "─────────────────────",
+        "",
+        "🎯 <b>Что можно сделать:</b>",
+        "   • Посмотреть статистику",
+        "   • Управлять подпиской",
+        "   • Реферальная программа",
+        "",
+        "💼 <i>Обучение работе с ИИ-ИВАНОМ — /help</i>",
+    ])
     return "\n".join(card_lines)
 
 
@@ -3426,9 +3443,9 @@ async def handle_my_profile_callback(callback: CallbackQuery):
                         subscribe_label = "❌ Отменить подписку"
                 else:
                     trial_remaining = int(getattr(user_record, "trial_remaining", 0) or 0)
-                    status_text = "нет активной подписки"
-                    tariff_text = f"триал — {trial_remaining} запросов"
-                    hint_text = "Оформите подписку, чтобы получить дополнительные запросы, приоритет и поддержку"
+                    status_text = "⭕ <i>нет активной подписки</i>"
+                    tariff_text = f"🎁 <b>Триал</b> • <i>{trial_remaining} запросов</i>"
+                    hint_text = ""
             except Exception as profile_error:  # pragma: no cover - fallback
                 logger.debug("Failed to build profile header: %s", profile_error, exc_info=True)
 
