@@ -5109,14 +5109,8 @@ async def cmd_enddoc(message: Message) -> None:
         await message.answer(f"{Emoji.WARNING} Активная сессия не найдена.")
 
 
-GENERIC_INTERNAL_ERROR_HTML = (
-    "<i>\u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u044f\u044f "
-    "\u043e\u0448\u0438\u0431\u043a\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.</i>"
-)
-GENERIC_INTERNAL_ERROR_TEXT = (
-    "\u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u044f\u044f "
-    "\u043e\u0448\u0438\u0431\u043a\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435."
-)
+GENERIC_INTERNAL_ERROR_HTML = "<i>Произошла внутренняя ошибка. Попробуйте позже.</i>"
+GENERIC_INTERNAL_ERROR_TEXT = "Произошла внутренняя ошибка. Попробуйте позже."
 
 
 async def handle_document_upload(message: Message, state: FSMContext):
@@ -5283,11 +5277,11 @@ async def handle_document_upload(message: Message, state: FSMContext):
                     pass
 
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                    await message.answer(
-                        f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=reply_markup,
-                    )
+                await message.answer(
+                    f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
                 logger.error(f"Error processing document {file_name}: {e}", exc_info=True)
 
             finally:
@@ -5489,7 +5483,7 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                 await state.clear()
 
     except Exception as e:
-        await message.answer("\u274c \u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u044f\u044f \u043e\u0448\u0438\u0431\u043a\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.")
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
         logger.error(f"Error in handle_photo_upload: {e}", exc_info=True)
         await state.clear()
 
