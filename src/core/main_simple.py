@@ -1,4 +1,4 @@
-"""
+﻿"""
 Простая версия Telegram бота ИИ-Иван
 Только /start и обработка вопросов, никаких кнопок и лишних команд
 """
@@ -9,13 +9,12 @@ import asyncio
 import json
 import logging
 import math
-import time
-import tempfile
 import shutil
+import tempfile
+import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-import uuid
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 from src.core.excel_export import build_practice_excel
