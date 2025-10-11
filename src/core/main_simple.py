@@ -91,8 +91,20 @@ from src.documents.base import ProcessingError
 from src.bot.ratelimit import RateLimiter
 from src.bot.typing_indicator import send_typing_once, typing_action
 
-SAFE_LIMIT = 3900  # Buffer below Telegram 4096 character limit
-_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[\.\!\?])\s+")
+from src.core.simple_bot.formatting import (
+    DEFAULT_TEXT_LIMIT,
+    _format_currency,
+    _format_datetime,
+    _format_hour_label,
+    _format_number,
+    _format_progress_extras,
+    _format_risk_count,
+    _format_response_time,
+    _format_stat_row,
+    _format_trend_value,
+    _split_plain_text,
+)
+SAFE_LIMIT = DEFAULT_TEXT_LIMIT  # Buffer below Telegram 4096 character limit
 _NUMBERED_ANSWER_RE = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
 _BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022]\s*(.*)")
 _HEADING_PATTERN_RE = re.compile(
@@ -381,31 +393,6 @@ def _get_safe_db_method(method_name: str, default_return=None):
 # ============ УТИЛИТЫ ============
 
 
-def chunk_text(text: str, max_length: int | None = None) -> list[str]:
-    """Split long Telegram messages into chunks respecting limits."""
-    limit = max_length or derived().max_message_length
-    if len(text) <= limit:
-        return [text]
-
-    chunks: list[str] = []
-    current_chunk = ''
-
-    for paragraph in text.split('\n\n'):
-        if len(current_chunk + paragraph + '\n\n') <= limit:
-            current_chunk += paragraph + '\n\n'
-        elif current_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = paragraph + '\n\n'
-        else:
-            while len(paragraph) > limit:
-                chunks.append(paragraph[:limit])
-                paragraph = paragraph[limit:]
-            current_chunk = paragraph + '\n\n'
-
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-
-    return chunks
 
 
 def _resolve_bot_username() -> str:
@@ -459,119 +446,8 @@ def _build_referral_link(referral_code: str | None) -> tuple[str | None, str | N
 
     
 
-def _split_plain_text(text: str, limit: int = SAFE_LIMIT) -> list[str]:
-    if not text:
-        return []
-
-    if len(text) <= limit:
-        return [text]
-
-    line_sep = chr(10)
-    paragraph_sep = line_sep * 2
-    chunks: list[str] = []
-    current: list[str] = []
-
-    def flush_current() -> None:
-        if current:
-            chunks.append(paragraph_sep.join(current))
-            current.clear()
-
-    paragraphs: list[str] = []
-    buffer: list[str] = []
-    for line in text.splitlines():
-        if line.strip():
-            buffer.append(line)
-        else:
-            if buffer:
-                paragraphs.append(line_sep.join(buffer))
-                buffer.clear()
-    if buffer:
-        paragraphs.append(line_sep.join(buffer))
-
-    for paragraph in paragraphs:
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-        joined = paragraph_sep.join(current + [paragraph])
-        if len(joined) <= limit:
-            current.append(paragraph)
-            continue
-        flush_current()
-        if len(paragraph) > limit:
-            for i in range(0, len(paragraph), limit):
-                chunks.append(paragraph[i : i + limit])
-        else:
-            current.append(paragraph)
-    flush_current()
-
-    return chunks
 
 
-def _split_html_safely(html: str, hard_limit: int = SAFE_LIMIT) -> list[str]:
-    """
-    Режем уже готовый HTML аккуратно:
-      1) по пустой строке  -> <br><br>
-      2) по одиночному <br>
-      3) по предложениям (. ! ?)
-      4) в крайнем случае — жёсткая нарезка.
-    Стараемся не разрывать теги; режем только на границах <br> или текста.
-    """
-    if not html:
-        return []
-
-    # нормализуем варианты переносов
-    h = re.sub(r"<br\s*/?>", "<br>", html, flags=re.IGNORECASE)
-
-    chunks: list[str] = []
-
-    def _pack(parts: list[str], sep: str) -> list[str]:
-        out, cur, ln = [], [], 0
-        for p in parts:
-            add = p
-            # учтём разделитель между элементами
-            sep_len = len(sep) if cur else 0
-            if ln + sep_len + len(add) <= hard_limit:
-                if cur:
-                    cur.append(sep)
-                cur.append(add)
-                ln += sep_len + len(add)
-            else:
-                if cur:
-                    out.append("".join(cur))
-                cur, ln = [add], len(add)
-        if cur:
-            out.append("".join(cur))
-        return out
-
-    # 1) крупные параграфы: <br><br>
-    paras = re.split(r"(?:<br>\s*){2,}", h)
-    tmp = _pack(paras, "<br><br>")
-
-    # 2) если что-то всё ещё длиннее лимита — режем по одиночным <br>
-    next_stage: list[str] = []
-    for block in tmp:
-        if len(block) <= hard_limit:
-            next_stage.append(block)
-            continue
-        lines = block.split("<br>")
-        next_stage.extend(_pack(lines, "<br>"))
-
-    # 3) если всё ещё длинно — режем по предложениям
-    final: list[str] = []
-    sent_re = _SENTENCE_BOUNDARY_RE
-    for block in next_stage:
-        if len(block) <= hard_limit:
-            final.append(block)
-            continue
-        sentences = sent_re.split(block)
-        if len(sentences) > 1:
-            final.extend(_pack(sentences, " "))
-        else:
-            # 4) крайний случай — жёсткая нарезка без учёта предложений
-            for i in range(0, len(block), hard_limit):
-                final.append(block[i : i + hard_limit])
-
-    return [b.strip() for b in final if b.strip()]
 
 
 
@@ -743,47 +619,12 @@ async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> Non
 # ============ ФУНКЦИИ РЕЙТИНГА И UI ============
 
 
-def _format_datetime(ts: int | None, *, default: str = "Никогда") -> str:
-    if not ts or ts <= 0:
-        return default
-    try:
-        return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
-    except Exception:
-        return default
 
 
-def _format_response_time(ms: int) -> str:
-    if ms <= 0:
-        return "—"
-    if ms < 1000:
-        return f"{ms} мс"
-    seconds = ms / 1000
-    if seconds < 60:
-        return f"{seconds:.1f} с"
-    minutes = seconds / 60
-    return f"{minutes:.1f} мин"
 
 
-def _format_number(value: int | float) -> str:
-    if value is None:
-        return "0"
-    if isinstance(value, float):
-        return f"{value:,.1f}".replace(",", " ")
-    return f"{int(value):,}".replace(",", " ")
 
 
-def _format_trend_value(current: int, previous: int) -> str:
-    delta = current - previous
-    if previous <= 0:
-        if current == 0:
-            return "0"
-        return f"{current} (▲)"
-    if delta == 0:
-        return f"{current} (=)"
-    sign = "+" if delta > 0 else ""
-    pct = (delta / previous) * 100
-    pct_sign = "+" if pct > 0 else ""
-    return f"{current} ({sign}{delta} / {pct_sign}{pct:.0f}%)"
 
 
 def _normalize_stats_period(days: int) -> int:
@@ -820,8 +661,6 @@ def _progress_line(label: str, used: int, total: int) -> str:
     return f"<b>{label}</b> {_build_progress_bar(used, total)}"
 
 
-def _format_stat_row(label: str, value: str) -> str:
-    return f"<b>{label}</b> · {value}"
 
 
 def _translate_payment_status(status: str) -> str:
@@ -951,23 +790,8 @@ def _top_labels(
     return ", ".join(labels)
 
 
-def _format_hour_label(hour: str) -> str:
-    if not hour:
-        return hour
-    try:
-        hour_int = int(hour)
-        return f"{hour_int:02d}:00"
-    except ValueError:
-        return hour
 
 
-def _format_currency(amount_minor: int | None, currency: str) -> str:
-    if amount_minor is None:
-        return f"0 {currency.upper()}"
-    if currency.upper() == "RUB":
-        value = amount_minor / 100
-        return f"{value:,.2f} ₽".replace(",", " ")
-    return f"{amount_minor} {currency.upper()}"
 
 
 def _build_recommendations(
@@ -1078,43 +902,8 @@ def _get_stage_labels(operation: str) -> dict[str, tuple[str, str]]:
     return labels
 
 
-def _format_risk_count(count: int) -> str:
-    count = int(count)
-    suffix = "рисков"
-    if count % 10 == 1 and count % 100 != 11:
-        suffix = "риск"
-    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-        suffix = "риска"
-    return f"Найдено {count} {suffix}"
 
 
-def _format_progress_extras(update: dict[str, Any]) -> str:
-    parts: list[str] = []
-    if update.get("risks_found") is not None:
-        parts.append(_format_risk_count(update["risks_found"]))
-    if update.get("violations") is not None:
-        parts.append(f"⚖️ Нарушений: {int(update['violations'])}")
-    if update.get("chunks_total") and update.get("chunk_index"):
-        parts.append(f"🧩 Блок {int(update['chunk_index'])}/{int(update['chunks_total'])}")
-    elif update.get("chunks_total") is not None:
-        parts.append(f"🧩 Блоков: {int(update['chunks_total'])}")
-    if update.get("language_pair"):
-        parts.append(f"🌐 {html_escape(str(update['language_pair']))}")
-    if update.get("mode"):
-        parts.append(f"⚙️ Режим: {html_escape(str(update['mode']))}")
-    if update.get("pages_total") is not None:
-        done = int(update.get("pages_done") or 0)
-        total = int(update["pages_total"])
-        parts.append(f"📑 Страницы: {done}/{total}")
-    if update.get("masked") is not None:
-        parts.append(f"🔐 Заменено: {int(update['masked'])}")
-    if update.get("words") is not None:
-        parts.append(f"📝 Слов: {int(update['words'])}")
-    if update.get("confidence") is not None:
-        parts.append(f"🎯 Точность: {float(update['confidence']):.1f}%")
-    if update.get("note"):
-        parts.append(f"⚠️ {html_escape(str(update['note']))}")
-    return " | ".join(parts)
 
 
 def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
