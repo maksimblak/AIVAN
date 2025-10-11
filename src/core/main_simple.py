@@ -36,6 +36,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BotCommand,
+    BotCommandScopeChat,
     CallbackQuery,
     ErrorEvent,
     FSInputFile,
@@ -6021,18 +6022,32 @@ async def run_bot() -> None:
     refresh_runtime_globals()
 
     # Команды
-    await bot.set_my_commands(
-        [
-            BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
-            BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
-            BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
-            BotCommand(command="mystats", description="📊 Моя статистика"),
+    base_commands = [
+        BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
+        BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
+        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
+        BotCommand(command="mystats", description="📊 Моя статистика"),
+
+    ]
+    await bot.set_my_commands(base_commands)
+
+    if ADMIN_IDS:
+        admin_commands = base_commands + [
             BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
             BotCommand(command="errors", description="🚨 Статистика ошибок (админ)"),
-            BotCommand(command="askdoc", description="💬 Вопрос к загруженному документу"),
-            BotCommand(command="enddoc", description="✅ Завершить чат с документом"),
         ]
-    )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.set_my_commands(
+                    admin_commands,
+                    scope=BotCommandScopeChat(chat_id=admin_id),
+                )
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "Failed to set admin command list for %s: %s",
+                    admin_id,
+                    exc,
+                )
 
     # Роутинг
     dp.message.register(cmd_start, Command("start"))
