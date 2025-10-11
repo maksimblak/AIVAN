@@ -402,49 +402,48 @@ def format_plan_summary(plan: DraftPlan) -> str:
     title_escaped = html_escape(title)
 
     # Красивый заголовок документа
-    lines.append("✨ <b>Документ готов к созданию</b>")
-    lines.append(f"<code>{'━' * 35}</code>")
+    lines.append("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
+    lines.append("┃  ✨ <b>Документ готов</b>          ┃")
+    lines.append("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛")
     lines.append("")
     lines.append(f"📄 <b>{title_escaped}</b>")
-    lines.append(f"<code>{'─' * 35}</code>")
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append("")
 
-    # Context notes are kept internal, not displayed to users
-    # if plan.notes:
-    #     lines.append("🔍 Контекст (важное):")
-    #     max_notes = 6
-    #     for note in plan.notes[:max_notes]:
-    #         clean = str(note).strip()
-    #         if clean:
-    #             lines.append(f"• {clean}")
-    #     remaining = len(plan.notes) - max_notes
-    #     if remaining > 0:
-    #         lines.append(f"… ещё {remaining} пункт(ов)")
-    #     lines.append("")
+
 
     # Информация о вопросах
-    lines.append(f"❓ <b>Уточняющих вопросов:</b> {len(plan.questions)}")
+    lines.append(f"❓ <b>Уточняющих вопросов:</b> <i>{len(plan.questions)}</i>")
 
     if plan.questions:
         lines.append("")
-        lines.append(f"<code>{'━' * 35}</code>")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        lines.append("💡 <b>Как отвечать:</b>")
-        lines.append("✅ Напишите все ответы <b>одним сообщением</b>")
+        lines.append("💡 <b>Как отвечать</b>")
         lines.append("")
-        lines.append("<b>Варианты оформления:</b>")
-        lines.append("  <code>1) Первый ответ</code>")
-        lines.append("  <code>2) Второй ответ</code>")
-        lines.append("  <i>или разделяйте пустой строкой</i>")
+        lines.append("✅ Напишите все ответы")
+        lines.append("   <b>одним сообщением</b>")
         lines.append("")
-        lines.append(f"<code>{'━' * 35}</code>")
+        lines.append("📝 <b>Варианты оформления:</b>")
         lines.append("")
-        lines.append("👇 <i>Вопросы будут отправлены следующим сообщением</i>")
+        lines.append("   <code>1) Первый ответ</code>")
+        lines.append("   <code>2) Второй ответ</code>")
+        lines.append("   <code>3) Третий ответ</code>")
+        lines.append("")
+        lines.append("   <i>или разделяйте пустой строкой</i>")
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        lines.append("👇 <i>Вопросы будут отправлены</i>")
+        lines.append("   <i>следующим сообщением</i>")
     else:
         lines.append("")
-        lines.append(f"<code>{'━' * 35}</code>")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        lines.append("✅ <b>Дополнительных уточнений не требуется</b>")
-        lines.append("🚀 Можно формировать документ")
+        lines.append("✅ <b>Дополнительных уточнений</b>")
+        lines.append("   <b>не требуется</b>")
+        lines.append("")
+        lines.append("🚀 <i>Можно формировать документ</i>")
 
     return "\n".join(lines)
