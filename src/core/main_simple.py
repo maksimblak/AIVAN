@@ -590,7 +590,6 @@ async def _download_telegram_file(bot: Bot, file_id: str) -> bytes:
         if callable(close_method):
             close_method()
 
-
 async def _collect_question_attachments(message: Message) -> list[QuestionAttachment]:
     bot = message.bot
     if bot is None:
