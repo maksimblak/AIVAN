@@ -117,10 +117,12 @@ class DocumentManager:
         }
 
         self._user_chat_sessions: Dict[int, Dict[str, Any]] = {}
+        self._operations_cache_data: Dict[str, Dict[str, Any]] | None = None
+        self._operations_cache_view: Mapping[str, Dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------ API ---
 
-    def get_supported_operations(self) -> Dict[str, Dict[str, Any]]:
+    def _build_supported_operations(self) -> Dict[str, Dict[str, Any]]:
         operations: Dict[str, Dict[str, Any]] = {}
         for key, meta in self._operations.items():
             processor = meta.get("processor")
@@ -130,18 +132,29 @@ class DocumentManager:
                 if supported:
                     upload_formats = [fmt.lstrip(".").upper() for fmt in supported]
 
-            operations[key] = {
+            descriptor: Dict[str, Any] = {
                 "emoji": meta.get("emoji"),
                 "name": meta.get("name"),
                 "description": meta.get("description"),
-                "formats": meta.get("formats", []),
+                "formats": list(meta.get("formats", [])),
             }
             if upload_formats:
-                operations[key]["upload_formats"] = upload_formats
+                descriptor["upload_formats"] = upload_formats
+            operations[key] = descriptor
         return operations
 
+    def get_supported_operations(self) -> Mapping[str, Dict[str, Any]]:
+        if self._operations_cache_view is None:
+            data = self._build_supported_operations()
+            self._operations_cache_data = data
+            self._operations_cache_view = MappingProxyType(data)
+        return self._operations_cache_view
+
     def get_operation_info(self, operation: str) -> Dict[str, Any] | None:
-        return self.get_supported_operations().get(operation)
+        info = self.get_supported_operations().get(operation)
+        if info is None:
+            return None
+        return dict(info)
 
     async def process_document(
         self,

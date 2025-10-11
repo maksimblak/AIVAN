@@ -5320,17 +5320,16 @@ async def handle_document_upload(message: Message, state: FSMContext):
                         close_method()
                 await send_progress({"stage": "uploaded", "percent": 32})
 
-                try:
-                    await send_progress({"stage": "processing", "percent": 45})
-                    result = await document_manager.process_document(
-                        user_id=message.from_user.id,
-                        file_content=file_bytes,
-                        original_name=file_name,
-                        mime_type=mime_type,
-                        operation=operation,
-                        progress_callback=send_progress,
-                        **options,
-                    )
+                await send_progress({"stage": "processing", "percent": 45})
+                result = await document_manager.process_document(
+                    user_id=message.from_user.id,
+                    file_content=file_bytes,
+                    original_name=file_name,
+                    mime_type=mime_type,
+                    operation=operation,
+                    progress_callback=send_progress,
+                    **options,
+                )
                 await send_progress({"stage": "finalizing", "percent": 90})
 
                 if result.success:
@@ -5503,17 +5502,16 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                         close_method()
                 await send_progress({"stage": "uploaded", "percent": 32})
 
-                try:
-                    await send_progress({"stage": "processing", "percent": 45})
-                    result = await document_manager.process_document(
-                        user_id=message.from_user.id,
-                        file_content=file_bytes,
-                        original_name=file_name,
-                        mime_type=mime_type,
-                        operation=operation,
-                        progress_callback=send_progress,
-                        **options,
-                    )
+                await send_progress({"stage": "processing", "percent": 45})
+                result = await document_manager.process_document(
+                    user_id=message.from_user.id,
+                    file_content=file_bytes,
+                    original_name=file_name,
+                    mime_type=mime_type,
+                    operation=operation,
+                    progress_callback=send_progress,
+                    **options,
+                )
                 await send_progress({"stage": "finalizing", "percent": 90})
 
                 if result.success:
