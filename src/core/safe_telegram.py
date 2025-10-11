@@ -86,8 +86,18 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
         if not current_parts and not open_stack:
             return
         chunk_body = "".join(current_parts)
-        chunk_body += append_closings()
-        chunks.append(chunk_body if chunk_body.strip() else "—")
+        closings = append_closings()
+        chunk_full = chunk_body + closings
+
+        # Skip chunks that reopen tags but do not contain visible text.
+        visible_text = re.sub(r"<[^>]+>", "", chunk_body).strip()
+        if not visible_text:
+            prefix = reopen_prefix()
+            current_parts = [prefix] if prefix else []
+            current_len = len(prefix)
+            return
+
+        chunks.append(chunk_full if chunk_full.strip() else "—")
         prefix = reopen_prefix()
         current_parts = [prefix] if prefix else []
         current_len = len(prefix)

@@ -5,6 +5,7 @@ High level orchestration layer for document-related processors.
 from __future__ import annotations
 
 import asyncio
+import asyncio
 import json
 import logging
 import tempfile
@@ -12,7 +13,8 @@ import uuid
 from dataclasses import asdict
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List
+from types import MappingProxyType
+from typing import Any, Awaitable, Callable, Dict, List, Mapping
 
 from src.core.excel_export import build_risk_excel
 from src.core.settings import AppSettings
