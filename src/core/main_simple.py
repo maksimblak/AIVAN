@@ -583,7 +583,12 @@ async def _download_telegram_file(bot: Bot, file_id: str) -> bytes:
     if not file_path:
         raise ValueError("Не удалось получить путь к файлу в Telegram.")
     file_content = await bot.download_file(file_path)
-    return file_content.read()
+    try:
+        return await asyncio.to_thread(file_content.read)
+    finally:
+        close_method = getattr(file_content, "close", None)
+        if callable(close_method):
+            close_method()
 
 
 async def _collect_question_attachments(message: Message) -> list[QuestionAttachment]:
@@ -5307,16 +5312,19 @@ async def handle_document_upload(message: Message, state: FSMContext):
                 if not file_path:
                     raise ProcessingError("Не удалось получить путь к файлу", "FILE_ERROR")
 
-                file_content = await message.bot.download_file(file_path)
-
                 documents_dir = Path("documents")
                 documents_dir.mkdir(parents=True, exist_ok=True)
                 safe_name = Path(file_name).name or "document"
                 unique_name = f"{uuid.uuid4().hex}_{safe_name}"
                 stored_path = documents_dir / unique_name
-
-                file_bytes = file_content.read()
-                stored_path.write_bytes(file_bytes)
+                file_content = await message.bot.download_file(file_path)
+                try:
+                    file_bytes = await asyncio.to_thread(file_content.read)
+                finally:
+                    close_method = getattr(file_content, "close", None)
+                    if callable(close_method):
+                        close_method()
+                await asyncio.to_thread(stored_path.write_bytes, file_bytes)
                 await send_progress({"stage": "uploaded", "percent": 32})
 
                 try:
@@ -5497,16 +5505,19 @@ async def handle_photo_upload(message: Message, state: FSMContext):
                 if not file_path:
                     raise ProcessingError("Не удалось получить путь к фотографии", "FILE_ERROR")
 
-                file_content = await message.bot.download_file(file_path)
-
                 documents_dir = Path("documents")
                 documents_dir.mkdir(parents=True, exist_ok=True)
                 safe_name = Path(file_name).name or "photo.jpg"
                 unique_name = f"{uuid.uuid4().hex}_{safe_name}"
                 stored_path = documents_dir / unique_name
-
-                file_bytes = file_content.read()
-                stored_path.write_bytes(file_bytes)
+                file_content = await message.bot.download_file(file_path)
+                try:
+                    file_bytes = await asyncio.to_thread(file_content.read)
+                finally:
+                    close_method = getattr(file_content, "close", None)
+                    if callable(close_method):
+                        close_method()
+                await asyncio.to_thread(stored_path.write_bytes, file_bytes)
                 await send_progress({"stage": "uploaded", "percent": 32})
 
                 try:

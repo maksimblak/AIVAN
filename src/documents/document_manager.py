@@ -4,6 +4,7 @@ High level orchestration layer for document-related processors.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import tempfile
@@ -342,7 +343,9 @@ class DocumentManager:
             path = await self._write_export(base_name, "risk_report", json_payload, ".json")
             exports.append({"path": str(path), "format": "json", "label": "Отчёт"})
             try:
-                excel_path = build_risk_excel(result.data, file_stub=f"{base_name}_risks")
+                excel_path = await asyncio.to_thread(
+                    build_risk_excel, result.data, file_stub=f"{base_name}_risks"
+                )
                 exports.append({"path": str(excel_path), "format": "xlsx", "label": "Отчёт (XLSX)"})
             except RuntimeError as exc:
                 logger.warning("Excel export unavailable for risk analysis: %s", exc)
