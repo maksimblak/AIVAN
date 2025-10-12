@@ -84,15 +84,13 @@ from src.core.subscription_payments import (
 from src.core.admin_modules.admin_commands import setup_admin_commands
 from src.core.session_store import SessionStore, UserSession
 from src.core.validation import InputValidator, ValidationSeverity
-from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
-from src.core.settings import AppSettings
-from src.core.app_context import set_settings
+from src.core.runtime import SubscriptionPlanPricing, WelcomeMedia
 from src.documents.base import ProcessingError
 from src.bot.ratelimit import RateLimiter
 from src.bot.typing_indicator import send_typing_once, typing_action
 
+from src.core.simple_bot import context as simple_context
 from src.core.simple_bot.formatting import (
-    DEFAULT_TEXT_LIMIT,
     _format_currency,
     _format_datetime,
     _format_hour_label,
@@ -104,7 +102,17 @@ from src.core.simple_bot.formatting import (
     _format_trend_value,
     _split_plain_text,
 )
-SAFE_LIMIT = DEFAULT_TEXT_LIMIT  # Buffer below Telegram 4096 character limit
+from src.core.simple_bot.stats import (
+    FEATURE_LABELS,
+    DAY_NAMES,
+    describe_primary_summary,
+    describe_secondary_summary,
+    normalize_stats_period,
+    peak_summary,
+    progress_line,
+    translate_payment_status,
+    translate_plan_name,
+)
 _NUMBERED_ANSWER_RE = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
 _BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022]\s*(.*)")
 _HEADING_PATTERN_RE = re.compile(
@@ -116,18 +124,6 @@ VOICE_REPLY_CAPTION = (
     f"{Emoji.MICROPHONE} <b>Голосовой ответ готов</b>"
     f"\n{Emoji.INFO} Нажмите, чтобы прослушать."
 )
-
-PERIOD_OPTIONS = (7, 30, 90)
-PROGRESS_BAR_LENGTH = 10
-FEATURE_LABELS = {
-    "legal_question": "Юридические вопросы",
-    "document_processing": "Обработка документов",
-    "judicial_practice": "Судебная практика",
-    "document_draft": "Составление документов",
-    "voice_message": "Голосовые сообщения",
-    "ocr_processing": "распознание текста",
-    "document_chat": "Чат с документом",
-}
 
 SECTION_DIVIDER = "<code>────────────────────</code>"
 
@@ -152,16 +148,6 @@ def _build_stats_keyboard(has_subscription: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-DAY_NAMES = {
-    "0": "Вс",
-    "1": "Пн",
-    "2": "Вт",
-    "3": "Ср",
-    "4": "Чт",
-    "5": "Пт",
-    "6": "Сб",
-}
-
 def _format_user_display(user: User | None) -> str:
     if user is None:
         return ""
@@ -177,50 +163,6 @@ def _format_user_display(user: User | None) -> str:
         parts.append(str(user.id))
     return " ".join(parts)
 
-# Runtime-managed globals (synchronised via refresh_runtime_globals)
-# Defaults keep module usable before runtime initialisation.
-WELCOME_MEDIA: WelcomeMedia | None = None
-BOT_TOKEN = ""
-BOT_USERNAME = ""
-USE_ANIMATION = True
-USE_STREAMING = True
-config: Any | None = None
-MAX_MESSAGE_LENGTH = 4000
-DB_PATH = ""
-TRIAL_REQUESTS = 0
-SUB_DURATION_DAYS = 0
-RUB_PROVIDER_TOKEN = ""
-SUB_PRICE_RUB = 0
-SUB_PRICE_RUB_KOPEKS = 0
-STARS_PROVIDER_TOKEN = ""
-SUB_PRICE_XTR = 0
-DYNAMIC_PRICE_XTR = 0
-SUBSCRIPTION_PLANS: tuple[SubscriptionPlanPricing, ...] = ()
-SUBSCRIPTION_PLAN_MAP: dict[str, SubscriptionPlanPricing] = {}
-DEFAULT_SUBSCRIPTION_PLAN: SubscriptionPlanPricing | None = None
-ADMIN_IDS: set[int] = set()
-USER_SESSIONS_MAX = 0
-USER_SESSION_TTL_SECONDS = 0
-
-# Service-like dependencies
-db = None
-rate_limiter = None
-access_service = None
-openai_service = None
-audio_service = None
-session_store = None
-crypto_provider = None
-robokassa_provider = None
-yookassa_provider = None
-error_handler = None
-document_manager = None
-response_cache = None
-stream_manager = None
-metrics_collector = None
-task_manager = None
-health_checker = None
-scaling_components = None
-judicial_rag = None
 retention_notifier = None
 
 
@@ -246,81 +188,112 @@ async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, a
 
 logger = logging.getLogger("ai-ivan.simple")
 
-_runtime: AppRuntime | None = None
+set_runtime = simple_context.set_runtime
+get_runtime = simple_context.get_runtime
+settings = simple_context.settings
+derived = simple_context.derived
+
+WELCOME_MEDIA: WelcomeMedia | None = None
+BOT_TOKEN = ""
+BOT_USERNAME = ""
+USE_ANIMATION = True
+USE_STREAMING = True
+SAFE_LIMIT = 3900
+MAX_MESSAGE_LENGTH = 4000
+DB_PATH = ""
+TRIAL_REQUESTS = 0
+SUB_DURATION_DAYS = 0
+RUB_PROVIDER_TOKEN = ""
+SUB_PRICE_RUB = 0
+SUB_PRICE_RUB_KOPEKS = 0
+STARS_PROVIDER_TOKEN = ""
+SUB_PRICE_XTR = 0
+DYNAMIC_PRICE_XTR = 0
+SUBSCRIPTION_PLANS: tuple[SubscriptionPlanPricing, ...] = ()
+SUBSCRIPTION_PLAN_MAP: dict[str, SubscriptionPlanPricing] = {}
+DEFAULT_SUBSCRIPTION_PLAN: SubscriptionPlanPricing | None = None
+ADMIN_IDS: set[int] = set()
+USER_SESSIONS_MAX = 0
+USER_SESSION_TTL_SECONDS = 0
+
+db: DatabaseAdvanced | None = None
+rate_limiter: RateLimiter | None = None
+access_service: AccessService | None = None
+openai_service: OpenAIService | None = None
+audio_service: AudioService | None = None
+session_store: SessionStore | None = None
+crypto_provider: CryptoPayProvider | None = None
+robokassa_provider: Any | None = None
+yookassa_provider: Any | None = None
+error_handler: ErrorHandler | None = None
+document_manager: DocumentManager | None = None
+response_cache: Any | None = None
+stream_manager: StreamManager | None = None
+metrics_collector: Any | None = None
+task_manager: Any | None = None
+health_checker: Any | None = None
+scaling_components: dict[str, Any] | None = None
+judicial_rag: Any | None = None
+
+_SYNCED_ATTRS = (
+    "WELCOME_MEDIA",
+    "BOT_TOKEN",
+    "BOT_USERNAME",
+    "USE_ANIMATION",
+    "USE_STREAMING",
+    "SAFE_LIMIT",
+    "MAX_MESSAGE_LENGTH",
+    "DB_PATH",
+    "TRIAL_REQUESTS",
+    "SUB_DURATION_DAYS",
+    "RUB_PROVIDER_TOKEN",
+    "SUB_PRICE_RUB",
+    "SUB_PRICE_RUB_KOPEKS",
+    "STARS_PROVIDER_TOKEN",
+    "SUB_PRICE_XTR",
+    "DYNAMIC_PRICE_XTR",
+    "SUBSCRIPTION_PLANS",
+    "SUBSCRIPTION_PLAN_MAP",
+    "DEFAULT_SUBSCRIPTION_PLAN",
+    "ADMIN_IDS",
+    "USER_SESSIONS_MAX",
+    "USER_SESSION_TTL_SECONDS",
+    "db",
+    "rate_limiter",
+    "access_service",
+    "openai_service",
+    "audio_service",
+    "session_store",
+    "crypto_provider",
+    "robokassa_provider",
+    "yookassa_provider",
+    "error_handler",
+    "document_manager",
+    "response_cache",
+    "stream_manager",
+    "metrics_collector",
+    "task_manager",
+    "health_checker",
+    "scaling_components",
+    "judicial_rag",
+)
 
 
-def set_runtime(runtime: AppRuntime) -> None:
-    global _runtime
-    _runtime = runtime
-    set_settings(runtime.settings)
-    _sync_runtime_globals()
+def _sync_local_globals() -> None:
+    for attr in _SYNCED_ATTRS:
+        globals()[attr] = getattr(simple_context, attr, None)
 
 
-def get_runtime() -> AppRuntime:
-    if _runtime is None:
-        raise RuntimeError("Application runtime is not initialized")
-    return _runtime
-
-
-def settings() -> AppSettings:
-    return get_runtime().settings
-
-
-def derived() -> DerivedRuntime:
-    return get_runtime().derived
-
-
-def _sync_runtime_globals() -> None:
-    if _runtime is None:
-        return
-    cfg = _runtime.settings
-    drv = _runtime.derived
-    g = globals()
-    g.update({
-        'WELCOME_MEDIA': drv.welcome_media,
-        'BOT_TOKEN': cfg.telegram_bot_token,
-        'USE_ANIMATION': cfg.use_status_animation,
-        'USE_STREAMING': cfg.use_streaming,
-        'MAX_MESSAGE_LENGTH': drv.max_message_length,
-        'SAFE_LIMIT': drv.safe_limit,
-        'DB_PATH': cfg.db_path,
-        'TRIAL_REQUESTS': cfg.trial_requests,
-        'SUB_DURATION_DAYS': cfg.sub_duration_days,
-        'RUB_PROVIDER_TOKEN': cfg.telegram_provider_token_rub,
-        'SUB_PRICE_RUB': cfg.subscription_price_rub,
-        'SUB_PRICE_RUB_KOPEKS': drv.subscription_price_rub_kopeks,
-        'STARS_PROVIDER_TOKEN': cfg.telegram_provider_token_stars,
-        'SUB_PRICE_XTR': cfg.subscription_price_xtr,
-        'DYNAMIC_PRICE_XTR': drv.dynamic_price_xtr,
-        'SUBSCRIPTION_PLANS': drv.subscription_plans,
-        'SUBSCRIPTION_PLAN_MAP': drv.subscription_plan_map,
-        'DEFAULT_SUBSCRIPTION_PLAN': drv.default_subscription_plan,
-        'ADMIN_IDS': drv.admin_ids,
-        'USER_SESSIONS_MAX': cfg.user_sessions_max,
-        'USER_SESSION_TTL_SECONDS': cfg.user_session_ttl_seconds,
-        'db': _runtime.db,
-        'rate_limiter': _runtime.rate_limiter,
-        'access_service': _runtime.access_service,
-        'openai_service': _runtime.openai_service,
-        'audio_service': _runtime.audio_service,
-        'session_store': _runtime.session_store,
-        'crypto_provider': _runtime.crypto_provider,
-        'robokassa_provider': _runtime.robokassa_provider,
-        'yookassa_provider': _runtime.yookassa_provider,
-        'error_handler': _runtime.error_handler,
-        'document_manager': _runtime.document_manager,
-        'response_cache': _runtime.response_cache,
-        'stream_manager': _runtime.stream_manager,
-        'metrics_collector': _runtime.metrics_collector,
-        'task_manager': _runtime.task_manager,
-        'health_checker': _runtime.health_checker,
-        'scaling_components': _runtime.scaling_components,
-        'judicial_rag': _runtime.get_dependency('judicial_rag'),
-    })
+_sync_local_globals()
 
 
 def refresh_runtime_globals() -> None:
-    _sync_runtime_globals()
+    simple_context.refresh_runtime_globals()
+    _sync_local_globals()
+
+
+def __getattr__(name: str) -> Any:
+    return getattr(simple_context, name)
 
 class ResponseTimer:
     def __init__(self) -> None:
@@ -625,203 +598,6 @@ async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> Non
 
 
 
-
-
-def _normalize_stats_period(days: int) -> int:
-    if days <= 0:
-        return PERIOD_OPTIONS[0]
-    for option in PERIOD_OPTIONS:
-        if days <= option:
-            return option
-    return PERIOD_OPTIONS[-1]
-
-
-def _build_progress_bar(used: int, total: int) -> str:
-    if total is None or total <= 0:
-        return "<code>[██████████]</code> ∞ / <b>Безлимит</b>"
-
-    total = max(total, 0)
-    used = max(0, min(used, total))
-
-    ratio = used / total if total else 0.0
-    filled = min(PROGRESS_BAR_LENGTH, max(0, int(round(ratio * PROGRESS_BAR_LENGTH))))
-    bar = f"[{'█' * filled}{'░' * (PROGRESS_BAR_LENGTH - filled)}]"
-    bar_markup = f"<code>{bar}</code>"
-
-    remaining = max(0, total - used)
-    if total:
-        remaining_pct = max(0, min(100, int(round((remaining / total) * 100))))
-    else:
-        remaining_pct = 0
-
-    return f"{bar_markup} {used}/{total} · осталось <b>{remaining}</b> ({remaining_pct}%)"
-
-
-def _progress_line(label: str, used: int, total: int) -> str:
-    return f"<b>{label}</b> {_build_progress_bar(used, total)}"
-
-
-
-
-def _translate_payment_status(status: str) -> str:
-    """Переводит статус платежа на русский язык"""
-    status_map = {
-        "pending": "⏳ Ожидание",
-        "processing": "🔄 Обработка",
-        "succeeded": "✅ Успешно",
-        "success": "✅ Успешно",
-        "completed": "✅ Завершён",
-        "failed": "❌ Ошибка",
-        "cancelled": "🚫 Отменён",
-        "canceled": "🚫 Отменён",
-        "refunded": "↩️ Возврат",
-        "unknown": "❓ Неизвестно",
-    }
-    return status_map.get(status.lower(), status)
-
-
-def _translate_plan_name(plan_id: str) -> str:
-    """Переводит название тарифа на русский язык"""
-    # Словарь для перевода базовых названий тарифов
-    plan_map = {
-        "basic": "Базовый",
-        "standard": "Стандарт",
-        "premium": "Премиум",
-        "pro": "Про",
-        "trial": "Триал",
-    }
-
-    # Словарь для перевода периодов
-    period_map = {
-        "1m": "1 месяц",
-        "3m": "3 месяца",
-        "6m": "6 месяцев",
-        "12m": "1 год",
-        "1y": "1 год",
-    }
-
-    # Разбираем plan_id (например, "standard_1m" -> "Стандарт • 1 месяц")
-    parts = plan_id.split("_")
-    if len(parts) >= 2:
-        plan_name = plan_map.get(parts[0].lower(), parts[0].capitalize())
-        period = period_map.get(parts[1].lower(), parts[1])
-        return f"{plan_name} • {period}"
-
-    # Если не удалось разобрать, пробуем найти в словаре целиком
-    return plan_map.get(plan_id.lower(), plan_id)
-
-
-def _describe_primary_summary(summary: str, unit: str) -> str:
-    if not summary or summary == "—":
-        return "нет данных"
-    if "(" in summary and summary.endswith(")"):
-        label, count = summary.rsplit("(", 1)
-        label = label.strip()
-        count = count[:-1].strip()
-        if count.isdigit():
-            return f"{label} — {count} {unit}"
-        return f"{label} — {count}"
-    return summary
-
-
-def _describe_secondary_summary(summary: str, unit: str) -> str:
-    if not summary:
-        return "нет данных"
-    parts = []
-    for raw in summary.split(","):
-        item = raw.strip()
-        if not item:
-            continue
-        tokens = item.split()
-        if len(tokens) >= 2 and tokens[-1].isdigit():
-            count = tokens[-1]
-            label = " ".join(tokens[:-1])
-            parts.append(f"{label} — {count}")
-        else:
-            parts.append(item)
-    if not parts:
-        return "нет данных"
-    return "; ".join(parts)
-
-
-def _peak_summary(
-    counts: dict[str, int],
-    *,
-    mapping: dict[str, str] | None = None,
-    formatter: Callable[[str], str] | None = None,
-    secondary_limit: int = 3,
-) -> tuple[str, str]:
-    if not counts:
-        return "—", ""
-
-    sorted_items = sorted(counts.items(), key=lambda item: item[1], reverse=True)
-
-    def _render(raw_key: str) -> str:
-        label = mapping.get(raw_key, raw_key) if mapping else raw_key
-        return formatter(label) if formatter else label
-
-    primary_key, primary_count = sorted_items[0]
-    primary_label = _render(str(primary_key))
-    primary = f"{primary_label} ({primary_count})"
-
-    secondary_parts: list[str] = []
-    for key, count in sorted_items[1:secondary_limit]:
-        secondary_parts.append(f"{_render(str(key))} {count}")
-
-    secondary = ", ".join(secondary_parts)
-    return primary, secondary
-
-def _top_labels(
-    counts: dict[str, int],
-    *,
-    mapping: dict[str, str] | None = None,
-    limit: int = 3,
-    formatter: Callable[[str], str] | None = None,
-) -> str:
-    if not counts:
-        return "—"
-    top_items = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
-    labels: list[str] = []
-    for key, value in top_items:
-        label = mapping.get(key, key) if mapping else key
-        if formatter:
-            label = formatter(label)
-        labels.append(f"{label}×{value}")
-    return ", ".join(labels)
-
-
-
-
-
-
-def _build_recommendations(
-    *,
-    trial_remaining: int,
-    has_subscription: bool,
-    subscription_days_left: int,
-    period_requests: int,
-    previous_requests: int,
-) -> list[str]:
-    tips: list[str] = []
-    if not has_subscription:
-        if trial_remaining > 0:
-            tips.append(
-                f"Используйте оставшиеся {trial_remaining} запросов триала и оформите подписку через /buy."
-            )
-        else:
-            tips.append("Подключите подписку для безлимитного доступа — /buy.")
-    else:
-        if subscription_days_left <= 5:
-            tips.append("Продлите подписку заранее, чтобы не потерять доступ — кнопка ниже.")
-
-    if period_requests == 0:
-        tips.append("Задайте боту первый вопрос — начните с /start или загрузите документ.")
-    elif period_requests < previous_requests:
-        tips.append("Активность снизилась — попробуйте использовать подборки или вопросы к документам.")
-
-    if not tips:
-        tips.append("Продолжайте спрашивать — бот быстрее реагирует на частые запросы.")
-    return tips[:3]
 
 
 def create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
@@ -1886,7 +1662,7 @@ async def _generate_user_stats_response(
     if db is None:
         raise RuntimeError("Database is not available")
 
-    normalized_days = _normalize_stats_period(days)
+    normalized_days = normalize_stats_period(days)
     if user is None:
         user = await db.ensure_user(
             user_id, default_trial=TRIAL_REQUESTS, is_admin=user_id in ADMIN_IDS
@@ -1938,8 +1714,8 @@ async def _generate_user_stats_response(
     hour_counts = stats.get("hour_of_day_counts") or {}
     type_stats = stats.get("request_types") or {}
 
-    day_primary, day_secondary = _peak_summary(day_counts, mapping=DAY_NAMES)
-    hour_primary, hour_secondary = _peak_summary(
+    day_primary, day_secondary = peak_summary(day_counts, mapping=DAY_NAMES)
+    hour_primary, hour_secondary = peak_summary(
         hour_counts, formatter=_format_hour_label
     )
 
@@ -1979,13 +1755,13 @@ async def _generate_user_stats_response(
     lines.append("")
     if TRIAL_REQUESTS > 0:
         trial_used = max(0, TRIAL_REQUESTS - trial_remaining)
-        lines.append(_progress_line("Триал", trial_used, TRIAL_REQUESTS))
+        lines.append(progress_line("Триал", trial_used, TRIAL_REQUESTS))
     else:
         lines.append(_format_stat_row("Триал", "недоступен"))
 
     if plan_info and plan_info.plan.request_quota > 0:
         used = max(0, plan_info.plan.request_quota - subscription_balance)
-        lines.append(_progress_line("  📊 Подписка", used, plan_info.plan.request_quota))
+        lines.append(progress_line("  📊 Подписка", used, plan_info.plan.request_quota))
     elif has_subscription:
         lines.append(_format_stat_row("  📊 Подписка", "безлимит ♾️"))
 
@@ -1999,16 +1775,16 @@ async def _generate_user_stats_response(
         "",
     ])
     if day_primary != "—":
-        lines.append(_format_stat_row("  📅 Активный день", _describe_primary_summary(day_primary, "обращений")))
+        lines.append(_format_stat_row("  📅 Активный день", describe_primary_summary(day_primary, "обращений")))
         if day_secondary:
-            lines.append(_format_stat_row("  📆 Другие дни", _describe_secondary_summary(day_secondary, "обращений")))
+            lines.append(_format_stat_row("  📆 Другие дни", describe_secondary_summary(day_secondary, "обращений")))
     else:
         lines.append(_format_stat_row("  📅 Активный день", "нет данных"))
 
     if hour_primary != "—":
-        lines.append(_format_stat_row("  🕐 Активный час", _describe_primary_summary(hour_primary, "обращений")))
+        lines.append(_format_stat_row("  🕐 Активный час", describe_primary_summary(hour_primary, "обращений")))
         if hour_secondary:
-            lines.append(_format_stat_row("  🕑 Другие часы", _describe_secondary_summary(hour_secondary, "обращений")))
+            lines.append(_format_stat_row("  🕑 Другие часы", describe_secondary_summary(hour_secondary, "обращений")))
     else:
         lines.append(_format_stat_row("  🕐 Активный час", "нет данных"))
 
@@ -2040,7 +1816,7 @@ async def _generate_user_stats_response(
 
         # Переводим статус на русский
         status = last_transaction.get("status", "unknown")
-        translated_status = _translate_payment_status(status)
+        translated_status = translate_payment_status(status)
         lines.append(_format_stat_row("  📊 Статус", translated_status))
 
         lines.append(_format_stat_row("  📅 Дата", _format_datetime(last_transaction.get("created_at"))))
@@ -2050,7 +1826,7 @@ async def _generate_user_stats_response(
                 payload = parse_subscription_payload(payload_raw)
                 if payload.plan_id:
                     # Переводим название тарифа на русский
-                    translated_plan = _translate_plan_name(payload.plan_id)
+                    translated_plan = translate_plan_name(payload.plan_id)
                     lines.append(_format_stat_row("  🏷️ Тариф", translated_plan))
             except SubscriptionPayloadError:
                 pass
@@ -2898,7 +2674,7 @@ async def cmd_mystats(message: Message):
             except ValueError:
                 days = 30
 
-    days = _normalize_stats_period(days)
+    days = normalize_stats_period(days)
 
     try:
         stats_text, keyboard = await _generate_user_stats_response(message.from_user.id, days)
@@ -2942,7 +2718,7 @@ async def process_voice_message(message: Message):
     try:
         voice_enabled = settings().voice_mode_enabled
     except RuntimeError:
-        voice_enabled = bool(getattr(config, "voice_mode_enabled", False))
+        voice_enabled = settings().voice_mode_enabled
 
     if audio_service is None or not voice_enabled:
         await message.answer("Voice mode is currently unavailable. Please send text.")
@@ -4138,7 +3914,7 @@ async def _extract_doc_voice_text(message: Message) -> str | None:
     try:
         voice_enabled = settings().voice_mode_enabled
     except RuntimeError:
-        voice_enabled = bool(getattr(config, "voice_mode_enabled", False))
+        voice_enabled = settings().voice_mode_enabled
 
     if not voice_enabled:
         await message.answer(f"{Emoji.WARNING} Голосовой режим сейчас выключен. Пришлите ответ текстом.")
@@ -5634,6 +5410,10 @@ async def _maybe_call(coro_or_func):
 
 async def run_bot() -> None:
     """Main coroutine launching the bot."""
+    global BOT_USERNAME
+    global metrics_collector, db, response_cache, rate_limiter, access_service, openai_service
+    global audio_service, session_store, crypto_provider, error_handler, document_manager
+    global scaling_components, health_checker, task_manager
     ctx = get_runtime()
     cfg = ctx.settings
     container = ctx.get_dependency('container')
@@ -5663,10 +5443,10 @@ async def run_bot() -> None:
         session = AiohttpSession(proxy=proxy_url)
 
     bot = Bot(cfg.telegram_bot_token, session=session)
-    global BOT_USERNAME
     try:
         bot_info = await bot.get_me()
-        BOT_USERNAME = (bot_info.username or '').strip()
+        simple_context.BOT_USERNAME = (bot_info.username or '').strip()
+        BOT_USERNAME = simple_context.BOT_USERNAME
     except Exception as exc:
         logger.warning('Could not fetch bot username: %s', exc)
     dp = Dispatcher()
@@ -5700,17 +5480,16 @@ async def run_bot() -> None:
         prometheus_port=prometheus_port,
     )
     ctx.metrics_collector = metrics_collector
+    simple_context.metrics_collector = metrics_collector
     set_system_status("starting")
 
     logger.info("🚀 Starting AI-Ivan (simple)")
-
-    # Инициализация глобальных переменных
-    global db, openai_service, audio_service, rate_limiter, access_service, session_store, crypto_provider, error_handler, document_manager
 
     # Используем продвинутую базу данных с connection pooling
     logger.info("Using advanced database with connection pooling")
     db = ctx.db or container.get(DatabaseAdvanced)
     ctx.db = db
+    simple_context.db = db
     await db.init()
 
     setup_admin_commands(dp, db, ADMIN_IDS)
@@ -5727,17 +5506,21 @@ async def run_bot() -> None:
         enable_compression=cfg.cache_compression,
     )
     ctx.response_cache = response_cache
+    simple_context.response_cache = response_cache
 
     rate_limiter = ctx.rate_limiter or container.get(RateLimiter)
     ctx.rate_limiter = rate_limiter
+    simple_context.rate_limiter = rate_limiter
     await rate_limiter.init()
 
     access_service = ctx.access_service or container.get(AccessService)
     ctx.access_service = access_service
+    simple_context.access_service = access_service
 
     openai_service = ctx.openai_service or container.get(OpenAIService)
     openai_service.cache = response_cache
     ctx.openai_service = openai_service
+    simple_context.openai_service = openai_service
 
     if cfg.voice_mode_enabled:
         audio_service = AudioService(
@@ -5754,6 +5537,7 @@ async def run_bot() -> None:
             tts_backend=cfg.voice_tts_backend,
         )
         ctx.audio_service = audio_service
+        simple_context.audio_service = audio_service
         logger.info(
             "Voice mode enabled (stt=%s, tts=%s, voice=%s, male_voice=%s, format=%s, chunk_limit=%s)",
             cfg.voice_stt_model,
@@ -5766,20 +5550,25 @@ async def run_bot() -> None:
     else:
         audio_service = None
         ctx.audio_service = None
+        simple_context.audio_service = None
         logger.info("Voice mode disabled")
 
     session_store = ctx.session_store or container.get(SessionStore)
     ctx.session_store = session_store
+    simple_context.session_store = session_store
     crypto_provider = ctx.crypto_provider or container.get(CryptoPayProvider)
     ctx.crypto_provider = crypto_provider
+    simple_context.crypto_provider = crypto_provider
 
     error_handler = ErrorHandler(logger=logger)
     ctx.error_handler = error_handler
+    simple_context.error_handler = error_handler
 
     dp.update.middleware(ErrorHandlingMiddleware(error_handler, logger=logger))
 
     document_manager = DocumentManager(openai_service=openai_service, settings=cfg)
     ctx.document_manager = document_manager
+    simple_context.document_manager = document_manager
     logger.info("Document processing system initialized")
 
     refresh_runtime_globals()
@@ -5802,6 +5591,7 @@ async def run_bot() -> None:
     # Инициализация компонентов масштабирования (опционально)
     scaling_components = None
     ctx.scaling_components = None
+    simple_context.scaling_components = None
     if cfg.enable_scaling:
         try:
             service_registry = ServiceRegistry(
@@ -5829,6 +5619,7 @@ async def run_bot() -> None:
                 "scaling_manager": scaling_manager,
             }
             ctx.scaling_components = scaling_components
+            simple_context.scaling_components = scaling_components
             logger.info("🔄 Scaling components initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize scaling components: {e}")
@@ -5836,6 +5627,7 @@ async def run_bot() -> None:
     # Health checks
     health_checker = HealthChecker(check_interval=cfg.health_check_interval)
     ctx.health_checker = health_checker
+    simple_context.health_checker = health_checker
     health_checker.register_check(DatabaseHealthCheck(db))
     health_checker.register_check(OpenAIHealthCheck(openai_service))
     health_checker.register_check(SessionStoreHealthCheck(session_store))
@@ -5847,6 +5639,7 @@ async def run_bot() -> None:
     # Фоновые задачи
     task_manager = BackgroundTaskManager(error_handler)
     ctx.task_manager = task_manager
+    simple_context.task_manager = task_manager
     task_manager.register_task(
         DatabaseCleanupTask(
             db,
