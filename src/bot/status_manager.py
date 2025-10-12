@@ -6,10 +6,10 @@ import math
 from typing import Optional, Callable, List, Dict
 from html import escape as esc
 
-from aiogram import Router, F
+from aiogram import Dispatcher, Router, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-__all__ = ["ProgressStatus", "progress_router"]
+__all__ = ["ProgressStatus", "progress_router", "register_progressbar"]
 
 # Роутер для callback-кнопки в самом сообщении прогресса
 progress_router = Router()
@@ -268,3 +268,8 @@ async def _toggle_context(cb: CallbackQuery):
         await cb.answer("Переключено")
     except Exception:
         await cb.answer()
+
+
+def register_progressbar(dp: Dispatcher) -> None:
+    """Attach the progress-router callbacks to the dispatcher."""
+    dp.include_router(progress_router)
