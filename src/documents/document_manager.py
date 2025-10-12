@@ -506,7 +506,7 @@ class DocumentManager:
         if party_lines:
             lines.append("")
             lines.append("<b>👥 Стороны:</b>")
-            lines.append("<br>".join(party_lines))
+            lines.append("\n".join(party_lines))
 
         def _section(key: str, values: Any) -> None:
             cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
@@ -515,7 +515,7 @@ class DocumentManager:
             icon, title = _LAWSUIT_SECTION_META[key]
             lines.append("")
             lines.append(f"<b>{icon} {title}:</b>")
-            lines.append("<br>".join(f"• {html_escape(item)}" for item in cleaned))
+            lines.append("\n".join(f"• {html_escape(item)}" for item in cleaned))
 
         for section_key in (
             "demands",
