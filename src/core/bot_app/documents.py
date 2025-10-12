@@ -907,27 +907,46 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         return
 
     summary_sections: list[str] = []
+    def _format_summary_block(items: Sequence[str]) -> str:
+        blocks: list[str] = []
+        for raw in items:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+
+            heading: str | None = None
+            details: str | None = None
+            if ":" in text:
+                heading_candidate, details_candidate = text.split(":", 1)
+                heading_candidate = heading_candidate.strip()
+                details_candidate = details_candidate.strip()
+                if heading_candidate:
+                    heading = html_escape(heading_candidate)
+                if details_candidate:
+                    parts = [part.strip() for part in details_candidate.split(";") if part.strip()]
+                    if len(parts) > 1:
+                        details = "<br>".join(f"— {html_escape(part)}" for part in parts)
+                    else:
+                        details = html_escape(details_candidate)
+            if heading is None and details is None:
+                blocks.append(f"• {html_escape(text)}")
+            elif heading and details:
+                blocks.append(f"• <b>{heading}</b><br>{details}")
+            elif heading:
+                blocks.append(f"• <b>{heading}</b>")
+            elif details:
+                blocks.append(f"• {details}")
+        return "\n\n".join(blocks)
+
     if result.validated:
-        validated_lines = "\n".join(
-            f"• {html_escape(str(item).strip())}"
-            for item in result.validated
-            if str(item).strip()
-        )
-        if validated_lines:
-            summary_sections.append(
-                f"{Emoji.SUCCESS} <b>Проверено</b>\n{validated_lines}"
-            )
+        validated_block = _format_summary_block(result.validated)
+        if validated_block:
+            summary_sections.append(f"{Emoji.SUCCESS} <b>Проверено</b>\n{validated_block}")
 
     if result.issues:
-        issue_lines = "\n".join(
-            f"• {html_escape(str(item).strip())}"
-            for item in result.issues
-            if str(item).strip()
-        )
-        if issue_lines:
-            summary_sections.append(
-                f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issue_lines}"
-            )
+        issues_block = _format_summary_block(result.issues)
+        if issues_block:
+            summary_sections.append(f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issues_block}")
 
     if summary_sections:
         await message.answer(
