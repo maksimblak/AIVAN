@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from html import escape as html_escape
 from typing import Optional
 
 from aiogram import Dispatcher, F
@@ -73,8 +72,8 @@ def _create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=f"{Emoji.LIKE} Полезно", callback_data=f"rate_like_{request_id}"),
-                InlineKeyboardButton(text=f"{Emoji.DISLIKE} Улучшить", callback_data=f"rate_dislike_{request_id}"),
+                InlineKeyboardButton(text="👍 Полезно", callback_data=f"rate_like_{request_id}"),
+                InlineKeyboardButton(text="👎 Улучшить", callback_data=f"rate_dislike_{request_id}"),
             ]
         ]
     )
@@ -92,6 +91,8 @@ async def send_rating_request(
     user_session = get_user_session(message.from_user.id)
     if answer_snapshot:
         user_session.last_answer_snapshot = answer_snapshot.strip()
+    else:
+        user_session.last_answer_snapshot = None
 
     keyboard = _create_rating_keyboard(request_id)
     await message.answer(
