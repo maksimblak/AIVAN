@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 from src.documents.document_manager import DocumentManager
 
@@ -78,11 +78,6 @@ from src.core.simple_bot.stats import (
 from src.core.simple_bot.payments import get_plan_pricing, register_payment_handlers
 from src.core.simple_bot.voice import register_voice_handlers
 
-SECTION_DIVIDER = "<code>────────────────────</code>"
-
-
-retention_notifier = None
-
 
 # ============ КОНФИГУРАЦИЯ ============
 
@@ -93,101 +88,46 @@ get_runtime = simple_context.get_runtime
 settings = simple_context.settings
 derived = simple_context.derived
 
-WELCOME_MEDIA: WelcomeMedia | None = None
-BOT_TOKEN = ""
-BOT_USERNAME = ""
-USE_ANIMATION = True
-USE_STREAMING = True
-SAFE_LIMIT = 3900
-MAX_MESSAGE_LENGTH = 4000
-DB_PATH = ""
-TRIAL_REQUESTS = 0
-SUB_DURATION_DAYS = 0
-RUB_PROVIDER_TOKEN = ""
-SUB_PRICE_RUB = 0
-SUB_PRICE_RUB_KOPEKS = 0
-STARS_PROVIDER_TOKEN = ""
-SUB_PRICE_XTR = 0
-DYNAMIC_PRICE_XTR = 0
-SUBSCRIPTION_PLANS: tuple[SubscriptionPlanPricing, ...] = ()
-SUBSCRIPTION_PLAN_MAP: dict[str, SubscriptionPlanPricing] = {}
-DEFAULT_SUBSCRIPTION_PLAN: SubscriptionPlanPricing | None = None
-ADMIN_IDS: set[int] = set()
-USER_SESSIONS_MAX = 0
-USER_SESSION_TTL_SECONDS = 0
-
-db: DatabaseAdvanced | None = None
-rate_limiter: RateLimiter | None = None
-access_service: AccessService | None = None
-openai_service: OpenAIService | None = None
-audio_service: AudioService | None = None
-session_store: SessionStore | None = None
-crypto_provider: CryptoPayProvider | None = None
-robokassa_provider: Any | None = None
-yookassa_provider: Any | None = None
-error_handler: ErrorHandler | None = None
-document_manager: DocumentManager | None = None
-response_cache: Any | None = None
-metrics_collector: Any | None = None
-task_manager: Any | None = None
-health_checker: Any | None = None
-scaling_components: dict[str, Any] | None = None
-judicial_rag: Any | None = None
-
-_SYNCED_ATTRS = (
-    "WELCOME_MEDIA",
-    "BOT_TOKEN",
-    "BOT_USERNAME",
-    "USE_ANIMATION",
-    "USE_STREAMING",
-    "SAFE_LIMIT",
-    "MAX_MESSAGE_LENGTH",
-    "DB_PATH",
-    "TRIAL_REQUESTS",
-    "SUB_DURATION_DAYS",
-    "RUB_PROVIDER_TOKEN",
-    "SUB_PRICE_RUB",
-    "SUB_PRICE_RUB_KOPEKS",
-    "STARS_PROVIDER_TOKEN",
-    "SUB_PRICE_XTR",
-    "DYNAMIC_PRICE_XTR",
-    "SUBSCRIPTION_PLANS",
-    "SUBSCRIPTION_PLAN_MAP",
-    "DEFAULT_SUBSCRIPTION_PLAN",
-    "ADMIN_IDS",
-    "USER_SESSIONS_MAX",
-    "USER_SESSION_TTL_SECONDS",
-    "db",
-    "rate_limiter",
-    "access_service",
-    "openai_service",
-    "audio_service",
-    "session_store",
-    "crypto_provider",
-    "robokassa_provider",
-    "yookassa_provider",
-    "error_handler",
-    "document_manager",
-    "response_cache",
-    "metrics_collector",
-    "task_manager",
-    "health_checker",
-    "scaling_components",
-    "judicial_rag",
-)
-
-
-def _sync_local_globals() -> None:
-    for attr in _SYNCED_ATTRS:
-        globals()[attr] = getattr(simple_context, attr, None)
-
-
-_sync_local_globals()
-
-
 def refresh_runtime_globals() -> None:
     simple_context.refresh_runtime_globals()
-    _sync_local_globals()
+
+
+def _build_base_commands() -> list[BotCommand]:
+    return [
+        BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
+        BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
+        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
+        BotCommand(command="mystats", description="📊 Моя статистика"),
+    ]
+
+
+def _build_admin_commands(base_commands: Sequence[BotCommand]) -> list[BotCommand]:
+    admin_specific = [
+        BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
+        BotCommand(command="errors", description="🚨 Статистика ошибок (админ)"),
+    ]
+    return list(base_commands) + admin_specific
+
+
+def _create_telegram_error_handler(
+    error_handler: ErrorHandler | None,
+) -> Callable[[ErrorEvent], Awaitable[None]]:
+    async def telegram_error_handler(event: ErrorEvent) -> None:
+        if error_handler:
+            try:
+                context = ErrorContext(
+                    function_name="telegram_error_handler",
+                    additional_data={
+                        "update": str(event.update) if event.update else None,
+                        "exception_type": type(event.exception).__name__,
+                    },
+                )
+                await error_handler.handle_exception(event.exception, context)
+            except Exception as handler_error:  # noqa: BLE001
+                logger.error("Error handler failed: %s", handler_error)
+        logger.exception("Critical error in bot: %s", event.exception)
+
+    return telegram_error_handler
 
 
 def __getattr__(name: str) -> Any:
@@ -201,10 +141,6 @@ def __getattr__(name: str) -> Any:
 
 async def run_bot() -> None:
     """Main coroutine launching the bot."""
-    global BOT_USERNAME
-    global metrics_collector, db, response_cache, rate_limiter, access_service, openai_service
-    global audio_service, session_store, crypto_provider, error_handler, document_manager
-    global scaling_components, health_checker, task_manager, retention_notifier
     ctx = get_runtime()
     cfg = ctx.settings
     container = ctx.get_dependency('container')
@@ -237,7 +173,6 @@ async def run_bot() -> None:
     try:
         bot_info = await bot.get_me()
         simple_context.BOT_USERNAME = (bot_info.username or '').strip()
-        BOT_USERNAME = simple_context.BOT_USERNAME
     except Exception as exc:
         logger.warning('Could not fetch bot username: %s', exc)
     dp = Dispatcher()
@@ -251,7 +186,7 @@ async def run_bot() -> None:
         cfg=cfg,
         container=container,
         logger=logger,
-        admin_ids=ADMIN_IDS,
+        admin_ids=simple_context.ADMIN_IDS,
     )
 
     metrics_collector = runtime.metrics_collector
@@ -272,23 +207,15 @@ async def run_bot() -> None:
     retention_notifier = runtime.retention_notifier
 
     refresh_runtime_globals()
+    admin_ids = simple_context.ADMIN_IDS
 
     # Команды
-    base_commands = [
-        BotCommand(command="start", description=f"{Emoji.ROBOT} Начать работу"),
-        BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
-        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
-        BotCommand(command="mystats", description="📊 Моя статистика"),
-
-    ]
+    base_commands = _build_base_commands()
     await bot.set_my_commands(base_commands)
 
-    if ADMIN_IDS:
-        admin_commands = base_commands + [
-            BotCommand(command="ratings", description="📈 Статистика рейтингов (админ)"),
-            BotCommand(command="errors", description="🚨 Статистика ошибок (админ)"),
-        ]
-        for admin_id in ADMIN_IDS:
+    if admin_ids:
+        admin_commands = _build_admin_commands(base_commands)
+        for admin_id in admin_ids:
             try:
                 await bot.set_my_commands(
                     admin_commands,
@@ -314,29 +241,13 @@ async def run_bot() -> None:
     if settings().voice_mode_enabled:
         register_voice_handlers(dp, process_question)
 
-    # Глобальный обработчик ошибок aiogram (с интеграцией ErrorHandler при наличии)
-    async def telegram_error_handler(event: ErrorEvent):
-        if error_handler:
-            try:
-                context = ErrorContext(
-                    function_name="telegram_error_handler",
-                    additional_data={
-                        "update": str(event.update) if event.update else None,
-                        "exception_type": type(event.exception).__name__,
-                    },
-                )
-                await error_handler.handle_exception(event.exception, context)
-            except Exception as handler_error:
-                logger.error(f"Error handler failed: {handler_error}")
-        logger.exception("Critical error in bot: %s", event.exception)
-
-    dp.error.register(telegram_error_handler)
+    dp.error.register(_create_telegram_error_handler(error_handler))
 
     # Лог старта
     set_system_status("running")
     startup_info = [
         "🤖 AI-Ivan (simple) successfully started!",
-        f"🎞 Animation: {'enabled' if USE_ANIMATION else 'disabled'}",
+        f"🎞 Animation: {'enabled' if cfg.use_status_animation else 'disabled'}",
         f"🗄️ Database: advanced",
         f"🔄 Cache: {cache_backend.__class__.__name__}",
         f"📈 Metrics: {'enabled' if getattr(metrics_collector, 'enable_prometheus', False) else 'disabled'}",
