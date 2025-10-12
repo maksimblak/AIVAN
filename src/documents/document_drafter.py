@@ -135,6 +135,53 @@ def _strip_code_fences(payload: str) -> str:
     return stripped.strip()
 
 
+def _escape_unescaped_newlines(payload: str) -> str:
+    """Escape literal newlines that appear inside JSON strings."""
+
+    if "\n" not in payload and "\r" not in payload:
+        return payload
+
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    length = len(payload)
+
+    while index < length:
+        char = payload[index]
+
+        if in_string:
+            if escaped:
+                result.append(char)
+                escaped = False
+            else:
+                if char == "\\":
+                    result.append(char)
+                    escaped = True
+                elif char == '"':
+                    result.append(char)
+                    in_string = False
+                elif char == "\r":
+                    result.append("\\r")
+                    if index + 1 < length and payload[index + 1] == "\n":
+                        result.append("\\n")
+                        index += 1
+                elif char == "\n":
+                    result.append("\\n")
+                else:
+                    result.append(char)
+        else:
+            result.append(char)
+            if char == '"':
+                in_string = True
+                escaped = False
+
+        index += 1
+
+    repaired = "".join(result)
+    return repaired
+
+
 def _extract_json(text: Any) -> Any:
     """Extract the first JSON structure found in text."""
 
@@ -158,12 +205,24 @@ def _extract_json(text: Any) -> Any:
             obj, _ = _JSON_DECODER.raw_decode(source, idx)
             return obj
         except (json.JSONDecodeError, ValueError) as primary_err:
-            candidate = source[idx:].strip()
-            if not candidate:
+            candidate = source[idx:]
+            stripped_candidate = candidate.strip()
+            if not stripped_candidate:
                 raise json.JSONDecodeError("Empty JSON candidate", source, idx) from primary_err
-            normalized = _TRAILING_COMMA_RE.sub(r"\1", candidate)
-            obj, _ = _JSON_DECODER.raw_decode(normalized)
-            return obj
+
+            normalized = _TRAILING_COMMA_RE.sub(r"\1", stripped_candidate)
+            attempts = [normalized]
+
+            repaired = _escape_unescaped_newlines(normalized)
+            if repaired != normalized:
+                attempts.append(repaired)
+
+            for attempt in attempts:
+                with suppress(json.JSONDecodeError, ValueError):
+                    obj, _ = _JSON_DECODER.raw_decode(attempt)
+                    return obj
+
+            raise primary_err
 
     try:
         return _decode_from_index(cleaned_text)
