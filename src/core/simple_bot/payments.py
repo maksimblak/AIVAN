@@ -13,9 +13,11 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    PreCheckoutQuery,
 )
 
 from src.bot.ui_components import Emoji
+from src.core.db_advanced import TransactionStatus
 from src.core.payments import convert_rub_to_xtr
 from src.core.simple_bot import context as ctx
 from src.core.subscription_payments import (
