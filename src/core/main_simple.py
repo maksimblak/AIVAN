@@ -35,11 +35,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
-    CallbackQuery,
     ErrorEvent,
     FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
     User,
 )
@@ -81,6 +78,7 @@ from src.core.simple_bot.feedback import (
     register_feedback_handlers,
     send_rating_request,
 )
+from src.core.simple_bot.retention import register_retention_handlers
 from src.core.simple_bot import context as simple_context
 from src.core.simple_bot.common import (ensure_valid_user_id, get_user_session, get_safe_db_method)
 from src.core.simple_bot.formatting import (
@@ -717,145 +715,6 @@ async def process_question(
 
 # ============ СИСТЕМА РЕЙТИНГА ============
 
-async def handle_search_practice_callback(callback: CallbackQuery):
-    """Обработчик кнопки 'Поиск и аналитика судебной практики'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
-        return
-
-    try:
-        await callback.answer()
-
-        instruction_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
-                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
-            ]
-        )
-
-        await callback.message.edit_text(
-            "🔍 <b>Поиск судебной практики</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚖️ <i>Найду релевантную судебную практику\n"
-            "   для вашего юридического вопроса</i>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📋 <b>Что вы получите:</b>\n\n"
-            "💡 <b>Краткая консультация</b>\n"
-            "   └ 2 ссылки на судебную практику\n"
-            "   └ Быстрый анализ ситуации\n\n"
-            "📊 <b>Углубленный анализ</b>\n"
-            "   └ 6+ примеров из практики\n"
-            "   └ Детальные рекомендации\n\n"
-            "📄 <b>Подготовка документов</b>\n"
-            "   └ На основе найденной практики\n"
-            "   └ С учетом актуальных решений\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "✍️ <i>Напишите ваш юридический вопрос\n"
-            "   следующим сообщением...</i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=instruction_keyboard,
-        )
-
-        # Устанавливаем режим поиска практики для пользователя
-        user_session = get_user_session(callback.from_user.id)
-        if not hasattr(user_session, "practice_search_mode"):
-            user_session.practice_search_mode = False
-        user_session.practice_search_mode = True
-
-    except Exception as e:
-        logger.error(f"Error in handle_search_practice_callback: {e}")
-        await callback.answer("❌ Произошла ошибка")
-
-
-async def handle_prepare_documents_callback(callback: CallbackQuery):
-    """Обработчик кнопки 'Подготовка документов'"""
-    if not callback.from_user:
-        await callback.answer("❌ Ошибка данных")
-        return
-
-    try:
-        await callback.answer()
-
-        await callback.message.answer(
-            "📄 <b>Подготовка документов</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📑 <i>Помогу составить процессуальные\n"
-            "   и юридические документы</i>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📋 <b>Типы документов:</b>\n\n"
-            "⚖️ <b>Исковые заявления</b>\n"
-            "   └ С учетом судебной практики\n\n"
-            "📝 <b>Ходатайства</b>\n"
-            "   └ Процессуальные запросы\n\n"
-            "📧 <b>Жалобы и возражения</b>\n"
-            "   └ На решения и действия\n\n"
-            "📜 <b>Договоры и соглашения</b>\n"
-            "   └ Правовая защита интересов\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "✍️ <i>Опишите какой документ нужен\n"
-            "   и приложите детали дела...</i>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        # Режим подготовки документов
-        user_session = get_user_session(callback.from_user.id)
-        if not hasattr(user_session, "document_preparation_mode"):
-            user_session.document_preparation_mode = False
-        user_session.document_preparation_mode = True
-
-    except Exception as e:
-        logger.error(f"Error in handle_prepare_documents_callback: {e}")
-        await callback.answer("❌ Произошла ошибка")
-
-
-async def handle_retention_quick_question(callback: CallbackQuery):
-    """Обработка кнопки 'Задать вопрос' из retention уведомления"""
-    try:
-        await callback.answer()
-        await callback.message.answer(
-            f"{Emoji.ROBOT} <b>Отлично!</b>\n\n"
-            "Просто напиши свой вопрос, и я отвечу на него.\n\n"
-            f"{Emoji.INFO} <i>Пример:</i> Что делать, если нарушили права потребителя?",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.error(f"Error in handle_retention_quick_question: {e}", exc_info=True)
-
-
-async def handle_retention_show_features(callback: CallbackQuery):
-    """Обработка кнопки 'Все возможности' из retention уведомления"""
-    try:
-        await callback.answer()
-
-        features_text = (
-            f"{Emoji.ROBOT} <b>Что я умею:</b>\n\n"
-            f"{Emoji.QUESTION} <b>Юридические консультации</b>\n"
-            "Отвечаю на вопросы по любым правовым темам\n\n"
-            f"📄 <b>Работа с документами</b>\n"
-            "• Анализ договоров и документов\n"
-            "• Поиск рисков и проблем\n"
-            "• Режим \"распознание текста\" — извлечение текста из фото\n"
-            "• Составление документов\n\n"
-            f"📚 <b>Судебная практика</b>\n"
-            "Поиск релевантных судебных решений\n\n"
-            f"{Emoji.MICROPHONE} <b>Голосовые сообщения</b>\n"
-            "Отправь голосовое — получишь голосовой ответ\n\n"
-            f"{Emoji.INFO} Просто напиши вопрос или выбери действие!"
-        )
-
-        await callback.message.answer(features_text, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"Error in handle_retention_show_features: {e}", exc_info=True)
-
-# --- progress router hookup ---
-def register_progressbar(dp: Dispatcher) -> None:
-    dp.include_router(progress_router)
-
-
-
-
-
-
 async def cmd_askdoc(message: Message) -> None:
     if document_manager is None or not message.from_user:
         await message.answer(f"{Emoji.WARNING} Сессия документа не найдена. Загрузите документ с режимом \"Чат\".")
@@ -1335,25 +1194,14 @@ async def run_bot() -> None:
     register_payment_handlers(dp)
 
     register_menu_handlers(dp)
+    register_document_handlers(dp)
+    register_retention_handlers(dp)
+    register_feedback_handlers(dp)
+
     dp.message.register(cmd_ratings_stats, Command("ratings"))
     dp.message.register(cmd_error_stats, Command("errors"))
     dp.message.register(cmd_askdoc, Command("askdoc"))
     dp.message.register(cmd_enddoc, Command("enddoc"))
-
-
-    # Обработчики кнопок главного меню
-    dp.callback_query.register(handle_search_practice_callback, F.data == "search_practice")
-    dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
-    
-    # Обработчики профиля
-
-    # Обработчики retention уведомлений
-    dp.callback_query.register(handle_retention_quick_question, F.data == "quick_question")
-    dp.callback_query.register(handle_retention_show_features, F.data == "show_features")
-
-    # Обработчики системы документооборота
-    register_document_handlers(dp)
-    register_feedback_handlers(dp)
 
     if settings().voice_mode_enabled:
         register_voice_handlers(dp, process_question)

@@ -613,6 +613,89 @@ async def handle_back_to_main_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Произошла ошибка")
 
 
+async def handle_search_practice_callback(callback: CallbackQuery) -> None:
+    """Handle 'search_practice' menu button."""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        instruction_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
+            ]
+        )
+
+        await callback.message.edit_text(
+            "🔍 <b>Поиск судебной практики</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚖️ <i>Найду релевантную судебную практику\n"
+            "   для вашего юридического вопроса</i>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📋 <b>Что вы получите:</b>\n\n"
+            "💡 <b>Краткая консультация</b>\n"
+            "   └ 2 ссылки на практику и краткий анализ\n\n"
+            "📊 <b>Углубленный анализ</b>\n"
+            "   └ 6+ примеров с рекомендациями\n\n"
+            "📄 <b>Подготовка документов</b>\n"
+            "   └ На основе найденной практики\n"
+            "   └ С учетом актуальных решений\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "✍️ <i>Напишите ваш юридический вопрос\n"
+            "   следующим сообщением...</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=instruction_keyboard,
+        )
+
+        user_session = get_user_session(callback.from_user.id)
+        if not hasattr(user_session, "practice_search_mode"):
+            user_session.practice_search_mode = False
+        user_session.practice_search_mode = True
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error in handle_search_practice_callback: %s", exc)
+        await callback.answer("❌ Произошла ошибка")
+
+
+async def handle_prepare_documents_callback(callback: CallbackQuery) -> None:
+    """Handle 'prepare_documents' menu button."""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        await callback.message.answer(
+            "📄 <b>Подготовка документов</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📑 <i>Помогу составить процессуальные\n"
+            "   и юридические документы</i>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📋 <b>Типы документов:</b>\n\n"
+            "⚖️ Исковые заявления\n"
+            "📝 Ходатайства и запросы\n"
+            "📧 Жалобы и возражения\n"
+            "📜 Договоры и соглашения\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "✍️ <i>Опишите какой документ нужен\n"
+            "   и приложите детали дела...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        user_session = get_user_session(callback.from_user.id)
+        if not hasattr(user_session, "document_preparation_mode"):
+            user_session.document_preparation_mode = False
+        user_session.document_preparation_mode = True
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error in handle_prepare_documents_callback: %s", exc)
+        await callback.answer("❌ Произошла ошибка")
+
+
 async def handle_help_info_callback(callback: CallbackQuery) -> None:
     if not callback.from_user:
         await callback.answer("❌ Ошибка данных")
@@ -791,6 +874,8 @@ def register_menu_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(handle_my_profile_callback, F.data == "my_profile")
     dp.callback_query.register(handle_my_stats_callback, F.data == "my_stats")
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
+    dp.callback_query.register(handle_search_practice_callback, F.data == "search_practice")
+    dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
     dp.callback_query.register(handle_referral_program_callback, F.data == "referral_program")
     dp.callback_query.register(handle_copy_referral_callback, F.data.startswith("copy_referral_"))
     dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
