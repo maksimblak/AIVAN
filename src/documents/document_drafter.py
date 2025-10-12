@@ -7,7 +7,7 @@ import logging
 import re
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -260,11 +260,14 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
 
-    raw_text = response.get("text", "")
-    if not raw_text:
-        raise DocumentDraftingError("Пустой ответ модели")
-
-    data = _extract_json(raw_text)
+    structured = response.get("structured")
+    if isinstance(structured, Mapping):
+        data = dict(structured)
+    else:
+        raw_text = response.get("text", "")
+        if not raw_text:
+            raise DocumentDraftingError("Пустой ответ модели")
+        data = _extract_json(raw_text)
     title = str(data.get("document_title") or "Документ").strip()
     notes = [str(note).strip() for note in data.get("context_notes") or [] if str(note).strip()]
     need_more_raw = data.get("need_more_info")
@@ -316,11 +319,14 @@ async def generate_document(
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
 
-    raw_text = response.get("text", "")
-    if not raw_text:
-        raise DocumentDraftingError("Пустой ответ модели")
-
-    data = _extract_json(raw_text)
+    structured = response.get("structured")
+    if isinstance(structured, Mapping):
+        data = dict(structured)
+    else:
+        raw_text = response.get("text", "")
+        if not raw_text:
+            raise DocumentDraftingError("Пустой ответ модели")
+        data = _extract_json(raw_text)
     status = str(data.get("status") or "ok").lower()
     doc_title = str(data.get("document_title") or title).strip()
     markdown = str(data.get("document_markdown") or "")
