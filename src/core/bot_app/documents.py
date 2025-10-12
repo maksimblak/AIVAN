@@ -39,6 +39,7 @@ from src.documents.document_drafter import (
     generate_document,
     plan_document,
 )
+from src.core.progress_ui import ChecklistProgress
 
 if TYPE_CHECKING:
     from src.core.audio_service import AudioService
@@ -149,6 +150,18 @@ _STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
         "indexing": ("Индексируем содержимое", "🗂️"),
     },
 }
+
+
+_LAWSUIT_STAGE_ORDER = [
+    "start",
+    "downloading",
+    "uploaded",
+    "processing",
+    "model_request",
+    "analysis_ready",
+    "finalizing",
+    "completed",
+]
 
 
 def _schedule_message_deletion(bot, chat_id: int, message_id: int, delay: float = 5.0) -> None:
@@ -1340,16 +1353,80 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
             summary_msg = await message.answer(summary_text, parse_mode=ParseMode.HTML)
             _schedule_message_deletion(message.bot, message.chat.id, summary_msg.message_id, delay=5.0)
 
-            status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
+            progress_widget: ChecklistProgress | None = None
+            stage_order_for_widget: list[str] = []
+            stream_started = False
 
-            send_progress, progress_state = _make_progress_updater(
-                message,
-                status_msg,
-                file_name=file_name,
-                operation_name=operation_name,
-                file_size_kb=file_size_kb,
-                stage_labels=stage_labels,
-            )
+            if operation == "lawsuit_analysis":
+                stage_order_for_widget = [key for key in _LAWSUIT_STAGE_ORDER if key in stage_labels]
+                if not stage_order_for_widget:
+                    stage_order_for_widget = list(stage_labels.keys())
+                stage_titles = [stage_labels[key][0] for key in stage_order_for_widget] or ["Обработка"]
+                progress_widget = ChecklistProgress(
+                    bot=message.bot,
+                    chat_id=message.chat.id,
+                    stages=stage_titles,
+                    throttle_sec=0.5,
+                )
+                await progress_widget.start()
+                status_msg = None
+            else:
+                status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
+
+            if progress_widget:
+                stage_index_map = {key: idx for idx, key in enumerate(stage_order_for_widget)}
+                progress_state: dict[str, Any] = {
+                    "percent": 0,
+                    "stage": stage_order_for_widget[0] if stage_order_for_widget else "start",
+                    "started_at": time.monotonic(),
+                }
+
+                async def send_progress(update: dict[str, Any]) -> None:
+                    nonlocal progress_state, stream_started
+                    stage = str(update.get("stage") or progress_state["stage"] or "processing")
+                    if stage not in stage_index_map:
+                        stage = progress_state["stage"]
+                    percent_val = update.get("percent")
+                    if percent_val is None:
+                        percent = progress_state["percent"]
+                    else:
+                        percent = max(0, min(100, int(round(float(percent_val)))))
+                        if percent < progress_state["percent"] and stage != "failed":
+                            percent = progress_state["percent"]
+                    progress_state["stage"] = stage
+                    progress_state["percent"] = percent
+
+                    if stage == "completed":
+                        await progress_widget.complete()
+                        if stream_started:
+                            await progress_widget.finish_stream()
+                            stream_started = False
+                    elif stage == "failed":
+                        if stage_order_for_widget:
+                            await progress_widget.to_stage(len(stage_order_for_widget) - 1)
+                        if stream_started:
+                            await progress_widget.finish_stream()
+                            stream_started = False
+                    else:
+                        idx = stage_index_map.get(stage)
+                        if idx is not None:
+                            await progress_widget.to_stage(idx)
+
+                    extras_line = _format_progress_extras(update)
+                    if extras_line:
+                        if not stream_started:
+                            await progress_widget.start_stream("Статус")
+                            stream_started = True
+                        await progress_widget.push_stream_delta(extras_line + "\n")
+            else:
+                send_progress, progress_state = _make_progress_updater(
+                    message,
+                    status_msg,
+                    file_name=file_name,
+                    operation_name=operation_name,
+                    file_size_kb=file_size_kb,
+                    stage_labels=stage_labels,
+                )
 
             await send_progress({"stage": "start", "percent": 5})
 
@@ -1414,9 +1491,10 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
 
                     completion_payload = _build_completion_payload(operation, result)
                     await send_progress({'stage': 'completed', 'percent': 100, **completion_payload})
-                    with suppress(Exception):
-                        await asyncio.sleep(0.6)
-                        await status_msg.delete()
+                    if 'status_msg' in locals() and status_msg:
+                        with suppress(Exception):
+                            await asyncio.sleep(0.6)
+                            await status_msg.delete()
 
                     logger.info("Successfully processed document %s for user %s", file_name, message.from_user.id)
                 else:
@@ -1429,12 +1507,14 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                         parse_mode=ParseMode.HTML,
                         reply_markup=reply_markup,
                     )
-                    with suppress(Exception):
-                        await status_msg.delete()
+                    if 'status_msg' in locals() and status_msg:
+                        with suppress(Exception):
+                            await status_msg.delete()
 
             except Exception as exc:  # noqa: BLE001
-                with suppress(Exception):
-                    await status_msg.delete()
+                if 'status_msg' in locals() and status_msg:
+                    with suppress(Exception):
+                        await status_msg.delete()
 
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
@@ -1585,9 +1665,10 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
 
                     completion_payload = _build_completion_payload(operation, result)
                     await send_progress({"stage": "completed", "percent": 100, **completion_payload})
-                    with suppress(Exception):
-                        await asyncio.sleep(0.6)
-                        await status_msg.delete()
+                    if 'status_msg' in locals() and status_msg:
+                        with suppress(Exception):
+                            await asyncio.sleep(0.6)
+                            await status_msg.delete()
 
                     logger.info("Successfully processed photo %s for user %s", file_name, message.from_user.id)
                 else:
@@ -1606,7 +1687,8 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     await send_progress(
                         {"stage": "failed", "percent": progress_state["percent"], "note": GENERIC_INTERNAL_ERROR_TEXT}
                     )
-                    await status_msg.delete()
+                    if 'status_msg' in locals() and status_msg:
+                        await status_msg.delete()
 
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
                 await message.answer(
