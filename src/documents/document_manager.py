@@ -507,78 +507,36 @@ class DocumentManager:
         return "\n".join(lines)
 
     def _format_lawsuit_result(self, data: Dict[str, Any], message: str) -> str:
-        analysis = data.get("analysis") or {}
-        lines: List[str] = ["<b>Анализ искового заявления</b>"]
+        analysis: dict[str, Any] = data.get("analysis") or {}
+        doc_info = data.get("document_info") or {}
+        original_name = str(doc_info.get("original_name") or "").strip()
+        title = Path(original_name).stem if original_name else ""
+        title = title.replace("_", " ").replace("-", " ").strip()
+        if not title:
+            title = "Анализ искового заявления"
+
+        divider = "──────────────────────────────"
+        lines: list[str] = [
+            f"📄 {title}",
+            divider,
+            "",
+            "✨ Документ успешно создан!",
+            "📎 Формат: DOCX",
+        ]
 
         summary = str(analysis.get("summary") or "").strip()
         if summary:
-            lines.append(html_escape(summary))
+            summary_clean = re.sub(r"\s+", " ", summary)
+            if len(summary_clean) > 280:
+                summary_clean = summary_clean[:277].rstrip() + "..."
+            lines.extend(["", f"📝 {summary_clean}"])
 
-        parties = analysis.get("parties") or {}
-        party_lines: List[str] = []
-        plaintiff = str(parties.get("plaintiff") or "").strip()
-        defendant = str(parties.get("defendant") or "").strip()
-        if plaintiff:
-            party_lines.append(f"• Истец: {html_escape(plaintiff)}")
-        if defendant:
-            party_lines.append(f"• Ответчик: {html_escape(defendant)}")
-        for item in parties.get("other") or []:
-            text = str(item or "").strip()
-            if text:
-                party_lines.append(f"• Участник: {html_escape(text)}")
-        if party_lines:
-            lines.append("")
-            lines.append("<b>👥 Стороны:</b>")
-            lines.append("\n".join(party_lines))
-
-        def _section(key: str, values: Any) -> None:
-            cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
-            if not cleaned:
-                return
-            icon, title = _LAWSUIT_SECTION_META[key]
-            lines.append("")
-            lines.append(f"<b>{icon} {title}:</b>")
-            lines.append("\n".join(f"• {html_escape(item)}" for item in cleaned))
-
-        for section_key in (
-            "demands",
-            "legal_basis",
-            "evidence",
-            "strengths",
-            "risks",
-            "missing_elements",
-            "recommendations",
-            "procedural_notes",
-        ):
-            _section(section_key, analysis.get(section_key))
-
-        confidence = str(analysis.get("confidence") or "").strip()
-        if confidence:
-            lines.append("")
-            lines.append(f"<i>Уверенность анализа: {html_escape(confidence)}</i>")
+        lines.extend(["", "💡 Проверьте содержимое и при необходимости внесите правки."])
 
         if data.get("truncated"):
-            lines.append("")
-            lines.append("<i>⚠️ Анализ выполнен по усечённому тексту документа.</i>")
+            lines.extend(["", "⚠️ Анализ выполнен по усечённому тексту документа."])
 
-        if (result_exports := data.get("exports")):
-            if result_exports:
-                lines.append("")
-                lines.append("<i>📎 Подробные файлы анализа приложены ниже.</i>")
-
-        if message:
-            lines.append("")
-            lines.append(html_escape(message))
-
-        html_body = "\n\n".join(part for part in lines if part)
-        plain_body = re.sub(r"<br>\s*", "\n", html_body)
-        plain_body = re.sub(r"</?b>", "", plain_body)
-        plain_body = re.sub(r"</?i>", "", plain_body)
-        plain_body = re.sub(r"</?u>", "", plain_body)
-        plain_body = re.sub(r"</?code>", "", plain_body)
-        plain_body = html.unescape(plain_body)
-        plain_body = plain_body.strip()
-        return plain_body
+        return "\n".join(lines).strip()
 
     def _format_chat_loaded(self, data: Dict[str, Any], message: str) -> str:
         info = data.get("document_info") or {}
