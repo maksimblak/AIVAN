@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import asyncio
+import html
 import json
 import logging
+import re
 import tempfile
 import uuid
 from dataclasses import asdict
@@ -547,7 +549,14 @@ class DocumentManager:
             lines.append("")
             lines.append(html_escape(message))
 
-        return "\n\n".join(part for part in lines if part)
+        html_body = "\n\n".join(part for part in lines if part)
+        plain_body = re.sub(r"<br>\s*", "\n", html_body)
+        plain_body = re.sub(r"</?b>", "", plain_body)
+        plain_body = re.sub(r"</?i>", "", plain_body)
+        plain_body = re.sub(r"</?u>", "", plain_body)
+        plain_body = re.sub(r"</?code>", "", plain_body)
+        plain_body = html.unescape(plain_body)
+        return plain_body
 
     def _format_chat_loaded(self, data: Dict[str, Any], message: str) -> str:
         info = data.get("document_info") or {}
