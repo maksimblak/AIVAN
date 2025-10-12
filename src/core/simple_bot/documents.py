@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable, Sequence, TYPE_CHECKING
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -1593,6 +1594,53 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
         await state.clear()
 
 
+async def cmd_askdoc(message: Message) -> None:
+    """Start chat-based document question session."""
+    document_manager = _get_document_manager()
+    if document_manager is None or not message.from_user:
+        await message.answer(
+            f"{Emoji.WARNING} Сессия документа не найдена. Загрузите документ с режимом \"Чат\"."
+        )
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(f"{Emoji.WARNING} Укажите вопрос после команды, например: /askdoc Какой срок?")
+        return
+
+    question = parts[1].strip()
+    try:
+        async with typing_action(message.bot, message.chat.id, "typing"):
+            result = await document_manager.answer_chat_question(message.from_user.id, question)
+    except ProcessingError as exc:
+        await message.answer(f"{Emoji.WARNING} {html_escape(exc.message)}", parse_mode=ParseMode.HTML)
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Document chat failed: %s", exc, exc_info=True)
+        await message.answer(
+            f"{Emoji.ERROR} Не удалось получить ответ. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    formatted = document_manager.format_chat_answer_for_telegram(result)
+    await message.answer(formatted, parse_mode=ParseMode.HTML)
+
+
+async def cmd_enddoc(message: Message) -> None:
+    """Finish chat-based document session."""
+    document_manager = _get_document_manager()
+    if document_manager is None or not message.from_user:
+        await message.answer(f"{Emoji.WARNING} Активная сессия не найдена.")
+        return
+
+    closed = document_manager.end_chat_session(message.from_user.id)
+    if closed:
+        await message.answer(f"{Emoji.SUCCESS} Чат с документом завершён.")
+    else:
+        await message.answer(f"{Emoji.WARNING} Активная сессия не найдена.")
+
+
 def register_document_handlers(dp: Dispatcher) -> None:
     """Register all document-related handlers."""
     dp.callback_query.register(handle_document_processing, F.data == "document_processing")
@@ -1608,3 +1656,5 @@ def register_document_handlers(dp: Dispatcher) -> None:
     dp.message.register(handle_doc_draft_answer_voice, DocumentDraftStates.asking_details, F.voice)
     dp.message.register(handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document)
     dp.message.register(handle_photo_upload, DocumentProcessingStates.waiting_for_document, F.photo)
+    dp.message.register(cmd_askdoc, Command("askdoc"))
+    dp.message.register(cmd_enddoc, Command("enddoc"))

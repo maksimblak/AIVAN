@@ -715,47 +715,6 @@ async def process_question(
 
 # ============ СИСТЕМА РЕЙТИНГА ============
 
-async def cmd_askdoc(message: Message) -> None:
-    if document_manager is None or not message.from_user:
-        await message.answer(f"{Emoji.WARNING} Сессия документа не найдена. Загрузите документ с режимом \"Чат\".")
-        return
-
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer(f"{Emoji.WARNING} Укажите вопрос после команды, например: /askdoc Какой срок?")
-        return
-
-    question = parts[1].strip()
-    try:
-        async with typing_action(message.bot, message.chat.id, "typing"):
-            result = await document_manager.answer_chat_question(message.from_user.id, question)
-    except ProcessingError as exc:
-        await message.answer(f"{Emoji.WARNING} {html_escape(exc.message)}", parse_mode=ParseMode.HTML)
-        return
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Document chat failed: %s", exc, exc_info=True)
-        await message.answer(
-            f"{Emoji.ERROR} Не удалось получить ответ. Попробуйте позже.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    formatted = document_manager.format_chat_answer_for_telegram(result)
-    await message.answer(formatted, parse_mode=ParseMode.HTML)
-
-
-async def cmd_enddoc(message: Message) -> None:
-    if document_manager is None or not message.from_user:
-        await message.answer(f"{Emoji.WARNING} Активная сессия не найдена.")
-        return
-
-    closed = document_manager.end_chat_session(message.from_user.id)
-    if closed:
-        await message.answer(f"{Emoji.SUCCESS} Чат с документом завершён.")
-    else:
-        await message.answer(f"{Emoji.WARNING} Активная сессия не найдена.")
-
-
 
 
 async def cmd_ratings_stats(message: Message):
@@ -1200,8 +1159,6 @@ async def run_bot() -> None:
 
     dp.message.register(cmd_ratings_stats, Command("ratings"))
     dp.message.register(cmd_error_stats, Command("errors"))
-    dp.message.register(cmd_askdoc, Command("askdoc"))
-    dp.message.register(cmd_enddoc, Command("enddoc"))
 
     if settings().voice_mode_enabled:
         register_voice_handlers(dp, process_question)
