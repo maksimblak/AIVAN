@@ -483,16 +483,6 @@ async def handle_doc_draft_answer(
                 )
             else:
                 await state.set_state(DocumentDraftStates.generating)
-                await message.answer(
-                    f"⚙️ <b>Формирование документа...</b>\n"
-                    f"<code>{'▰' * 20}</code>\n\n"
-                    f"✅ Все ответы получены\n"
-                    f"🔄 Анализирую информацию\n"
-                    f"📝 Подготавливаю текст\n"
-                    f"📄 Формирую DOCX файл\n\n"
-                    f"<i>⏱ Обычно занимает 30-60 секунд</i>",
-                    parse_mode=ParseMode.HTML,
-                )
                 await _finalize_draft(message, state)
             return
 
@@ -520,16 +510,6 @@ async def handle_doc_draft_answer(
             await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
         else:
             await state.set_state(DocumentDraftStates.generating)
-            await message.answer(
-                f"⚙️ <b>Формирование документа...</b>\n"
-                f"<code>{'▰' * 20}</code>\n\n"
-                f"✅ Все ответы получены\n"
-                f"🔄 Анализирую информацию\n"
-                f"📝 Подготавливаю текст\n"
-                f"📄 Формирую DOCX файл\n\n"
-                f"<i>⏱ Обычно занимает 30-60 секунд</i>",
-                parse_mode=ParseMode.HTML,
-            )
             await _finalize_draft(message, state)
         return
 
