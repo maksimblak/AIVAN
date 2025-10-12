@@ -761,17 +761,18 @@ async def _ask_legal_internal(
 
         last_err = None
         if model not in _VALIDATED_MODELS:
-            for i in range(2):
-                try:
-                    await oai.models.retrieve(model)
-                    _VALIDATED_MODELS.add(model)
-                    last_err = None
-                    break
-                except Exception as e:
-                    last_err = str(e)
-                    if i == 1:
-                        return {"ok": False, "error": last_err}
-                    await asyncio.sleep(0.6)
+            if not _SETTINGS.get_bool("OPENAI_SKIP_MODEL_CHECK", False):
+                for i in range(2):
+                    try:
+                        await oai.models.retrieve(model)
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = str(e)
+                        if i == 1:
+                            return {"ok": False, "error": last_err}
+                        await asyncio.sleep(0.6)
+            _VALIDATED_MODELS.add(model)
 
         structured_payload: dict[str, Any] | None = None
 
