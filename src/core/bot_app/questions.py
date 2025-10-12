@@ -33,7 +33,7 @@ from src.core.bot_app.feedback import (
     send_rating_request,
 )
 from src.core.validation import InputValidator, ValidationSeverity
-from src.documents.document_drafter import build_practice_excel
+from src.core.excel_export import build_practice_excel
 
 __all__ = [
     "ResponseTimer",
