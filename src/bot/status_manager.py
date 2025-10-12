@@ -251,7 +251,7 @@ class ProgressStatus:
                     lines.append(f"○ {next_label}")
 
         if note:
-            lines += ["", esc(note)]
+            lines += ["", f"<i>{esc(note)}</i>"]
         return "\n".join(lines)[:3990]
 
     def _progress_bar(self, pct: int) -> str:
