@@ -20,7 +20,7 @@ from src.core.simple_bot import context as simple_context
 if TYPE_CHECKING:
     from src.core.audio_service import AudioService
 
-__all__ = ["register_voice_handlers"]
+__all__ = ["register_voice_handlers", "download_voice_to_temp"]
 
 logger = logging.getLogger("ai-ivan.simple.voice")
 
@@ -78,7 +78,7 @@ def _build_voice_handler(
             await audio_service.ensure_short_enough(message.voice.duration)
 
             async with typing_action(message.bot, message.chat.id, "record_voice"):
-                temp_voice_path = await _download_voice_to_temp(message)
+                temp_voice_path = await download_voice_to_temp(message)
                 transcript = await audio_service.transcribe(temp_voice_path)
 
             preview = html_escape(transcript[:500])
@@ -140,7 +140,7 @@ def _build_voice_handler(
     return handle_voice_message
 
 
-async def _download_voice_to_temp(message: Message) -> Path:
+async def download_voice_to_temp(message: Message) -> Path:
     """Download Telegram voice message into a temporary file."""
     if not message.bot:
         raise RuntimeError("Bot instance is not available for voice download")
