@@ -53,16 +53,62 @@ LAWSUIT_ANALYSIS_USER_PROMPT = """
 
 def _extract_first_json(payload: str) -> dict[str, Any]:
     """Попытаться выделить первый JSON-объект из ответа модели."""
+
+    def _decode(text: str) -> dict[str, Any]:
+        decoder = json.JSONDecoder(strict=False)
+        obj, _ = decoder.raw_decode(text)
+        if not isinstance(obj, dict):
+            raise json.JSONDecodeError("JSON root is not an object", text, 0)
+        return obj
+
+    stripped = payload.strip()
     try:
-        return json.loads(payload)
+        return _decode(stripped)
     except json.JSONDecodeError:
-        match = _JSON_RE.search(payload)
-        if not match:
-            raise ProcessingError("Ответ модели не похож на JSON", "PARSE_ERROR")
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR") from exc
+        match = _JSON_RE.search(stripped)
+        if match:
+            candidate = match.group(0).strip()
+            try:
+                return _decode(candidate)
+            except json.JSONDecodeError:
+                pass
+
+        start = stripped.find("{")
+        if start != -1:
+            depth = 0
+            in_string = False
+            escape = False
+            for idx in range(start, len(stripped)):
+                ch = stripped[idx]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == "\"":
+                        in_string = False
+                    continue
+                if ch == "\"":
+                    in_string = True
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = stripped[start : idx + 1]
+                        try:
+                            return _decode(candidate)
+                        except json.JSONDecodeError:
+                            break
+            if depth > 0:
+                candidate = stripped[start:] + ("}" * depth)
+                try:
+                    return _decode(candidate)
+                except json.JSONDecodeError:
+                    pass
+
+        raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR")
 
 
 def _clean_list(items: Any) -> list[str]:
