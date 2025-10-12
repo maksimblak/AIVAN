@@ -8,15 +8,15 @@ from typing import Any, Callable, Mapping, Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.bot.ui_components import Emoji
-from src.core.simple_bot import context as ctx
-from src.core.simple_bot.formatting import (
+from src.core.bot_app import context as ctx
+from src.core.bot_app.formatting import (
     _format_number,
     _format_response_time,
     _format_stat_row,
     _format_trend_value,
 )
-from src.core.simple_bot.formatting import _format_currency, _format_datetime
-from src.core.simple_bot.payments import get_plan_pricing, plan_stars_amount
+from src.core.bot_app.formatting import _format_currency, _format_datetime
+from src.core.bot_app.payments import get_plan_pricing, plan_stars_amount
 from src.core.subscription_payments import (
     SubscriptionPayloadError,
     parse_subscription_payload,
@@ -425,3 +425,4 @@ async def generate_user_stats_response(
 
     keyboard = build_stats_keyboard(has_subscription)
     return "\n".join(lines), keyboard
+

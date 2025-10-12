@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.core.simple_bot import context as ctx
+from src.core.bot_app import context as ctx
 from src.core.session_store import UserSession
 from src.core.validation import InputValidator
 from src.core.exceptions import ValidationException, ErrorContext
@@ -47,3 +47,4 @@ def get_safe_db_method(method_name: str, default_return=None):
     if db is None or not hasattr(db, method_name):
         return None
     return getattr(db, method_name)
+

@@ -16,8 +16,8 @@ from aiogram.types import (
 
 from src.bot.ui_components import Emoji
 from src.core.exceptions import ValidationException
-from src.core.simple_bot import context as simple_context
-from src.core.simple_bot.common import ensure_valid_user_id, get_user_session, get_safe_db_method
+from src.core.bot_app import context as simple_context
+from src.core.bot_app.common import ensure_valid_user_id, get_user_session, get_safe_db_method
 
 __all__ = [
     "format_user_display",
@@ -382,3 +382,4 @@ async def cmd_ratings_stats(message: Message) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.error("Error in cmd_ratings_stats: %s", exc)
         await message.answer("❌ Ошибка получения статистики рейтингов")
+

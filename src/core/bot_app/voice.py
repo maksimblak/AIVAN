@@ -15,7 +15,7 @@ from aiogram.types import FSInputFile, Message
 
 from src.bot.typing_indicator import typing_action
 from src.bot.ui_components import Emoji
-from src.core.simple_bot import context as simple_context
+from src.core.bot_app import context as simple_context
 
 if TYPE_CHECKING:
     from src.core.audio_service import AudioService
@@ -176,3 +176,4 @@ def _create_temp_file_path(suffix: str) -> Path:
 def _write_stream_to_path(stream: Any, target: Path) -> None:
     with target.open("wb") as destination:
         shutil.copyfileobj(stream, destination, length=128 * 1024)
+

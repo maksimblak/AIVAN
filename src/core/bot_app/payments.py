@@ -19,7 +19,7 @@ from aiogram.types import (
 from src.bot.ui_components import Emoji
 from src.core.db_advanced import TransactionStatus
 from src.core.payments import convert_rub_to_xtr
-from src.core.simple_bot import context as ctx
+from src.core.bot_app import context as ctx
 from src.core.subscription_payments import (
     SubscriptionPayloadError,
     build_subscription_payload,
@@ -991,3 +991,4 @@ def register_payment_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(handle_ignore_callback, F.data == "ignore")
     dp.pre_checkout_query.register(pre_checkout)
     dp.message.register(on_successful_payment, F.successful_payment)
+

@@ -27,10 +27,10 @@ from aiogram.types import (
 from src.bot.status_manager import ProgressStatus
 from src.bot.typing_indicator import send_typing_once, typing_action
 from src.bot.ui_components import Emoji
-from src.core.simple_bot import context as simple_context
-from src.core.simple_bot.formatting import _format_progress_extras, _split_plain_text
-from src.core.simple_bot.menus import cmd_start
-from src.core.simple_bot.voice import download_voice_to_temp
+from src.core.bot_app import context as simple_context
+from src.core.bot_app.formatting import _format_progress_extras, _split_plain_text
+from src.core.bot_app.menus import cmd_start
+from src.core.bot_app.voice import download_voice_to_temp
 from src.documents.base import ProcessingError
 from src.documents.document_drafter import (
     DocumentDraftingError,
@@ -1658,3 +1658,4 @@ def register_document_handlers(dp: Dispatcher) -> None:
     dp.message.register(handle_photo_upload, DocumentProcessingStates.waiting_for_document, F.photo)
     dp.message.register(cmd_askdoc, Command("askdoc"))
     dp.message.register(cmd_enddoc, Command("enddoc"))
+

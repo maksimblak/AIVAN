@@ -11,10 +11,10 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.bot.ui_components import Emoji, sanitize_telegram_html
-from src.core.simple_bot import context as ctx
-from src.core.simple_bot.common import ensure_valid_user_id, get_user_session
-from src.core.simple_bot.payments import get_plan_pricing
-from src.core.simple_bot.stats import generate_user_stats_response, normalize_stats_period
+from src.core.bot_app import context as ctx
+from src.core.bot_app.common import ensure_valid_user_id, get_user_session
+from src.core.bot_app.payments import get_plan_pricing
+from src.core.bot_app.stats import generate_user_stats_response, normalize_stats_period
 from src.core.exceptions import ErrorContext, ValidationException
 
 logger = logging.getLogger("ai-ivan.simple.menus")
@@ -879,3 +879,4 @@ def register_menu_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(handle_referral_program_callback, F.data == "referral_program")
     dp.callback_query.register(handle_copy_referral_callback, F.data.startswith("copy_referral_"))
     dp.callback_query.register(handle_help_info_callback, F.data == "help_info")
+

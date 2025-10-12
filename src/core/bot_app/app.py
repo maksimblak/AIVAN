@@ -12,16 +12,16 @@ from src.bot.status_manager import register_progressbar
 from src.bot.ui_components import Emoji
 from src.core.exceptions import ErrorContext, ErrorHandler
 from src.core.metrics import set_system_status
-from src.core.simple_bot import context as simple_context
-from src.core.simple_bot.admin import register_admin_handlers
-from src.core.simple_bot.documents import register_document_handlers
-from src.core.simple_bot.feedback import register_feedback_handlers
-from src.core.simple_bot.menus import register_menu_handlers
-from src.core.simple_bot.payments import register_payment_handlers
-from src.core.simple_bot.questions import process_question, register_question_handlers
-from src.core.simple_bot.retention import register_retention_handlers
-from src.core.simple_bot.startup import RuntimeBundle, maybe_call, setup_bot_runtime
-from src.core.simple_bot.voice import register_voice_handlers
+from src.core.bot_app import context as simple_context
+from src.core.bot_app.admin import register_admin_handlers
+from src.core.bot_app.documents import register_document_handlers
+from src.core.bot_app.feedback import register_feedback_handlers
+from src.core.bot_app.menus import register_menu_handlers
+from src.core.bot_app.payments import register_payment_handlers
+from src.core.bot_app.questions import process_question, register_question_handlers
+from src.core.bot_app.retention import register_retention_handlers
+from src.core.bot_app.startup import RuntimeBundle, maybe_call, setup_bot_runtime
+from src.core.bot_app.voice import register_voice_handlers
 
 logger = logging.getLogger("ai-ivan.simple")
 
@@ -49,14 +49,14 @@ def _build_base_commands() -> list[BotCommand]:
         BotCommand(command="start", description=f"{Emoji.ROBOT} Start the bot"),
         BotCommand(command="buy", description=f"{Emoji.MAGIC} Purchase subscription"),
         BotCommand(command="status", description=f"{Emoji.STATS} Subscription status"),
-        BotCommand(command="mystats", description="📊 Personal statistics"),
+        BotCommand(command="mystats", description="Show my statistics"),
     ]
 
 
 def _build_admin_commands(base_commands: Sequence[BotCommand]) -> list[BotCommand]:
     admin_specific = [
-        BotCommand(command="ratings", description="📈 Ratings dashboard (admin)"),
-        BotCommand(command="errors", description="🚨 Error dashboard (admin)"),
+        BotCommand(command="ratings", description="Ratings dashboard (admin)"),
+        BotCommand(command="errors", description="Error dashboard (admin)"),
     ]
     return [*base_commands, *admin_specific]
 
@@ -118,14 +118,14 @@ def _log_startup_banner(runtime: RuntimeBundle, cfg) -> None:
     scaling_components = runtime.scaling_components
 
     startup_info = [
-        "🤖 AI-Ivan (simple) successfully started!",
-        f"🎞 Animation: {'enabled' if cfg.use_status_animation else 'disabled'}",
-        "🗄️ Database: advanced",
-        f"🔄 Cache: {cache_backend.__class__.__name__}",
-        f"📈 Metrics: {'enabled' if getattr(metrics_collector, 'enable_prometheus', False) else 'disabled'}",
-        f"🏥 Health checks: {len(health_checker.checks)} registered",
-        f"⚙️ Background tasks: {len(task_manager.tasks)} running",
-        f"🔄 Scaling: {'enabled' if scaling_components else 'disabled'}",
+        "AI-Ivan (simple) successfully started",
+        f"Status animation: {'enabled' if cfg.use_status_animation else 'disabled'}",
+        "Database: advanced",
+        f"Cache backend: {cache_backend.__class__.__name__}",
+        f"Metrics: {'enabled' if getattr(metrics_collector, 'enable_prometheus', False) else 'disabled'}",
+        f"Health checks: {len(health_checker.checks)} registered",
+        f"Background tasks: {len(task_manager.tasks)} running",
+        f"Scaling: {'enabled' if scaling_components else 'disabled'}",
     ]
 
     for line in startup_info:
@@ -177,9 +177,9 @@ async def _graceful_shutdown(bot: Bot, runtime: RuntimeBundle) -> None:
     for service_name, close_func in services_to_close:
         try:
             await maybe_call(close_func)
-            logger.debug("✅ %s closed", service_name)
+            logger.debug("%s closed", service_name)
         except Exception as exc:  # noqa: BLE001
-            logger.error("❌ Error closing %s: %s", service_name, exc)
+            logger.error("Error closing %s: %s", service_name, exc)
 
 
 async def run_bot() -> None:
@@ -247,20 +247,21 @@ async def run_bot() -> None:
     set_system_status("running")
     _log_startup_banner(runtime, cfg)
     if cfg.prometheus_port:
-        logger.info("📊 Prometheus metrics available at http://localhost:%s/metrics", cfg.prometheus_port)
+        logger.info("Prometheus metrics available at http://localhost:%s/metrics", cfg.prometheus_port)
 
     try:
-        logger.info("🚀 Starting bot polling...")
+        logger.info("Starting bot polling...")
         await dp.start_polling(bot)
     except KeyboardInterrupt:
-        logger.info("🛑 AI-Ivan stopped by user")
+        logger.info("AI-Ivan stopped by user")
         set_system_status("stopping")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("💥 Fatal error in main loop: %s", exc)
+        logger.exception("Fatal error in main loop: %s", exc)
         set_system_status("stopping")
         raise
     finally:
-        logger.info("🔧 Shutting down services...")
+        logger.info("Shutting down services...")
         set_system_status("stopping")
         await _graceful_shutdown(bot, runtime)
-        logger.info("👋 AI-Ivan shutdown complete")
+        logger.info("AI-Ivan shutdown complete")
+

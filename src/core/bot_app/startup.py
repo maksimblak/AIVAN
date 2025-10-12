@@ -37,7 +37,7 @@ from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider
 from src.core.scaling import LoadBalancer, ScalingManager, ServiceRegistry, SessionAffinity
 from src.core.session_store import SessionStore
-from src.core.simple_bot import context as simple_context
+from src.core.bot_app import context as simple_context
 from src.bot.ratelimit import RateLimiter
 from src.documents.document_manager import DocumentManager
 
@@ -332,3 +332,4 @@ async def setup_bot_runtime(
         task_manager=task_manager,
         retention_notifier=retention_notifier,
     )
+

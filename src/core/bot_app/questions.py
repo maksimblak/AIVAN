@@ -25,9 +25,9 @@ from src.core.exceptions import (
     ValidationException,
 )
 from src.core.safe_telegram import send_html_text
-from src.core.simple_bot import context as simple_context
-from src.core.simple_bot.common import get_user_session, get_safe_db_method
-from src.core.simple_bot.feedback import (
+from src.core.bot_app import context as simple_context
+from src.core.bot_app.common import get_user_session, get_safe_db_method
+from src.core.bot_app.feedback import (
     ensure_rating_snapshot,
     handle_pending_feedback,
     send_rating_request,
@@ -581,3 +581,4 @@ async def process_question(
 def register_question_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
+
