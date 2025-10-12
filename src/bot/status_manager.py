@@ -44,6 +44,7 @@ class ProgressStatus:
         two_step_only: bool = True,
         bold_current: bool = True,
         hide_steps_on_complete: bool = True,
+        display_total_seconds: int | None = None,
     ):
         self.bot = bot
         self.chat_id = chat_id
@@ -71,6 +72,9 @@ class ProgressStatus:
         self.two_step_only = bool(two_step_only)
         self.bold_current = bool(bold_current)
         self.hide_steps_on_complete = bool(hide_steps_on_complete)
+        self.display_total_seconds = (
+            int(display_total_seconds) if display_total_seconds and display_total_seconds > 0 else None
+        )
 
         self.message_id: Optional[int] = None
         self.current_percent: int = 0
@@ -134,11 +138,21 @@ class ProgressStatus:
 
         await self._safe_edit(self._render())
 
-    def duration_text(self) -> str:
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+    def _elapsed_seconds(self) -> int:
         if not self.start_time:
-            return "00:00"
-        sec = int(time.monotonic() - self.start_time)
-        return f"{sec // 60:02d}:{sec % 60:02d}"
+            return 0
+        return int(time.monotonic() - self.start_time)
+
+    def duration_text(self, percent: int) -> str:
+        if self.display_total_seconds is not None:
+            projected = int(round(self.display_total_seconds * max(0, min(percent, 100)) / 100))
+            return self._format_duration(projected)
+        return self._format_duration(self._elapsed_seconds())
 
     # ---------- ВНУТРЕННЕЕ ----------
 
@@ -199,11 +213,12 @@ class ProgressStatus:
     def _render(self, *, completed: bool = False, failed: bool = False, note: str | None = None) -> str:
         header = "✅ ГОТОВО" if completed else "❌ ОШИБКА" if failed else "📱 ВЫПОЛНЕНИЕ..."
         pct = max(0, min(100, int(self.current_percent)))
+        duration_display = self.duration_text(pct)
         lines: list[str] = [
             f"<b>{header}</b>",
             f"<code>{'━' * self.BAR_WIDTH}</code>",
             f"<code>{self._progress_bar(pct)}</code>",
-            f"{pct}% • {esc(self.duration_text())}",
+            f"{pct}% • {esc(duration_display)}",
             "",
         ]
 

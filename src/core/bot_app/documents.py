@@ -1376,6 +1376,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     show_checklist=True,
                     auto_advance_stages=False,
                     min_edit_interval=0.5,
+                    display_total_seconds=180,
                 )
                 await progress_status.start(auto_cycle=False)
 
