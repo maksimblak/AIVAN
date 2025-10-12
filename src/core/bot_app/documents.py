@@ -1404,7 +1404,12 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                             step = stage_index_map.get(stage)
                             await progress_status.update_stage(percent=percent, step=step)
 
-                    if extras_line and stage not in {"completed", "failed"} and extras_line != extras_last_text:
+                    if (
+                        extras_line
+                        and stage not in {"completed", "failed"}
+                        and extras_line != extras_last_text
+                        and not update.get("note")
+                    ):
                         extras_last_text = extras_line
                         await message.answer(extras_line, parse_mode=ParseMode.HTML)
             else:
