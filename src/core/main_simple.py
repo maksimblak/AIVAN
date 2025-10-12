@@ -83,6 +83,7 @@ from src.bot.ratelimit import RateLimiter
 from src.bot.typing_indicator import send_typing_once, typing_action
 
 from src.core.simple_bot import context as simple_context
+from src.core.simple_bot.common import (ensure_valid_user_id, get_user_session, get_safe_db_method)
 from src.core.simple_bot.formatting import (
     _format_currency,
     _format_datetime,
@@ -159,7 +160,7 @@ async def _ensure_rating_snapshot(request_id: int, telegram_user: User | None, a
         return
     if telegram_user is None:
         return
-    add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
+    add_rating_fn = get_safe_db_method("add_rating", default_return=False)
     if not add_rating_fn:
         return
     username = _format_user_display(telegram_user)
@@ -315,41 +316,6 @@ class DocumentDraftStates(StatesGroup):
 
 # ============ УПРАВЛЕНИЕ СОСТОЯНИЕМ ============
 
-
-def get_user_session(user_id: int) -> UserSession:
-    if session_store is None:
-        raise RuntimeError("Session store not initialized")
-    return session_store.get_or_create(user_id)
-
-
-def _ensure_valid_user_id(raw_user_id: int | None, *, context: str) -> int:
-    """Validate and normalise user id, raising ValidationException when invalid."""
-
-    result = InputValidator.validate_user_id(raw_user_id)
-    if result.is_valid and result.cleaned_data:
-        return int(result.cleaned_data)
-
-    errors = ', '.join(result.errors or ['Недопустимый идентификатор пользователя'])
-    try:
-        normalized_user_id = int(raw_user_id) if raw_user_id is not None else None
-    except (TypeError, ValueError):
-        normalized_user_id = None
-
-    raise ValidationException(
-        errors,
-        ErrorContext(user_id=normalized_user_id, function_name=context),
-    )
-
-
-def _get_safe_db_method(method_name: str, default_return=None):
-    """Return DB coroutine when available."""
-
-    _ = default_return  # backward compatibility
-
-    if db is None or not hasattr(db, method_name):
-        return None
-
-    return getattr(db, method_name)
 
 # ============ УТИЛИТЫ ============
 
@@ -771,12 +737,12 @@ async def send_rating_request(message: Message, request_id: int):
 
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="send_rating_request")
+        user_id = ensure_valid_user_id(message.from_user.id, context="send_rating_request")
     except ValidationException as exc:
         logger.debug("Skip rating request due to invalid user id: %s", exc)
         return
 
-    get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
+    get_rating_fn = get_safe_db_method("get_rating", default_return=None)
     if get_rating_fn:
         existing_rating = await get_rating_fn(request_id, user_id)
         if existing_rating and getattr(existing_rating, "rating", 0) in (1, -1):
@@ -971,7 +937,7 @@ async def cmd_start(message: Message):
         return
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_start")
+        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_start")
     except ValidationException as exc:
         context = ErrorContext(function_name="cmd_start", chat_id=message.chat.id if message.chat else None)
         if error_handler:
@@ -1097,7 +1063,7 @@ async def process_question(
     await send_typing_once(message.bot, message.chat.id, action)
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="process_question")
+        user_id = ensure_valid_user_id(message.from_user.id, context="process_question")
     except ValidationException as exc:
         context = ErrorContext(
             chat_id=message.chat.id if message.chat else None,
@@ -1443,7 +1409,7 @@ async def process_question(
         if db is not None and hasattr(db, "record_request"):
             with suppress(Exception):
                 request_time_ms = int((time.time() - request_start_time) * 1000)
-                record_request_fn = _get_safe_db_method("record_request", default_return=None)
+                record_request_fn = get_safe_db_method("record_request", default_return=None)
                 if record_request_fn:
                     request_record_id = await record_request_fn(
                         user_id=user_id,
@@ -1486,7 +1452,7 @@ async def process_question(
                     if "request_start_time" in locals() else 0
                 )
                 err_type = request_error_type if "request_error_type" in locals() else type(e).__name__
-                record_request_fn = _get_safe_db_method("record_request", default_return=None)
+                record_request_fn = get_safe_db_method("record_request", default_return=None)
                 if record_request_fn:
                     await record_request_fn(
                         user_id=user_id,
@@ -1520,7 +1486,7 @@ async def cmd_status(message: Message):
         return
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_status")
+        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_status")
     except ValidationException as exc:
         context = ErrorContext(function_name="cmd_status", chat_id=message.chat.id if message.chat else None)
         if error_handler:
@@ -1771,7 +1737,7 @@ async def handle_pending_feedback(message: Message, user_session: UserSession, t
         return
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="handle_pending_feedback")
+        user_id = ensure_valid_user_id(message.from_user.id, context="handle_pending_feedback")
     except ValidationException as exc:
         logger.warning("Ignore feedback: invalid user id (%s)", exc)
         user_session.pending_feedback_request_id = None
@@ -1783,12 +1749,12 @@ async def handle_pending_feedback(message: Message, user_session: UserSession, t
     # Сбрасываем ожидание комментария после обработки
     user_session.pending_feedback_request_id = None
 
-    add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
+    add_rating_fn = get_safe_db_method("add_rating", default_return=False)
     if not add_rating_fn:
         await message.answer("❌ Сервис отзывов временно недоступен")
         return
 
-    get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
+    get_rating_fn = get_safe_db_method("get_rating", default_return=None)
     existing_rating = await get_rating_fn(request_id, user_id) if get_rating_fn else None
 
     rating_value = -1
@@ -1838,7 +1804,7 @@ async def handle_rating_callback(callback: CallbackQuery):
         return
 
     try:
-        user_id = _ensure_valid_user_id(callback.from_user.id, context="handle_rating_callback")
+        user_id = ensure_valid_user_id(callback.from_user.id, context="handle_rating_callback")
     except ValidationException as exc:
         logger.warning("Некорректный пользователь id in rating callback: %s", exc)
         await callback.answer("Некорректный пользователь", show_alert=True)
@@ -1860,14 +1826,14 @@ async def handle_rating_callback(callback: CallbackQuery):
         await callback.answer("Некорректный формат данных")
         return
 
-    get_rating_fn = _get_safe_db_method("get_rating", default_return=None)
+    get_rating_fn = get_safe_db_method("get_rating", default_return=None)
     existing_rating = await get_rating_fn(request_id, user_id) if get_rating_fn else None
 
     if existing_rating and existing_rating.rating not in (None, 0):
         await callback.answer("По этому ответу уже собрана обратная связь")
         return
 
-    add_rating_fn = _get_safe_db_method("add_rating", default_return=False)
+    add_rating_fn = get_safe_db_method("add_rating", default_return=False)
     if not add_rating_fn:
         await callback.answer("Сервис рейтингов временно недоступен")
         return
@@ -1933,7 +1899,7 @@ async def handle_feedback_callback(callback: CallbackQuery):
         return
 
     try:
-        user_id = _ensure_valid_user_id(callback.from_user.id, context="handle_feedback_callback")
+        user_id = ensure_valid_user_id(callback.from_user.id, context="handle_feedback_callback")
     except ValidationException as exc:
         logger.warning("Некорректный пользователь id in feedback callback: %s", exc)
         await callback.answer("❌ Ошибка пользователя", show_alert=True)
@@ -4096,7 +4062,7 @@ async def cmd_ratings_stats(message: Message):
         return
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_ratings_stats")
+        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_ratings_stats")
     except ValidationException as exc:
         logger.warning("Некорректный пользователь id in cmd_ratings_stats: %s", exc)
         await message.answer("❌ Ошибка идентификатора пользователя")
@@ -4106,8 +4072,8 @@ async def cmd_ratings_stats(message: Message):
         await message.answer("❌ Команда доступна только администраторам")
         return
 
-    stats_fn = _get_safe_db_method("get_ratings_statistics", default_return={})
-    low_rated_fn = _get_safe_db_method("get_low_rated_requests", default_return=[])
+    stats_fn = get_safe_db_method("get_ratings_statistics", default_return={})
+    low_rated_fn = get_safe_db_method("get_low_rated_requests", default_return=[])
     if not stats_fn or not low_rated_fn:
         await message.answer("❌ Статистика рейтингов недоступна")
         return
@@ -4152,7 +4118,7 @@ async def cmd_error_stats(message: Message):
         return
 
     try:
-        user_id = _ensure_valid_user_id(message.from_user.id, context="cmd_error_stats")
+        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_error_stats")
     except ValidationException as exc:
         logger.warning("Некорректный пользователь id in cmd_error_stats: %s", exc)
         await message.answer("❌ Ошибка идентификатора пользователя")
