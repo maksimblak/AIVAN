@@ -24,6 +24,7 @@ from src.core.settings import AppSettings
 from .anonymizer import DocumentAnonymizer
 from .base import DocumentInfo, DocumentResult, DocumentStorage, ProcessingError
 from .document_chat import DocumentChat
+from .document_drafter import DocumentDraftingError, build_docx_from_markdown
 from .lawsuit_analyzer import LawsuitAnalyzer
 from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
@@ -85,7 +86,7 @@ class DocumentManager:
                 "emoji": "⚖️",
                 "name": "Анализ искового заявления",
                 "description": "Оценивает требования, правовую позицию и риски отказа",
-                "formats": ["MD", "JSON"],
+                "formats": ["DOCX"],
                 "processor": self.lawsuit_analyzer,
             },
             # "chat": {
@@ -207,11 +208,21 @@ class DocumentManager:
 
         result.data.setdefault("document_info", asdict(doc_info))
         if result.success:
-            exports = await self._prepare_exports(operation, result, doc_info)
-            if exports:
-                existing = list(result.data.get("exports") or [])
-                result.data["exports"] = existing + exports
-        else:
+            try:
+                exports = await self._prepare_exports(operation, result, doc_info)
+            except ProcessingError as exc:
+                logger.warning("Failed to prepare exports for %s: %s", operation, exc)
+                result = DocumentResult.error_result(exc.message, exc.error_code or "EXPORT_ERROR")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Unexpected error while preparing exports for %s", operation)
+                result = DocumentResult.error_result(
+                    "Не удалось подготовить файл отчета", "EXPORT_ERROR"
+                )
+            else:
+                if exports:
+                    existing = list(result.data.get("exports") or [])
+                    result.data["exports"] = existing + exports
+        if not result.success:
             result.data.setdefault("exports", [])
 
         self._safe_unlink(doc_info.file_path)
@@ -371,13 +382,23 @@ class DocumentManager:
 
         elif operation == "lawsuit_analysis":
             analysis = result.data.get("analysis") or {}
-            markdown = self._build_lawsuit_markdown(analysis)
-            if markdown:
-                path = await self._write_export(base_name, "lawsuit_analysis", markdown, ".md")
-                exports.append({"path": str(path), "format": "md", "label": "Анализ"})
-            json_payload = json.dumps(analysis, ensure_ascii=False, indent=2)
-            path = await self._write_export(base_name, "lawsuit_analysis", json_payload, ".json")
-            exports.append({"path": str(path), "format": "json", "label": "Анализ (JSON)"})
+            markdown = self._build_lawsuit_markdown(analysis).strip()
+            if not markdown:
+                raise ProcessingError(
+                    "Не удалось подготовить содержимое для DOCX-отчета",
+                    "EMPTY_DOCX_CONTENT",
+                )
+            docx_path = Path(tempfile.gettempdir()) / f"aivan_{base_name}_lawsuit_analysis_{uuid.uuid4().hex}.docx"
+            try:
+                await asyncio.to_thread(build_docx_from_markdown, markdown, str(docx_path))
+            except DocumentDraftingError as exc:
+                raise ProcessingError(str(exc), "DOCX_EXPORT_ERROR") from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ProcessingError(
+                    "Ошибка при формировании DOCX-отчета",
+                    "DOCX_EXPORT_ERROR",
+                ) from exc
+            exports.append({"path": str(docx_path), "format": "docx", "label": "Анализ (DOCX)"})
 
         elif operation == "ocr":
             recognized = (result.data.get("recognized_text") or "").strip()
