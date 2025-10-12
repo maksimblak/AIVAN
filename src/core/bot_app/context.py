@@ -181,7 +181,8 @@ def _sync_runtime_globals() -> None:
 
     WELCOME_MEDIA = drv.welcome_media
     BOT_TOKEN = cfg.telegram_bot_token
-    BOT_USERNAME = (cfg.telegram_bot_username or "").strip()
+    username_attr = getattr(cfg, "telegram_bot_username", "")
+    BOT_USERNAME = (username_attr or "").strip()
     USE_ANIMATION = cfg.use_status_animation
     USE_STREAMING = cfg.use_streaming
     SAFE_LIMIT = drv.safe_limit
