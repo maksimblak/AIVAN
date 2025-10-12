@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import math
-import shutil
 import tempfile
 import time
 from contextlib import suppress
@@ -111,6 +110,7 @@ from src.core.simple_bot.stats import (
     translate_plan_name,
 )
 from src.core.simple_bot.payments import get_plan_pricing, register_payment_handlers
+from src.core.simple_bot.voice import register_voice_handlers
 _NUMBERED_ANSWER_RE = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
 _BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022]\s*(.*)")
 _HEADING_PATTERN_RE = re.compile(
@@ -118,25 +118,8 @@ _HEADING_PATTERN_RE = re.compile(
 )
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
 
-VOICE_REPLY_CAPTION = (
-    f"{Emoji.MICROPHONE} <b>Голосовой ответ готов</b>"
-    f"\n{Emoji.INFO} Нажмите, чтобы прослушать."
-)
-
 SECTION_DIVIDER = "<code>────────────────────</code>"
 
-
-def _create_temp_file_path(suffix: str) -> Path:
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-    try:
-        return Path(tmp.name)
-    finally:
-        tmp.close()
-
-
-def _write_stream_to_path(stream, target: Path) -> None:
-    with target.open("wb") as destination:
-        shutil.copyfileobj(stream, destination, length=128 * 1024)
 
 def _format_user_display(user: User | None) -> str:
     if user is None:
@@ -1167,114 +1150,6 @@ async def process_question(
                 "• Обратитесь в поддержку, если проблема повторяется",
                 parse_mode=ParseMode.HTML,
             )
-
-
-async def _download_voice_to_temp(message: Message) -> Path:
-    """Download Telegram voice message into a temporary file."""
-    if not message.bot:
-        raise RuntimeError("Bot instance is not available for voice download")
-    if not message.voice:
-        raise RuntimeError("Voice payload is missing")
-
-    file_info = await message.bot.get_file(message.voice.file_id)
-    file_path = file_info.file_path
-    if not file_path:
-        raise RuntimeError("Telegram did not return a file path for the voice message")
-
-    temp_path = await asyncio.to_thread(_create_temp_file_path, ".ogg")
-
-    file_stream = await message.bot.download_file(file_path)
-    try:
-        await asyncio.to_thread(_write_stream_to_path, file_stream, temp_path)
-    finally:
-        close_method = getattr(file_stream, "close", None)
-        if callable(close_method):
-            close_method()
-
-    return temp_path
-
-
-async def process_voice_message(message: Message):
-    """Handle incoming Telegram voice messages via STT -> processing -> TTS."""
-    if not message.voice:
-        return
-
-    # НОВОЕ: Показываем индикатор "записывает голосовое"
-    try:
-        voice_enabled = settings().voice_mode_enabled
-    except RuntimeError:
-        voice_enabled = settings().voice_mode_enabled
-
-    if audio_service is None or not voice_enabled:
-        await message.answer("Voice mode is currently unavailable. Please send text.")
-        return
-
-    if not message.bot:
-        await message.answer("Unable to access bot context for processing the voice message.")
-        return
-
-    temp_voice_path: Path | None = None
-    tts_paths: list[Path] = []
-
-    try:
-        await audio_service.ensure_short_enough(message.voice.duration)
-
-        # Показываем индикатор во время транскрипции и обработки
-        async with typing_action(message.bot, message.chat.id, "record_voice"):
-            temp_voice_path = await _download_voice_to_temp(message)
-            transcript = await audio_service.transcribe(temp_voice_path)
-
-        preview = html_escape(transcript[:500])
-        if len(transcript) > 500:
-            preview += "..."
-        await message.answer(
-            f"{Emoji.ROBOT} Recognized: <i>{preview}</i>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        response_text = await process_question(message, text_override=transcript)
-        if not response_text:
-            return
-
-        # Показываем индикатор "отправляет голосовое" во время генерации TTS
-        async with typing_action(message.bot, message.chat.id, "upload_voice"):
-            try:
-                tts_paths = await audio_service.synthesize(response_text, prefer_male=True)
-            except Exception as tts_error:
-                logger.warning("Text-to-speech failed: %s", tts_error)
-                return
-
-            if not tts_paths:
-                logger.warning("Text-to-speech returned no audio chunks")
-                return
-
-            for idx, generated_path in enumerate(tts_paths):
-                caption = VOICE_REPLY_CAPTION if idx == 0 else None
-                await message.answer_voice(
-                    FSInputFile(generated_path),
-                    caption=caption,
-                    parse_mode=ParseMode.HTML if caption else None,
-                )
-
-    except ValueError as duration_error:
-        logger.warning("Voice message duration exceeded: %s", duration_error)
-        await message.answer(
-            f"{Emoji.WARNING} Voice message is too long. Maximum duration is {audio_service.max_duration_seconds} seconds.",
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception as exc:
-        logger.exception("Failed to process voice message: %s", exc)
-        await message.answer(
-            f"{Emoji.ERROR} Could not process the voice message. Please try again later.",
-            parse_mode=ParseMode.HTML,
-        )
-    finally:
-        with suppress(Exception):
-            if temp_voice_path:
-                temp_voice_path.unlink()
-        with suppress(Exception):
-            for generated_path in tts_paths:
-                generated_path.unlink()
 
 
 # ============ СИСТЕМА РЕЙТИНГА ============
@@ -3652,7 +3527,7 @@ async def run_bot() -> None:
     )
 
     if settings().voice_mode_enabled:
-        dp.message.register(process_voice_message, F.voice)
+        register_voice_handlers(dp, process_question)
 
     dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
