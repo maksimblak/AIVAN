@@ -151,6 +151,15 @@ _STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 
+def _schedule_message_deletion(bot, chat_id: int, message_id: int, delay: float = 5.0) -> None:
+    async def _deleter() -> None:
+        await asyncio.sleep(delay)
+        with suppress(Exception):
+            await bot.delete_message(chat_id, message_id)
+
+    asyncio.create_task(_deleter())
+
+
 def _get_stage_labels(operation: str) -> dict[str, tuple[str, str]]:
     labels = _BASE_STAGE_LABELS.copy()
     labels.update(_STAGE_LABEL_OVERRIDES.get(operation, {}))
@@ -1318,6 +1327,18 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
             file_size_kb = max(1, file_size // 1024)
 
             stage_labels = _get_stage_labels(operation)
+
+            summary_text = (
+                "⚖️ <b>Подготовка анализа</b>\n"
+                "┌──────────────────────────────\n"
+                f"│ 📄 Файл: <b>{html_escape(file_name)}</b>\n"
+                f"│ 🛠️ Операция: {html_escape(operation_name)}\n"
+                f"│ 📦 Размер: {file_size_kb} КБ\n"
+                "│ ⏱️ Запускаем проверку…\n"
+                "└──────────────────────────────"
+            )
+            summary_msg = await message.answer(summary_text, parse_mode=ParseMode.HTML)
+            _schedule_message_deletion(message.bot, message.chat.id, summary_msg.message_id, delay=5.0)
 
             status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
 
