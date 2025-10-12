@@ -7,7 +7,7 @@ import sys
 from src.bot.logging_setup import setup_logging
 from src.core.app_context import get_settings, set_settings
 from src.core.bootstrap import build_runtime
-from src.core.main_simple import refresh_runtime_globals, run_bot, set_runtime
+from src.core.simple_bot.app import refresh_runtime_globals, run_bot, set_runtime
 
 
 async def _run_async() -> None:
@@ -47,3 +47,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
