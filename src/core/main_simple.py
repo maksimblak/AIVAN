@@ -6,46 +6,30 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import math
-import tempfile
-import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional
 
-from src.core.excel_export import build_practice_excel
-from src.core.safe_telegram import send_html_text
 from src.documents.document_manager import DocumentManager
 
 if TYPE_CHECKING:
     from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
 
-import re
-from html import escape as html_escape
-
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
     ErrorEvent,
-    FSInputFile,
-    Message,
     User,
 )
 
-from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT, LEGAL_SYSTEM_PROMPT
-from src.bot.status_manager import ProgressStatus, progress_router
 from src.bot.retention_notifier import RetentionNotifier
-from src.bot.stream_manager import StreamingCallback, StreamManager
 from src.bot.ui_components import Emoji
-from src.core.attachments import QuestionAttachment
 from src.core.audio_service import AudioService
 from src.core.access import AccessService
 from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
@@ -53,33 +37,21 @@ from src.core.exceptions import (
     ErrorContext,
     ErrorHandler,
     ErrorType,
-    NetworkException,
-    OpenAIException,
-    SystemException,
-    ValidationException,
 )
 from src.core.middlewares.error_middleware import ErrorHandlingMiddleware
 from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider
 from src.core.admin_modules.admin_commands import setup_admin_commands
-from src.core.session_store import SessionStore, UserSession
-from src.core.validation import InputValidator, ValidationSeverity
+from src.core.session_store import SessionStore
 from src.core.runtime import SubscriptionPlanPricing, WelcomeMedia
 from src.bot.ratelimit import RateLimiter
-from src.bot.typing_indicator import send_typing_once, typing_action
 
 from src.core.simple_bot.menus import register_menu_handlers, cmd_start
 from src.core.simple_bot.documents import register_document_handlers
-from src.core.simple_bot.feedback import (
-    ensure_rating_snapshot,
-    handle_pending_feedback,
-    register_feedback_handlers,
-    send_rating_request,
-)
+from src.core.simple_bot.feedback import register_feedback_handlers
 from src.core.simple_bot.admin import register_admin_handlers
 from src.core.simple_bot.retention import register_retention_handlers
 from src.core.simple_bot import context as simple_context
-from src.core.simple_bot.common import (ensure_valid_user_id, get_user_session, get_safe_db_method)
 from src.core.simple_bot.formatting import (
     _format_currency,
     _format_datetime,
@@ -92,6 +64,7 @@ from src.core.simple_bot.formatting import (
     _format_trend_value,
     _split_plain_text,
 )
+from src.core.simple_bot.questions import process_question, register_question_handlers
 from src.core.simple_bot.stats import (
     FEATURE_LABELS,
     DAY_NAMES,
@@ -107,7 +80,6 @@ from src.core.simple_bot.stats import (
 )
 from src.core.simple_bot.payments import get_plan_pricing, register_payment_handlers
 from src.core.simple_bot.voice import register_voice_handlers
-QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment (base64-safe)
 
 SECTION_DIVIDER = "<code>────────────────────</code>"
 
@@ -159,7 +131,6 @@ yookassa_provider: Any | None = None
 error_handler: ErrorHandler | None = None
 document_manager: DocumentManager | None = None
 response_cache: Any | None = None
-stream_manager: StreamManager | None = None
 metrics_collector: Any | None = None
 task_manager: Any | None = None
 health_checker: Any | None = None
@@ -201,7 +172,6 @@ _SYNCED_ATTRS = (
     "error_handler",
     "document_manager",
     "response_cache",
-    "stream_manager",
     "metrics_collector",
     "task_manager",
     "health_checker",
@@ -225,493 +195,6 @@ def refresh_runtime_globals() -> None:
 
 def __getattr__(name: str) -> Any:
     return getattr(simple_context, name)
-
-class ResponseTimer:
-    def __init__(self) -> None:
-        self._t0: float | None = None
-        self.duration = 0.0
-
-    def start(self) -> None:
-        self._t0 = time.monotonic()
-
-    def stop(self) -> None:
-        if self._t0 is not None:
-            self.duration = max(0.0, time.monotonic() - self._t0)
-
-    def get_duration_text(self) -> str:
-        s = int(self.duration)
-        return f"{s//60:02d}:{s%60:02d}"
-
-
-async def process_question_with_attachments(message: Message) -> None:
-    caption = (message.caption or "").strip()
-    if not caption:
-        warning_msg = "\n\n".join([
-            f"{Emoji.WARNING} <b>Добавьте текст вопроса</b>",
-            "Напишите короткое описание ситуации в подписи к файлу и отправьте снова.",
-        ])
-        await message.answer(warning_msg, parse_mode=ParseMode.HTML)
-        return
-
-    try:
-        attachments = await _collect_question_attachments(message)
-    except ValueError as exc:
-        error_msg = "\n\n".join([
-            f"{Emoji.WARNING} <b>Не удалось обработать вложение</b>",
-            html_escape(str(exc)),
-        ])
-        await message.answer(error_msg, parse_mode=ParseMode.HTML)
-        return
-
-    if not attachments:
-        await process_question(message, text_override=caption)
-        return
-
-    await process_question(message, text_override=caption, attachments=attachments)
-
-
-async def process_question(
-    message: Message,
-    *,
-    text_override: str | None = None,
-    attachments: Sequence[QuestionAttachment] | None = None,
-):
-    """Главный обработчик юридических вопросов"""
-    if not message.from_user:
-        return
-
-
-
-    # Выбираем тип индикатора в зависимости от контента
-    if attachments:
-        action = "upload_document"
-    else:
-        action = "typing"
-
-    await send_typing_once(message.bot, message.chat.id, action)
-
-    try:
-        user_id = ensure_valid_user_id(message.from_user.id, context="process_question")
-    except ValidationException as exc:
-        context = ErrorContext(
-            chat_id=message.chat.id if message.chat else None,
-            function_name="process_question",
-        )
-        if error_handler is not None:
-            await error_handler.handle_exception(exc, context)
-        else:
-            logger.warning("Validation error in process_question: %s", exc)
-        await message.answer(
-            f"{Emoji.WARNING} <b>Ошибка идентификатора пользователя</b>\n\nПопробуйте перезапустить диалог.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    chat_id = message.chat.id
-    message_id = message.message_id
-
-    error_context = ErrorContext(
-        user_id=user_id, chat_id=chat_id, message_id=message_id, function_name="process_question"
-    )
-
-    user_session = get_user_session(user_id)
-    question_text = ((text_override if text_override is not None else (message.text or ""))).strip()
-    attachments_list = list(attachments or [])
-    quota_msg_to_send: str | None = None
-
-    # Если ждём текстовый комментарий к рейтингу — обрабатываем его
-    if not hasattr(user_session, "pending_feedback_request_id"):
-        user_session.pending_feedback_request_id = None
-    if user_session.pending_feedback_request_id is not None:
-        await handle_pending_feedback(message, user_session, question_text)
-        return
-
-    # Игнорим команды
-    if question_text.startswith("/"):
-        return
-
-    # Валидация
-    if error_handler is None:
-        raise SystemException("Error handler not initialized", error_context)
-    cleaned = await _validate_question_or_reply(message, question_text, user_id)
-    if not cleaned:
-        return
-    question_text = cleaned
-
-    request_text = question_text
-    if attachments_list:
-        attachment_lines = []
-        for idx, item in enumerate(attachments_list, start=1):
-            size_kb = max(1, item.size // 1024)
-            attachment_lines.append(
-                f"{idx}. {item.filename} ({item.mime_type}, {size_kb} KB)"
-            )
-        request_text = (
-            f"{question_text}\n\n[Attachments]\n" + "\n".join(attachment_lines)
-        )
-
-    logger.info("Processing question from user %s: %s", user_id, question_text[:100])
-    timer = ResponseTimer()
-    timer.start()
-    use_streaming = USE_STREAMING and not attachments_list
-
-    # Прогресс-бар
-    status: ProgressStatus | None = None
-
-    ok_flag = False
-    request_error_type = None
-    stream_manager: StreamManager | None = None
-    had_stream_content = False
-    stream_final_text: str | None = None
-    final_answer_text: str | None = None
-    result: dict[str, Any] = {}
-    request_start_time = time.time()
-    request_record_id: int | None = None
-
-    try:
-        # Rate limit
-        if not await _rate_limit_guard(user_id, message):
-            return
-
-        # Доступ/квота
-        quota_text = ""
-        quota_is_trial: bool = False
-        if access_service is not None:
-            decision = await access_service.check_and_consume(user_id)
-            if not decision.allowed:
-                if decision.has_subscription and decision.subscription_plan:
-                    plan_info = get_plan_pricing(decision.subscription_plan)
-                    plan_name = plan_info.plan.name if plan_info else decision.subscription_plan
-                    limit_lines = [
-                        f"{Emoji.WARNING} <b>Лимит подписки исчерпан</b>",
-                        f"Тариф: {plan_name}",
-                    ]
-                    if plan_info is not None:
-                        limit_lines.append(
-                            f"Использовано: {plan_info.plan.request_quota}/{plan_info.plan.request_quota} запросов."
-                        )
-                    limit_lines.append("Оформите новый пакет — /buy.")
-                    await message.answer("\n".join(limit_lines), parse_mode=ParseMode.HTML)
-                else:
-                    await message.answer(
-                        f"{Emoji.WARNING} <b>Лимит бесплатных запросов исчерпан</b>\n\nОформите подписку — /buy.",
-                        parse_mode=ParseMode.HTML,
-                    )
-                return
-            if decision.is_admin:
-                quota_text = f"\n\n{Emoji.STATS} <b>Статус: безлимитный доступ</b>"
-            elif decision.has_subscription:
-                plan_info = get_plan_pricing(decision.subscription_plan) if decision.subscription_plan else None
-                plan_name = plan_info.plan.name if plan_info else "Подписка"
-                parts: list[str] = []
-                if decision.subscription_requests_remaining is not None:
-                    parts.append(
-                        f"{Emoji.STATS} <b>{plan_name}:</b> осталось {decision.subscription_requests_remaining} запросов"
-                    )
-                if decision.subscription_until:
-                    until_dt = datetime.fromtimestamp(decision.subscription_until)
-                    parts.append(f"{Emoji.CALENDAR} <b>Активна до:</b> {until_dt:%Y-%m-%d}")
-                quota_text = "\n\n" + "\n".join(parts) if parts else ""
-            elif decision.trial_used is not None and decision.trial_remaining is not None:
-                quota_is_trial = True
-                quota_msg_core = html_escape(
-                    f"Бесплатные запросы: {decision.trial_used}/{TRIAL_REQUESTS}. Осталось: {decision.trial_remaining}"
-                )
-                quota_msg_to_send = f"{Emoji.STATS} <b>{quota_msg_core}</b>"
-
-        # Прогресс-бар
-        status = await _start_status_indicator(message)
-
-        ok_flag = False
-        request_error_type = None
-        stream_manager: StreamManager | None = None
-        had_stream_content = False
-        stream_final_text: str | None = None
-        final_answer_text: str | None = None
-        result: dict[str, Any] = {}
-        request_start_time = time.time()
-        request_record_id: int | None = None
-
-        try:
-            # Имитация первых этапов (если анимация отключена)
-            if not USE_ANIMATION and hasattr(status, "update_stage"):
-                await asyncio.sleep(0.5)
-                await status.update_stage(1, f"{Emoji.SEARCH} Анализирую ваш вопрос...")
-                await asyncio.sleep(1.0)
-                await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику...")
-
-            # Выбор промпта
-            selected_prompt = LEGAL_SYSTEM_PROMPT
-            practice_mode = getattr(user_session, "practice_search_mode", False)
-            rag_context = ""
-            rag_fragments = []
-
-            if practice_mode:
-                selected_prompt = JUDICIAL_PRACTICE_SEARCH_PROMPT
-                user_session.practice_search_mode = False
-
-                # Интеграция RAG для поиска судебной практики
-                if judicial_rag is not None and judicial_rag.enabled:
-                    try:
-                        if hasattr(status, "update_stage"):
-                            await status.update_stage(2, f"{Emoji.LOADING} Ищу релевантную судебную практику в базе...")
-                        rag_context, rag_fragments = await judicial_rag.build_context(question_text)
-                        if rag_context:
-                            logger.info(f"RAG found {len(rag_fragments)} relevant cases for question")
-                    except Exception as rag_error:
-                        logger.warning(f"RAG search failed: {rag_error}", exc_info=True)
-
-            if text_override is not None and getattr(message, "voice", None):
-                selected_prompt = (
-                    selected_prompt
-                    + "\n\nГолосовой режим: сохрани указанную структуру блоков, обязательно перечисли нормативные акты с точными реквизитами и уточни, что текстовый ответ уже предоставлен в чате."
-                )
-
-            # Добавляем контекст RAG в промпт
-            if rag_context:
-                selected_prompt = (
-                    selected_prompt
-                    + f"\n\n<judicial_practice_context>\nВот релевантная судебная практика из базы данных:\n\n{rag_context}\n</judicial_practice_context>\n\n"
-                    + "ВАЖНО: Используй эту судебную практику в своём ответе, ссылайся на конкретные дела с указанием ссылок."
-                )
-
-            # --- Запрос к OpenAI (стрим/нестрим) ---
-            if openai_service is None:
-                raise SystemException("OpenAI service not initialized", error_context)
-
-            if use_streaming and message.bot:
-                stream_manager = StreamManager(
-                    bot=message.bot,
-                    chat_id=message.chat.id,
-                    update_interval=1.5,
-                    buffer_size=120,
-                )
-                await stream_manager.start_streaming(f"{Emoji.ROBOT} Обдумываю ваш вопрос...")
-                callback = StreamingCallback(stream_manager)
-
-                try:
-                    # 1) Стриминговый запрос
-                    result = await openai_service.ask_legal_stream(
-                        selected_prompt, request_text, callback=callback
-                    )
-                    had_stream_content = bool((stream_manager.pending_text or "").strip())
-                    if had_stream_content:
-                        stream_final_text = stream_manager.pending_text or ""
-
-                    # 2) Успех, если API вернул ok ИЛИ уже показывали текст пользователю
-                    ok_flag = bool(isinstance(result, dict) and result.get("ok")) or had_stream_content
-
-                    # 3) Фолбэк — если стрим не дал результата и текста нет
-                    if not ok_flag:
-                        with suppress(Exception):
-                            await stream_manager.stop()
-                            if stream_manager.message and message.bot:
-                                await message.bot.delete_message(message.chat.id, stream_manager.message.message_id)
-                        result = await openai_service.ask_legal(
-                            selected_prompt,
-                            request_text,
-                            attachments=attachments_list or None,
-                        )
-                        ok_flag = bool(result.get("ok"))
-
-                except Exception as e:
-                    # Если что-то упало, но буфер уже есть — считаем успехом и завершаем стрим
-                    had_stream_content = bool((stream_manager.pending_text or "").strip())
-                    if had_stream_content:
-                        logger.warning("Streaming failed, but content exists — using buffered text: %s", e)
-                        stream_final_text = stream_manager.pending_text or ""
-                        result = {"ok": True, "text": stream_final_text}
-                        ok_flag = True
-                    else:
-                        with suppress(Exception):
-                            await stream_manager.stop()
-                        low = str(e).lower()
-                        if "rate limit" in low or "quota" in low:
-                            raise OpenAIException(str(e), error_context, is_quota_error=True)
-                        elif "timeout" in low or "network" in low:
-                            raise NetworkException(f"OpenAI network error: {str(e)}", error_context)
-                        else:
-                            raise OpenAIException(f"OpenAI API error: {str(e)}", error_context)
-            else:
-                # Нестриминговый путь
-                result = await openai_service.ask_legal(
-                    selected_prompt,
-                    request_text,
-                    attachments=attachments_list or None,
-                )
-                ok_flag = bool(result.get("ok"))
-
-        except Exception as e:
-            request_error_type = type(e).__name__
-            if stream_manager:
-                with suppress(Exception):
-                    await stream_manager.stop()
-            raise
-        finally:
-            # Всегда закрываем прогресс-бар
-            with suppress(Exception):
-                await _stop_status_indicator(status, ok=ok_flag)
-
-        # ----- Постобработка результата -----
-        timer.stop()
-
-        if not ok_flag:
-            error_text = (isinstance(result, dict) and (result.get("error") or "")) or ""
-            logger.error("OpenAI error or empty result for user %s: %s", user_id, error_text)
-            await message.answer(
-                (
-                    f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n"
-                    f"Не удалось получить ответ. Попробуйте ещё раз чуть позже.\n\n"
-                    f"{Emoji.HELP} <i>Подсказка</i>: Проверьте формулировку вопроса"
-                    + (f"\n\n<code>{html_escape(error_text[:300])}</code>" if error_text else "")
-                ),
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        # Добавляем время ответа к финальному сообщению
-        time_footer_raw = f"{Emoji.CLOCK} Время ответа: {timer.get_duration_text()} "
-
-        # Формируем футер с найденными делами (если есть)
-        sources_footer = ""
-        if rag_fragments and practice_mode:
-            sources_lines = ["\n\n📚 <b>Использованные дела из базы:</b>"]
-            for idx, fragment in enumerate(rag_fragments[:5], start=1):
-                header = fragment.header or f"Дело #{idx}"
-                sources_lines.append(f"{idx}. {header}")
-            sources_footer = "\n".join(sources_lines)
-
-        text_to_send = ""
-        if use_streaming and had_stream_content and stream_manager is not None:
-            final_stream_text = stream_final_text or ((isinstance(result, dict) and (result.get("text") or "")) or "")
-            combined_stream_text = (final_stream_text.rstrip() + sources_footer + f"\n\n{time_footer_raw}") if final_stream_text else time_footer_raw
-            final_answer_text = combined_stream_text
-            await stream_manager.finalize(combined_stream_text)
-        else:
-            text_to_send = (isinstance(result, dict) and (result.get("text") or "")) or ""
-            if text_to_send:
-                combined_text = f"{text_to_send.rstrip()}{sources_footer}\n\n{time_footer_raw}"
-                final_answer_text = combined_text
-                await send_html_text(
-                    bot=message.bot,
-                    chat_id=message.chat.id,
-                    raw_text=combined_text,
-                    reply_to_message_id=message.message_id,
-                )
-
-        if practice_mode:
-            practice_excel_path: Path | None = None
-            try:
-                structured_payload = (
-                    result.get("structured") if isinstance(result, dict) and isinstance(result.get("structured"), Mapping) else None
-                )
-                excel_source = final_answer_text or text_to_send or ""
-                if excel_source or rag_fragments:
-                    practice_excel_path = await asyncio.to_thread(
-                        build_practice_excel,
-                        summary_html=excel_source,
-                        fragments=rag_fragments,
-                        structured=structured_payload,
-                        file_stub="practice_report",
-                    )
-                    await message.answer_document(
-                        FSInputFile(str(practice_excel_path)),
-                        caption="📊 Отчёт по судебной практике (XLSX)",
-                        parse_mode=ParseMode.HTML,
-                    )
-            except Exception as excel_error:  # noqa: BLE001
-                logger.warning("Failed to build practice Excel", exc_info=True)
-            finally:
-                if practice_excel_path is not None:
-                    practice_excel_path.unlink(missing_ok=True)
-
-        # Сообщения про квоту/подписку
-            with suppress(Exception):
-                await message.answer(quota_text, parse_mode=ParseMode.HTML)
-        if quota_msg_to_send:
-            with suppress(Exception):
-                await message.answer(quota_msg_to_send, parse_mode=ParseMode.HTML)
-
-        # Статистика в сессии/БД
-        user_session.add_question_stats(timer.duration)
-        if db is not None and hasattr(db, "record_request"):
-            with suppress(Exception):
-                request_time_ms = int((time.time() - request_start_time) * 1000)
-                record_request_fn = get_safe_db_method("record_request", default_return=None)
-                if record_request_fn:
-                    request_record_id = await record_request_fn(
-                        user_id=user_id,
-                        request_type="legal_question",
-                        tokens_used=0,
-                        response_time_ms=request_time_ms,
-                        success=True,
-                        error_type=None,
-                    )
-        if request_record_id:
-            if final_answer_text and message.from_user:
-                with suppress(Exception):
-                    await ensure_rating_snapshot(
-                        request_record_id,
-                        message.from_user,
-                        final_answer_text or "",
-                    )
-            with suppress(Exception):
-                await send_rating_request(
-                    message,
-                    request_record_id,
-                    answer_snapshot=final_answer_text or "",
-                )
-
-        logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
-        return (isinstance(result, dict) and (result.get("text") or "")) or ""
-
-    except Exception as e:
-        # Централизованная обработка
-        if error_handler is not None:
-            try:
-                custom_exc = await error_handler.handle_exception(e, error_context)
-                user_message = getattr(
-                    custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже."
-                )
-            except Exception:
-                logger.exception("Error handler failed for user %s", user_id)
-                user_message = "Произошла системная ошибка. Попробуйте позже."
-        else:
-            logger.exception("Error processing question for user %s (no error handler)", user_id)
-            user_message = "Произошла ошибка. Попробуйте позже."
-
-        # Статистика о неудаче
-        if db is not None and hasattr(db, "record_request"):
-            with suppress(Exception):
-                request_time_ms = (
-                    int((time.time() - request_start_time) * 1000)
-                    if "request_start_time" in locals() else 0
-                )
-                err_type = request_error_type if "request_error_type" in locals() else type(e).__name__
-                record_request_fn = get_safe_db_method("record_request", default_return=None)
-                if record_request_fn:
-                    await record_request_fn(
-                        user_id=user_id,
-                        request_type="legal_question",
-                        tokens_used=0,
-                        response_time_ms=request_time_ms,
-                        success=False,
-                        error_type=str(err_type),
-                    )
-
-        # Ответ пользователю
-        with suppress(Exception):
-            await message.answer(
-                "❌ <b>Ошибка обработки запроса</b>\n\n"
-                f"{user_message}\n\n"
-                "💡 <b>Рекомендации:</b>\n"
-                "• Переформулируйте вопрос\n"
-                "• Попробуйте через несколько минут\n"
-                "• Обратитесь в поддержку, если проблема повторяется",
-                parse_mode=ParseMode.HTML,
-            )
-
-
 # ============ СИСТЕМА РЕЙТИНГА ============
 
 
@@ -1068,12 +551,10 @@ async def run_bot() -> None:
     register_retention_handlers(dp)
     register_feedback_handlers(dp)
     register_admin_handlers(dp)
+    register_question_handlers(dp)
 
     if settings().voice_mode_enabled:
         register_voice_handlers(dp, process_question)
-
-    dp.message.register(process_question_with_attachments, F.photo | F.document)
-    dp.message.register(process_question, F.text & ~F.text.startswith("/"))
 
     # Глобальный обработчик ошибок aiogram (с интеграцией ErrorHandler при наличии)
     async def telegram_error_handler(event: ErrorEvent):
