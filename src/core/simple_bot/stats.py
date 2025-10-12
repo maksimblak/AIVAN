@@ -1,6 +1,26 @@
 from __future__ import annotations
 
-from typing import Callable, Mapping, Sequence
+import math
+import time
+from datetime import datetime
+from typing import Any, Callable, Mapping, Sequence
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from src.bot.ui_components import Emoji
+from src.core.simple_bot import context as ctx
+from src.core.simple_bot.formatting import (
+    _format_number,
+    _format_response_time,
+    _format_stat_row,
+    _format_trend_value,
+)
+from src.core.simple_bot.formatting import _format_currency, _format_datetime
+from src.core.simple_bot.payments import get_plan_pricing, plan_stars_amount
+from src.core.subscription_payments import (
+    SubscriptionPayloadError,
+    parse_subscription_payload,
+)
 
 PERIOD_OPTIONS: Sequence[int] = (7, 30, 90)
 PROGRESS_BAR_LENGTH = 10
@@ -217,4 +237,191 @@ __all__ = [
     "peak_summary",
     "top_labels",
     "build_recommendations",
+    "build_stats_keyboard",
+    "generate_user_stats_response",
 ]
+
+
+def build_stats_keyboard(has_subscription: bool) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    if not has_subscription:
+        buttons.append([InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def generate_user_stats_response(
+    user_id: int,
+    days: int,
+    *,
+    stats: dict[str, Any] | None = None,
+    user: Any | None = None,
+    divider: str = "──────────",
+) -> tuple[str, InlineKeyboardMarkup]:
+    db = ctx.db
+    if db is None:
+        raise RuntimeError("Database is not available")
+
+    normalized_days = normalize_stats_period(days)
+    if user is None:
+        user = await db.ensure_user(
+            user_id,
+            default_trial=ctx.TRIAL_REQUESTS,
+            is_admin=user_id in ctx.ADMIN_IDS,
+        )
+
+    if stats is None:
+        stats = await db.get_user_statistics(user_id, days=normalized_days)
+    if stats.get("error"):
+        raise RuntimeError(stats.get("error"))
+
+    plan_id = stats.get("subscription_plan") or getattr(user, "subscription_plan", None)
+    plan_info = get_plan_pricing(plan_id) if plan_id else None
+
+    subscription_until_ts = int(stats.get("subscription_until", 0) or 0)
+    now_ts = int(time.time())
+    has_subscription = subscription_until_ts > now_ts
+    subscription_days_left = (
+        max(0, math.ceil((subscription_until_ts - now_ts) / 86400)) if has_subscription else 0
+    )
+
+    subscription_status_text = "❌ Не активна"
+    if has_subscription:
+        until_text = _format_datetime(subscription_until_ts, default="—")
+        subscription_status_text = f"✅ Активна до {until_text} (≈{subscription_days_left} дн.)"
+    elif subscription_until_ts:
+        until_text = _format_datetime(subscription_until_ts, default="—")
+        subscription_status_text = f"⏰ Истекла {until_text}"
+
+    trial_remaining = int(stats.get("trial_remaining", getattr(user, "trial_remaining", 0)) or 0)
+
+    if plan_info:
+        plan_label = plan_info.plan.name
+    elif plan_id:
+        plan_label = plan_id
+    elif trial_remaining > 0:
+        plan_label = "Триал"
+    else:
+        plan_label = "—"
+
+    period_requests = int(stats.get("period_requests", 0) or 0)
+    previous_requests = int(stats.get("previous_period_requests", 0) or 0)
+    period_successful = int(stats.get("period_successful", 0) or 0)
+    previous_successful = int(stats.get("previous_period_successful", 0) or 0)
+    period_tokens = int(stats.get("period_tokens", 0) or 0)
+    avg_response_time_ms = int(stats.get("avg_response_time_ms", 0) or 0)
+
+    success_rate = (period_successful / period_requests * 100) if period_requests else 0.0
+
+    day_counts = stats.get("day_of_week_counts") or {}
+    hour_counts = stats.get("hour_of_day_counts") or {}
+    type_stats = stats.get("request_types") or {}
+
+    day_primary, day_secondary = peak_summary(day_counts, mapping=DAY_NAMES)
+    hour_primary, hour_secondary = peak_summary(
+        hour_counts, formatter=lambda raw: f"{int(raw):02d}:00" if raw.isdigit() else raw
+    )
+
+    last_transaction = stats.get("last_transaction")
+
+    created_at_ts = stats.get("created_at") or getattr(user, "created_at", 0)
+    updated_at_ts = stats.get("updated_at") or getattr(user, "updated_at", 0)
+    last_request_ts = stats.get("last_request_at", 0)
+
+    subscription_balance_raw = stats.get("subscription_requests_balance")
+    if subscription_balance_raw is None:
+        subscription_balance_raw = getattr(user, "subscription_requests_balance", None)
+    subscription_balance = int(subscription_balance_raw or 0)
+
+    lines = [
+        f"{Emoji.STATS} <b>Моя статистика</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"📅 <i>Период: последние {normalized_days} дней</i>",
+        "",
+        divider,
+        "",
+        "👤 <b>Профиль</b>",
+        "",
+        _format_stat_row("  📆 Регистрация", _format_datetime(created_at_ts)),
+        _format_stat_row("  🕐 Последний запрос", _format_datetime(last_request_ts)),
+        _format_stat_row("  💳 Подписка", subscription_status_text),
+        _format_stat_row("  🏷️ План", plan_label),
+    ]
+
+    lines.extend(["", divider, "", "🔋 <b>Лимиты</b>", ""])
+    trial_requests = ctx.TRIAL_REQUESTS
+    if trial_requests > 0:
+        trial_used = max(0, trial_requests - trial_remaining)
+        lines.append(progress_line("Триал", trial_used, trial_requests))
+    else:
+        lines.append(_format_stat_row("Триал", "недоступен"))
+
+    if plan_info and plan_info.plan.request_quota > 0:
+        used = max(0, plan_info.plan.request_quota - subscription_balance)
+        lines.append(progress_line("  📊 Подписка", used, plan_info.plan.request_quota))
+    elif has_subscription:
+        lines.append(_format_stat_row("  📊 Подписка", "безлимит ♾️"))
+
+    lines.extend(
+        [
+            "",
+            divider,
+            "",
+            "📈 <b>Активность</b>",
+            "",
+            _format_stat_row("  📝 Запросов", _format_trend_value(period_requests, previous_requests)),
+            _format_stat_row("  ✅ Успех", f"{success_rate:.1f}% ({period_successful}/{period_requests or 1})"),
+            _format_stat_row(
+                "  ⏱️ Среднее время",
+                _format_response_time(avg_response_time_ms),
+            ),
+            _format_stat_row("  🔢 Токенов", _format_number(period_tokens)),
+            "",
+        ]
+    )
+
+    if day_primary != "—":
+        lines.append(_format_stat_row("  📅 Активный день", describe_primary_summary(day_primary, "обращений")))
+        if day_secondary.strip():
+            lines.append(_format_stat_row("  📆 Другие дни", describe_secondary_summary(day_secondary, "обращений")))
+    else:
+        lines.append(_format_stat_row("  📅 Активный день", "нет данных"))
+
+    if hour_primary != "—":
+        lines.append(_format_stat_row("  🕐 Активный час", describe_primary_summary(hour_primary, "обращений")))
+        if hour_secondary.strip():
+            lines.append(_format_stat_row("  🕑 Другие часы", describe_secondary_summary(hour_secondary, "обращений")))
+    else:
+        lines.append(_format_stat_row("  🕐 Активный час", "нет данных"))
+
+    lines.extend(["", divider, "", "📋 <b>Типы запросов</b>", ""])
+    if type_stats:
+        top_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)[:5]
+        for req_type, count in top_types:
+            share_pct = (count / period_requests * 100) if period_requests else 0.0
+            label = FEATURE_LABELS.get(req_type, req_type)
+            lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
+    else:
+        lines.append(_format_stat_row("  • Типы", "нет данных"))
+
+    if last_transaction:
+        lines.extend(["", divider, "", "💳 <b>Последний платёж</b>", ""])
+        currency = last_transaction.get("currency", "RUB") or "RUB"
+        amount_minor = last_transaction.get("amount_minor_units") or last_transaction.get("amount")
+        lines.append(_format_stat_row("  💰 Сумма", _format_currency(amount_minor, currency)))
+        translated_status = translate_payment_status(last_transaction.get("status", "unknown"))
+        lines.append(_format_stat_row("  📊 Статус", translated_status))
+        lines.append(_format_stat_row("  📅 Дата", _format_datetime(last_transaction.get("created_at"))))
+        payload_raw = last_transaction.get("payload")
+        if payload_raw:
+            try:
+                payload = parse_subscription_payload(payload_raw)
+                if payload.plan_id:
+                    translated_plan = translate_plan_name(payload.plan_id)
+                    lines.append(_format_stat_row("  🏷️ Тариф", translated_plan))
+            except SubscriptionPayloadError:
+                pass
+
+    keyboard = build_stats_keyboard(has_subscription)
+    return "\n".join(lines), keyboard
