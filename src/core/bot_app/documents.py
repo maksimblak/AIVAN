@@ -1340,18 +1340,6 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
 
             stage_labels = _get_stage_labels(operation)
 
-            summary_text = (
-                "⚖️ <b>Подготовка анализа</b>\n"
-                "┌──────────────────────────────\n"
-                f"│ 📄 Файл: <b>{html_escape(file_name)}</b>\n"
-                f"│ 🛠️ Операция: {html_escape(operation_name)}\n"
-                f"│ 📦 Размер: {file_size_kb} КБ\n"
-                "│ ⏱️ Запускаем проверку…\n"
-                "└──────────────────────────────"
-            )
-            summary_msg = await message.answer(summary_text, parse_mode=ParseMode.HTML)
-            _schedule_message_deletion(message.bot, message.chat.id, summary_msg.message_id, delay=5.0)
-
             status_msg: Message | None = None
             progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
             extras_last_text: str | None = None
