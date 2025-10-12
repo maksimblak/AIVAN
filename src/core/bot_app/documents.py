@@ -1444,7 +1444,11 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                 if result.success:
                     formatted_result = document_manager.format_result_for_telegram(result, operation)
                     reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                    await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                    for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
+                        await message.answer(
+                            chunk,
+                            reply_markup=reply_markup if idx == 0 else None,
+                        )
 
                     exports = result.data.get("exports") or []
                     for export in exports:
@@ -1620,7 +1624,11 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     formatted_result = document_manager.format_result_for_telegram(result, operation)
 
                     reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
-                    await message.answer(formatted_result, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                    for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
+                        await message.answer(
+                            chunk,
+                            reply_markup=reply_markup if idx == 0 else None,
+                        )
 
                     exports = result.data.get("exports") or []
                     for export in exports:

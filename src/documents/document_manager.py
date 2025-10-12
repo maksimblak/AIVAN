@@ -556,6 +556,7 @@ class DocumentManager:
         plain_body = re.sub(r"</?u>", "", plain_body)
         plain_body = re.sub(r"</?code>", "", plain_body)
         plain_body = html.unescape(plain_body)
+        plain_body = plain_body.strip()
         return plain_body
 
     def _format_chat_loaded(self, data: Dict[str, Any], message: str) -> str:
