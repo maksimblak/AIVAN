@@ -182,6 +182,37 @@ def _escape_unescaped_newlines(payload: str) -> str:
     return repaired
 
 
+def _extract_structured_payload(raw: Any) -> Mapping[str, Any] | None:
+    """Attempt to locate the actual JSON payload within structured response metadata."""
+
+    def _unwrap(candidate: Any) -> Mapping[str, Any] | None:
+        if isinstance(candidate, Mapping):
+            lower_keys = {str(key).lower() for key in candidate.keys()}
+            if (
+                "document_title" in lower_keys
+                or "document_markdown" in lower_keys
+                or "status" in lower_keys
+                or "questions" in lower_keys
+                or "context_notes" in lower_keys
+            ):
+                return dict(candidate)
+            for key in ("parsed", "data", "json_schema"):
+                nested = candidate.get(key)
+                unwrapped = _unwrap(nested)
+                if unwrapped is not None:
+                    return unwrapped
+            return None
+
+        if isinstance(candidate, (list, tuple)):
+            for item in candidate:
+                unwrapped = _unwrap(item)
+                if unwrapped is not None:
+                    return unwrapped
+        return None
+
+    return _unwrap(raw)
+
+
 def _extract_json(text: Any) -> Any:
     """Extract the first JSON structure found in text."""
 
@@ -260,8 +291,9 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
 
-    structured = response.get("structured")
-    if isinstance(structured, Mapping):
+    structured = _extract_structured_payload(response.get("structured"))
+    if structured:
+        logger.debug("Using structured planner payload (keys: %s)", list(structured.keys()))
         data = dict(structured)
     else:
         raw_text = response.get("text", "")
@@ -319,8 +351,9 @@ async def generate_document(
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
 
-    structured = response.get("structured")
-    if isinstance(structured, Mapping):
+    structured = _extract_structured_payload(response.get("structured"))
+    if structured:
+        logger.debug("Using structured generator payload (keys: %s)", list(structured.keys()))
         data = dict(structured)
     else:
         raw_text = response.get("text", "")
