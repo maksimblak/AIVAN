@@ -1378,7 +1378,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     min_edit_interval=0.5,
                     display_total_seconds=180,
                 )
-                await progress_status.start(auto_cycle=False)
+                await progress_status.start(auto_cycle=True, interval=1.0)
 
                 async def send_progress(update: dict[str, Any]) -> None:
                     nonlocal progress_state, extras_last_text

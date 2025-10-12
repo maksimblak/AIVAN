@@ -159,13 +159,27 @@ class ProgressStatus:
     async def _ticker(self, interval: float) -> None:
         while self._running:
             await asyncio.sleep(interval)
-            if self.current_percent < 90:
-                self.current_percent += 1
+            percent_changed = False
+            if self.display_total_seconds:
+                duration = max(1, self.display_total_seconds)
+                elapsed = self._elapsed_seconds()
+                target = int((elapsed / duration) * 90)
+                target = max(0, min(target, 90))
+                if target > self.current_percent:
+                    self.current_percent = target
+                    percent_changed = True
+            else:
+                if self.current_percent < 90:
+                    self.current_percent += 1
+                    percent_changed = True
+            stage_changed = False
             if self.auto_advance:
                 new_stage = self._stage_by_percent(self.current_percent)
-                if new_stage is not None:
-                    self.current_stage = max(self.current_stage, new_stage)
-            await self._safe_edit(self._render())
+                if new_stage is not None and new_stage > self.current_stage:
+                    self.current_stage = new_stage
+                    stage_changed = True
+            if percent_changed or stage_changed:
+                await self._safe_edit(self._render())
 
     def _stage_by_percent(self, pct: int) -> Optional[int]:
         if not self.steps:
