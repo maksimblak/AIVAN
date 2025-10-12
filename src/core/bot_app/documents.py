@@ -1386,23 +1386,23 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     note_text = str(update.get("note") or "").strip() or None
                     extras_line = _format_progress_extras(update)
 
-                        if progress_status:
-                            if stage == "completed":
-                                extra_note = note_text or (extras_line or None)
-                                await progress_status.complete(note=extra_note)
-                                msg_id = progress_status.message_id
-                                chat_id = progress_status.chat_id
-                                bot = progress_status.bot
-                                if msg_id:
-                                    with suppress(Exception):
-                                        await bot.delete_message(chat_id, msg_id)
-                                progress_status = None
-                            elif stage == "failed":
-                                fail_note = note_text or (extras_line or update.get("error"))
-                                await progress_status.fail(note=fail_note)
-                            else:
-                                step = stage_index_map.get(stage)
-                                await progress_status.update_stage(percent=percent, step=step)
+                    if progress_status:
+                        if stage == "completed":
+                            extra_note = note_text or (extras_line or None)
+                            await progress_status.complete(note=extra_note)
+                            msg_id = progress_status.message_id
+                            chat_id = progress_status.chat_id
+                            bot = progress_status.bot
+                            if msg_id:
+                                with suppress(Exception):
+                                    await bot.delete_message(chat_id, msg_id)
+                            progress_status = None
+                        elif stage == "failed":
+                            fail_note = note_text or (extras_line or update.get("error"))
+                            await progress_status.fail(note=fail_note)
+                        else:
+                            step = stage_index_map.get(stage)
+                            await progress_status.update_stage(percent=percent, step=step)
 
                     if extras_line and stage not in {"completed", "failed"} and extras_line != extras_last_text:
                         extras_last_text = extras_line
