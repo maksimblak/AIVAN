@@ -10,7 +10,6 @@ from src.core.settings import AppSettings
 
 import html
 from html.parser import HTMLParser
-import inspect
 import re
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
@@ -739,24 +738,20 @@ async def _ask_legal_internal(
     async with shared_openai_client() as oai:
         stored_schema = model_caps.get("supports_schema")
         if stored_schema is None:
-            schema_supported = "response_format" in inspect.signature(oai.responses.create).parameters
+            schema_supported = True
             model_caps["supports_schema"] = schema_supported
         else:
             schema_supported = stored_schema
-        schema_payload: dict[str, Any] = (
-            {"response_format": {"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA}}
-            if schema_supported
-            else {}
-        )
-        if not schema_supported:
-            logger.debug("Responses API does not accept response_format; falling back to raw JSON parsing")
 
         def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
-            payload_base = base_core.copy()
+            payload_base: dict[str, Any] = {**base_core}
+            text_config = dict(base_core.get("text") or {})
+            if include_schema:
+                text_config["format"] = {"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA}
+            if text_config:
+                payload_base["text"] = text_config
             if include_sampling_params:
                 payload_base |= sampling_payload
-            if include_schema and schema_payload:
-                payload_base |= schema_payload
             with_tools = payload_base
             without_tools = {k: v for k, v in payload_base.items() if k != "tools"}
             boosted = without_tools | {"max_output_tokens": max_out * 2}
@@ -935,9 +930,14 @@ async def _ask_legal_internal(
 
                 except TypeError as type_err:
                     message = str(type_err)
-                    if schema_supported and "response_format" in payload and "response_format" in message:
+                    schema_payload_used = (
+                        schema_supported
+                        and isinstance(payload.get("text"), Mapping)
+                        and isinstance(payload["text"].get("format"), Mapping)
+                    )
+                    if schema_payload_used and any(token in message for token in ("format", "json_schema")):
                         logger.warning(
-                            "Responses API rejected response_format; retrying without JSON schema enforcement"
+                            "Responses API rejected structured output format; retrying without schema enforcement"
                         )
                         schema_supported = False
                         model_caps["supports_schema"] = False
@@ -957,6 +957,20 @@ async def _ask_legal_internal(
                     break
                 except Exception as e:
                     message = str(e)
+                    schema_payload_used = (
+                        schema_supported
+                        and isinstance(payload.get("text"), Mapping)
+                        and isinstance(payload["text"].get("format"), Mapping)
+                    )
+                    if schema_payload_used and any(token in message for token in ("json_schema", "format", "structured")):
+                        logger.warning(
+                            "OpenAI API error while using structured output; retrying without schema enforcement"
+                        )
+                        schema_supported = False
+                        model_caps["supports_schema"] = False
+                        attempts = build_attempts(schema_supported, include_sampling)
+                        retry_payload = True
+                        break
                     if include_sampling and any(token in message for token in ("temperature", "top_p")):
                         logger.warning(
                             "Responses API rejected sampling parameters; retrying with defaults"

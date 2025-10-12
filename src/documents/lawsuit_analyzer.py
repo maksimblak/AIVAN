@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -137,11 +137,14 @@ class LawsuitAnalyzer(DocumentProcessor):
         if not response.get("ok"):
             raise ProcessingError(response.get("error") or "Не удалось получить ответ от модели", "OPENAI_ERROR")
 
+        structured_payload = response.get("structured")
         raw_text = (response.get("text") or "").strip()
-        if not raw_text:
-            raise ProcessingError("Пустой ответ модели", "OPENAI_EMPTY")
-
-        payload = _extract_first_json(raw_text)
+        if isinstance(structured_payload, Mapping) and structured_payload:
+            payload = dict(structured_payload)
+        else:
+            if not raw_text:
+                raise ProcessingError("Пустой ответ модели", "OPENAI_EMPTY")
+            payload = _extract_first_json(raw_text)
 
         analysis = {
             "summary": str(payload.get("summary") or "").strip(),
