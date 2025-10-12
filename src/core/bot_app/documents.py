@@ -225,15 +225,26 @@ def _make_progress_updater(
         elapsed = time.monotonic() - progress_state["started_at"]
         elapsed_text = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
 
-        lines = [
-            f"{icon} {label}: {percent}%",
-            f"📄 Файл: <b>{html_escape(file_name)}</b>",
-            f"🛠️ Операция: {html_escape(operation_name)}",
-            f"📦 Размер: {file_size_kb} КБ",
-            f"⏱️ Время: {elapsed_text}",
+        total_segments = 10
+        progress_ratio = max(0.0, min(1.0, float(percent) / 100.0))
+        filled_segments = int(round(progress_ratio * total_segments))
+        filled_segments = max(0, min(total_segments, filled_segments))
+        progress_bar = "█" * filled_segments + "░" * (total_segments - filled_segments)
+
+        header = f"{icon} <b>{label}</b>"
+        border = "┌" + "─" * 32
+        body_lines = [
+            f"│ Прогресс: {progress_bar} {percent}%",
+            f"│ 📄 Файл: <b>{html_escape(file_name)}</b>",
+            f"│ 🛠️ Операция: {html_escape(operation_name)}",
+            f"│ 📦 Размер: {file_size_kb} КБ",
+            f"│ ⏱️ Время: {elapsed_text}",
         ]
         if extras_line:
-            lines.append(extras_line)
+            body_lines.append(f"│ {extras_line}")
+        footer = "└" + "─" * 32
+
+        lines = [header, border, *body_lines, footer]
 
         try:
             await message.bot.edit_message_text(
