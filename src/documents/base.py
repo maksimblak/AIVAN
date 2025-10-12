@@ -196,17 +196,24 @@ class DocumentStorage:
 
     def _sanitize_filename(self, filename: str) -> str:
         """Return a safe file name for storing on disk."""
-        filename = Path(filename).name
-        if len(filename) > 100:
-            name_part = filename[:95]
-            ext_part = Path(filename).suffix
-            filename = name_part + ext_part
-        safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-        safe_filename = re.sub(r'_+', '_', safe_filename)
-        safe_filename = safe_filename.strip('._')
-        if not safe_filename:
-            safe_filename = "document"
-        return safe_filename
+        original = Path(filename).name
+        ext = Path(original).suffix
+        stem = original[: -len(ext)] if ext else original
+
+        if len(stem) > 95:
+            stem = stem[:95]
+
+        safe_stem = re.sub(r"[^a-zA-Z0-9._-]", "_", stem)
+        safe_stem = re.sub(r"_+", "_", safe_stem).strip("._")
+        if not safe_stem:
+            safe_stem = "document"
+
+        safe_ext = ""
+        if ext:
+            base_ext = re.sub(r"[^a-zA-Z0-9]", "", ext)
+            if base_ext:
+                safe_ext = "." + base_ext if not base_ext.startswith(".") else base_ext
+        return f"{safe_stem}{safe_ext}"
 
     async def save_document(
         self, user_id: int, file_content: bytes, original_name: str, mime_type: str
