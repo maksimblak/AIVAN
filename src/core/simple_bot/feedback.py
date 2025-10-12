@@ -5,6 +5,7 @@ from typing import Optional
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
+from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -23,6 +24,7 @@ __all__ = [
     "ensure_rating_snapshot",
     "send_rating_request",
     "handle_pending_feedback",
+    "cmd_ratings_stats",
     "register_feedback_handlers",
 ]
 
@@ -321,3 +323,62 @@ def register_feedback_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(
         handle_feedback_callback, F.data.startswith(("feedback_", "skip_feedback_"))
     )
+    dp.message.register(cmd_ratings_stats, Command("ratings"))
+
+
+async def cmd_ratings_stats(message: Message) -> None:
+    """Show aggregate rating stats (admin only)."""
+    if not message.from_user:
+        await message.answer("❌ Команда доступна только в диалоге с ботом")
+        return
+
+    try:
+        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_ratings_stats")
+    except ValidationException as exc:
+        logger.warning("Некорректный пользователь id in cmd_ratings_stats: %s", exc)
+        await message.answer("❌ Ошибка идентификатора пользователя")
+        return
+
+    if user_id not in simple_context.ADMIN_IDS:
+        await message.answer("❌ Команда доступна только администраторам")
+        return
+
+    stats_fn = get_safe_db_method("get_ratings_statistics", default_return={})
+    low_rated_fn = get_safe_db_method("get_low_rated_requests", default_return=[])
+    if not stats_fn or not low_rated_fn:
+        await message.answer("❌ Статистика рейтингов недоступна")
+        return
+
+    try:
+        stats_7d = await stats_fn(7)
+        stats_30d = await stats_fn(30)
+        low_rated = await low_rated_fn(5)
+
+        stats_text = f"""📊 <b>Статистика рейтингов</b>
+
+📅 <b>За 7 дней:</b>
+• Всего оценок: {stats_7d.get('total_ratings', 0)}
+• 👍 Лайков: {stats_7d.get('total_likes', 0)}
+• 👎 Дизлайков: {stats_7d.get('total_dislikes', 0)}
+• 📈 Рейтинг лайков: {stats_7d.get('like_rate', 0):.1f}%
+• 💬 С комментариями: {stats_7d.get('feedback_count', 0)}
+
+📅 <b>За 30 дней:</b>
+• Всего оценок: {stats_30d.get('total_ratings', 0)}
+• 👍 Лайков: {stats_30d.get('total_likes', 0)}
+• 👎 Дизлайков: {stats_30d.get('total_dislikes', 0)}
+• 📈 Рейтинг лайков: {stats_30d.get('like_rate', 0):.1f}%
+• 💬 С комментариями: {stats_30d.get('feedback_count', 0)}"""
+
+        if low_rated:
+            stats_text += "\n\n⚠️ <b>Запросы для улучшения:</b>\n"
+            for req in low_rated[:3]:
+                stats_text += (
+                    f"• ID {req['request_id']}: "
+                    f"рейтинг {req['avg_rating']:.1f} ({req['rating_count']} оценок)\n"
+                )
+
+        await message.answer(stats_text, parse_mode=ParseMode.HTML)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error in cmd_ratings_stats: %s", exc)
+        await message.answer("❌ Ошибка получения статистики рейтингов")

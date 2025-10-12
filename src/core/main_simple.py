@@ -30,7 +30,6 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BotCommand,
@@ -66,7 +65,6 @@ from src.core.admin_modules.admin_commands import setup_admin_commands
 from src.core.session_store import SessionStore, UserSession
 from src.core.validation import InputValidator, ValidationSeverity
 from src.core.runtime import SubscriptionPlanPricing, WelcomeMedia
-from src.documents.base import ProcessingError
 from src.bot.ratelimit import RateLimiter
 from src.bot.typing_indicator import send_typing_once, typing_action
 
@@ -78,6 +76,7 @@ from src.core.simple_bot.feedback import (
     register_feedback_handlers,
     send_rating_request,
 )
+from src.core.simple_bot.admin import register_admin_handlers
 from src.core.simple_bot.retention import register_retention_handlers
 from src.core.simple_bot import context as simple_context
 from src.core.simple_bot.common import (ensure_valid_user_id, get_user_session, get_safe_db_method)
@@ -717,94 +716,6 @@ async def process_question(
 
 
 
-async def cmd_ratings_stats(message: Message):
-    """Команда для просмотра статистики рейтингов (только для админов)"""
-    if not message.from_user:
-        await message.answer("❌ Команда доступна только в диалоге с ботом")
-        return
-
-    try:
-        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_ratings_stats")
-    except ValidationException as exc:
-        logger.warning("Некорректный пользователь id in cmd_ratings_stats: %s", exc)
-        await message.answer("❌ Ошибка идентификатора пользователя")
-        return
-
-    if user_id not in ADMIN_IDS:
-        await message.answer("❌ Команда доступна только администраторам")
-        return
-
-    stats_fn = get_safe_db_method("get_ratings_statistics", default_return={})
-    low_rated_fn = get_safe_db_method("get_low_rated_requests", default_return=[])
-    if not stats_fn or not low_rated_fn:
-        await message.answer("❌ Статистика рейтингов недоступна")
-        return
-
-    try:
-        stats_7d = await stats_fn(7)
-        stats_30d = await stats_fn(30)
-        low_rated = await low_rated_fn(5)
-
-        stats_text = f"""📊 <b>Статистика рейтингов</b>
-
-📅 <b>За 7 дней:</b>
-• Всего оценок: {stats_7d.get('total_ratings', 0)}
-• 👍 Лайков: {stats_7d.get('total_likes', 0)}
-• 👎 Дизлайков: {stats_7d.get('total_dislikes', 0)}
-• 📈 Рейтинг лайков: {stats_7d.get('like_rate', 0):.1f}%
-• 💬 С комментариями: {stats_7d.get('feedback_count', 0)}
-
-📅 <b>За 30 дней:</b>
-• Всего оценок: {stats_30d.get('total_ratings', 0)}
-• 👍 Лайков: {stats_30d.get('total_likes', 0)}
-• 👎 Дизлайков: {stats_30d.get('total_dislikes', 0)}
-• 📈 Рейтинг лайков: {stats_30d.get('like_rate', 0):.1f}%
-• 💬 С комментариями: {stats_30d.get('feedback_count', 0)}"""
-
-        if low_rated:
-            stats_text += "\n\n⚠️ <b>Запросы для улучшения:</b>\n"
-            for req in low_rated[:3]:
-                stats_text += f"• ID {req['request_id']}: рейтинг {req['avg_rating']:.1f} ({req['rating_count']} оценок)\n"
-
-        await message.answer(stats_text, parse_mode=ParseMode.HTML)
-
-    except Exception as e:
-        logger.error(f"Error in cmd_ratings_stats: {e}")
-        await message.answer("❌ Ошибка получения статистики рейтингов")
-
-
-async def cmd_error_stats(message: Message):
-    """Краткая сводка ошибок из ErrorHandler (админы)."""
-    if not message.from_user:
-        await message.answer("❌ Команда доступна только в диалоге с ботом")
-        return
-
-    try:
-        user_id = ensure_valid_user_id(message.from_user.id, context="cmd_error_stats")
-    except ValidationException as exc:
-        logger.warning("Некорректный пользователь id in cmd_error_stats: %s", exc)
-        await message.answer("❌ Ошибка идентификатора пользователя")
-        return
-
-    if user_id not in ADMIN_IDS:
-        await message.answer("❌ Команда доступна только администраторам")
-        return
-
-    if not error_handler:
-        await message.answer("❌ Система мониторинга ошибок не инициализирована")
-        return
-
-    stats = error_handler.get_error_stats()
-    if not stats:
-        await message.answer("✅ Критических ошибок не зафиксировано")
-        return
-
-    lines = ["🚨 <b>Статистика ошибок</b>"]
-    for error_type, count in sorted(stats.items(), key=lambda item: item[0]):
-        lines.append(f"• {error_type}: {count}")
-
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
-
 # ============ ОБРАБОТКА ОШИБОК ============
 
 
@@ -1156,9 +1067,7 @@ async def run_bot() -> None:
     register_document_handlers(dp)
     register_retention_handlers(dp)
     register_feedback_handlers(dp)
-
-    dp.message.register(cmd_ratings_stats, Command("ratings"))
-    dp.message.register(cmd_error_stats, Command("errors"))
+    register_admin_handlers(dp)
 
     if settings().voice_mode_enabled:
         register_voice_handlers(dp, process_question)
