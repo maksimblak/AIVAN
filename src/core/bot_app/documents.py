@@ -1552,13 +1552,21 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                         label = export.get("label") or export.get("name")
                         export_file_name = Path(export_path).name
                         format_tag = str(export.get("format", "file")).upper()
-                        parts = [f"📄 {format_tag}"]
-                        if label:
-                            parts.append(str(label))
-                        parts.append(export_file_name)
-                        caption = " • ".join(part for part in parts if part)
+                        format_html = html_escape(str(format_tag))
+                        label_html = html_escape(str(label)) if label else ""
+                        file_html = html_escape(export_file_name)
+                        header_parts = [f"<b>📄 {format_html}</b>"]
+                        if label_html:
+                            header_parts.append(f"<b>{label_html}</b>")
+                        header = " • ".join(part for part in header_parts if part)
+                        caption_lines = [header, f"<code>{file_html}</code>"]
+                        caption = "\n".join(line for line in caption_lines if line)
                         try:
-                            await message.answer_document(FSInputFile(export_path), caption=caption)
+                            await message.answer_document(
+                                FSInputFile(export_path),
+                                caption=caption,
+                                parse_mode=ParseMode.HTML,
+                            )
                         except Exception as send_error:  # noqa: BLE001
                             logger.error("Не удалось отправить файл %s: %s", export_path, send_error, exc_info=True)
                             await message.answer(f"Не удалось отправить файл {export_file_name}")
