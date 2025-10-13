@@ -980,11 +980,7 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         if issues_block:
             summary_sections.append(f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issues_block}")
 
-    if summary_sections:
-        await message.answer(
-            "\n\n".join(summary_sections),
-            parse_mode=ParseMode.HTML,
-        )
+    summary_block = "\n\n".join(summary_sections) if summary_sections else ""
 
     if progress:
         await progress.update_stage(percent=85, step=3)
@@ -994,13 +990,20 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await asyncio.to_thread(build_docx_from_markdown, result.markdown, str(tmp_path))
         display_title, caption, filename = _prepare_document_titles(result.title or title)
 
-        final_caption = (
-            f"📄 <b>{display_title}</b>\n"
-            f"<code>{'─' * 30}</code>\n\n"
-            f"✨ Документ успешно создан!\n"
-            f"📎 Формат: DOCX\n\n"
-            f"<i>💡 Проверьте содержимое и при необходимости внесите правки</i>"
+        caption_parts = [
+            f"{Emoji.DOCUMENT} <b>{display_title}</b>",
+            f"<code>{'─' * 30}</code>",
+        ]
+        if summary_block:
+            caption_parts.append(summary_block)
+        caption_parts.extend(
+            [
+                f"{Emoji.MAGIC} Анализ успешно произведён!",
+                "📎 Формат: DOCX",
+                f"<i>{Emoji.IDEA} Проверьте содержимое и при необходимости внесите правки</i>",
+            ]
         )
+        final_caption = "\n\n".join(caption_parts)
 
         if progress:
             await progress.update_stage(percent=95, step=4)

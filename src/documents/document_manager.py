@@ -12,6 +12,7 @@ import logging
 import re
 import tempfile
 import uuid
+from datetime import datetime
 from dataclasses import asdict
 from html import escape as html_escape
 from pathlib import Path
@@ -45,6 +46,9 @@ _LAWSUIT_SECTION_META: dict[str, tuple[str, str]] = {
 }
 
 logger = logging.getLogger(__name__)
+
+_FILENAME_SANITIZE_RE = re.compile(r"[\\/:*?\"<>|\r\n]+")
+_FILENAME_WHITESPACE_RE = re.compile(r"\s+")
 
 
 class DocumentManager:
@@ -388,7 +392,7 @@ class DocumentManager:
                     "Не удалось подготовить содержимое для DOCX-отчета",
                     "EMPTY_DOCX_CONTENT",
                 )
-            docx_path = Path(tempfile.gettempdir()) / f"aivan_{base_name}_lawsuit_analysis_{uuid.uuid4().hex}.docx"
+            docx_path = self._build_human_friendly_temp_path(base_name, "анализ иска", ".docx")
             try:
                 await asyncio.to_thread(build_docx_from_markdown, markdown, str(docx_path))
             except DocumentDraftingError as exc:
@@ -407,6 +411,32 @@ class DocumentManager:
                 exports.append({"path": str(path), "format": "txt", "label": "Распознанный текст"})
 
         return exports
+
+    @staticmethod
+    def _sanitize_filename_component(value: str, fallback: str | None = None) -> str:
+        sanitized = _FILENAME_SANITIZE_RE.sub(" ", (value or ""))
+        sanitized = _FILENAME_WHITESPACE_RE.sub(" ", sanitized).strip(" .-_")
+        if not sanitized and fallback is not None:
+            sanitized = fallback
+        return sanitized
+
+    def _build_human_friendly_temp_path(self, base: str, suffix: str, extension: str) -> Path:
+        ext = extension if extension.startswith(".") else f".{extension}"
+        base_clean = self._sanitize_filename_component(base, fallback="Документ")
+        suffix_clean = self._sanitize_filename_component(suffix, fallback="")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        name_parts = [base_clean]
+        if suffix_clean:
+            name_parts.append(suffix_clean)
+        name_core = " - ".join(name_parts)
+        filename = f"{name_core} ({timestamp}){ext}"
+        temp_dir = Path(tempfile.gettempdir())
+        candidate = temp_dir / filename
+        counter = 1
+        while candidate.exists():
+            candidate = temp_dir / f"{name_core} ({timestamp}_{counter}){ext}"
+            counter += 1
+        return candidate
 
     async def _write_export(self, base: str, suffix: str, content: str, extension: str) -> Path:
         target = Path(tempfile.gettempdir()) / f"aivan_{base}_{suffix}_{uuid.uuid4().hex}{extension}"
