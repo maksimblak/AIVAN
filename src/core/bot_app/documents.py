@@ -114,11 +114,17 @@ _BASE_STAGE_LABELS: dict[str, tuple[str, str]] = {
 _STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
     "summarize": {
         "processing": ("Готовим выжимку", "📝"),
-        "finalizing": ("Формируем итог", "✨"),
+        "text_extracted": ("Извлекаем текст", "📄"),
+        "metadata_collected": ("Анализируем метаданные", "🧾"),
+        "heuristics": ("Ищем дедлайны и штрафы", "🧠"),
+        "summary_generation": ("Генерируем выжимку", "✨"),
+        "summary_ready": ("Собираем основные выводы", "📌"),
+        "finalizing": ("Формируем итог", "📋"),
     },
     "analyze_risks": {
         "processing": ("Ищем риски", "⚠️"),
-        "pattern_scan": ("Мыслительный анализ", "🔍"),
+        "text_extracted": ("Извлекаем текст", "📄"),
+        "pattern_scan": ("Проводим первичный анализ", "🔍"),
         "ai_analysis": ("Проверяем ИИ-моделью", "🤖"),
         "compliance_check": ("Проверяем соблюдение норм", "⚖️"),
         "aggregation": ("Подготавливаем отчёт", "📊"),
@@ -130,8 +136,13 @@ _STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
         "analysis_ready": ("Формируем рекомендации", "📝"),
     },
     "anonymize": {
-        "processing": ("Скрываем персональные данные", "🕶️"),
-        "finalizing": ("Готовим отчёт об обезличивании", "📋"),
+        "processing": ("Запускаем обезличивание", "⚙️"),
+        "text_extracted": ("Извлекаем текст", "📄"),
+        "ai_prepare": ("Готовим ИИ-анализ", "🤖"),
+        "ai_chunk": ("ИИ обрабатывает фрагменты", "🧠"),
+        "pattern_prepare": ("Настраиваем правила", "🧩"),
+        "anonymizing": ("Маскируем личные данные", "🕶️"),
+        "finalizing": ("Собираем отчёт", "📊"),
     },
     "translate": {
         "processing": ("Переводим документ", "🌐"),
@@ -139,8 +150,9 @@ _STAGE_LABEL_OVERRIDES: dict[str, dict[str, tuple[str, str]]] = {
     },
     "ocr": {
         "processing": ("Распознаём текст", "🔍"),
-        "finalizing": ("Подготавливаем результат", "📄"),
+        "ocr_running": ("Извлекаем встроенный текст", "🗂️"),
         "ocr_page": ("Распознаём страницы", "📄"),
+        "finalizing": ("Подготавливаем результат", "📄"),
     },
     "chat": {
         "processing": ("Обрабатываем запрос", "💬"),
@@ -161,6 +173,95 @@ _LAWSUIT_STAGE_ORDER = [
     "finalizing",
     "completed",
 ]
+
+_ANONYMIZE_STAGE_ORDER = [
+    "start",
+    "downloading",
+    "uploaded",
+    "processing",
+    "text_extracted",
+    "ai_prepare",
+    "pattern_prepare",
+    "ai_chunk",
+    "anonymizing",
+    "finalizing",
+    "completed",
+]
+
+_RISK_STAGE_ORDER = [
+    "start",
+    "downloading",
+    "uploaded",
+    "processing",
+    "text_extracted",
+    "pattern_scan",
+    "ai_analysis",
+    "compliance_check",
+    "aggregation",
+    "highlighting",
+    "finalizing",
+    "completed",
+]
+
+_SUMMARIZE_STAGE_ORDER = [
+    "start",
+    "downloading",
+    "uploaded",
+    "processing",
+    "text_extracted",
+    "metadata_collected",
+    "heuristics",
+    "summary_generation",
+    "summary_ready",
+    "finalizing",
+    "completed",
+]
+
+_OCR_STAGE_ORDER = [
+    "start",
+    "downloading",
+    "uploaded",
+    "processing",
+    "ocr_running",
+    "ocr_page",
+    "finalizing",
+    "completed",
+]
+
+_PROGRESS_OPERATION_CONFIG: dict[str, dict[str, Any]] = {
+    "lawsuit_analysis": {
+        "stage_order": _LAWSUIT_STAGE_ORDER,
+        "display_total_seconds": 180,
+        "default_label": "Анализ",
+    },
+    "anonymize": {
+        "stage_order": _ANONYMIZE_STAGE_ORDER,
+        "display_total_seconds": 150,
+        "default_label": "Обезличивание",
+    },
+    "analyze_risks": {
+        "stage_order": _RISK_STAGE_ORDER,
+        "display_total_seconds": 210,
+        "default_label": "Анализ рисков",
+    },
+    "summarize": {
+        "stage_order": _SUMMARIZE_STAGE_ORDER,
+        "display_total_seconds": 140,
+        "default_label": "Краткая выжимка",
+    },
+    "ocr": {
+        "stage_order": _OCR_STAGE_ORDER,
+        "display_total_seconds": 160,
+        "default_label": "Распознавание текста",
+    },
+}
+
+_PROCESSING_STAGE_NOTES: dict[str, str] = {
+    "anonymize": "Подготовка обезличивания",
+    "analyze_risks": "Подготовка анализа рисков",
+    "summarize": "Подготовка выжимки",
+    "ocr": "Подготовка распознавания текста",
+}
 
 
 def _schedule_message_deletion(bot, chat_id: int, message_id: int, delay: float = 5.0) -> None:
@@ -281,6 +382,102 @@ def _make_progress_updater(
             logger.debug("Unexpected progress update error: %s", exc)
 
     return send_progress, progress_state
+
+
+async def _make_status_progress_handler(
+    message: Message,
+    progress_state: dict[str, Any],
+    *,
+    stage_labels: dict[str, tuple[str, str]],
+    stage_order: Sequence[str],
+    default_step_label: str,
+    display_total_seconds: int,
+    min_edit_interval: float = 0.5,
+    auto_cycle_interval: float = 1.0,
+) -> Callable[[dict[str, Any]], Awaitable[None]]:
+    progress_state["percent"] = 0
+    progress_state["stage"] = "start"
+    progress_state["started_at"] = time.monotonic()
+    extras_last_text: str | None = None
+
+    order = [key for key in stage_order if key]
+    if not order:
+        order = list(stage_labels.keys())
+
+    stage_index_map = {key: idx for idx, key in enumerate(order, start=1)}
+    progress_steps: list[dict[str, str]] = []
+    for key in order:
+        if key == "failed":
+            continue
+        title, icon = stage_labels.get(key, (key, ""))
+        label_text = f"{icon} {title}".strip()
+        progress_steps.append({"label": label_text or default_step_label})
+
+    if not progress_steps:
+        progress_steps = [{"label": default_step_label}]
+
+    progress_status = ProgressStatus(
+        message.bot,
+        message.chat.id,
+        steps=progress_steps,
+        show_context_toggle=False,
+        show_checklist=True,
+        auto_advance_stages=False,
+        min_edit_interval=min_edit_interval,
+        display_total_seconds=display_total_seconds,
+    )
+    await progress_status.start(auto_cycle=True, interval=auto_cycle_interval)
+
+    async def send_progress(update: dict[str, Any]) -> None:
+        nonlocal extras_last_text, progress_status
+
+        stage = str(update.get("stage") or progress_state["stage"] or "processing")
+        normalized_stage = stage
+        if normalized_stage not in stage_index_map and normalized_stage not in {"completed", "failed"}:
+            normalized_stage = progress_state["stage"]
+
+        percent_val = update.get("percent")
+        if percent_val is None:
+            percent = progress_state["percent"]
+        else:
+            percent = max(0, min(100, int(round(float(percent_val)))))
+            if percent < progress_state["percent"] and normalized_stage != "failed":
+                percent = progress_state["percent"]
+
+        progress_state["stage"] = normalized_stage
+        progress_state["percent"] = percent
+
+        note_text = str(update.get("note") or "").strip() or None
+        extras_line = _format_progress_extras(update)
+
+        if progress_status:
+            if normalized_stage == "completed":
+                extra_note = note_text or (extras_line or None)
+                await progress_status.complete(note=extra_note)
+                msg_id = progress_status.message_id
+                chat_id = progress_status.chat_id
+                bot = progress_status.bot
+                if msg_id:
+                    with suppress(Exception):
+                        await bot.delete_message(chat_id, msg_id)
+                progress_status = None
+            elif normalized_stage == "failed":
+                fail_note = note_text or (extras_line or update.get("error"))
+                await progress_status.fail(note=fail_note)
+            else:
+                step = stage_index_map.get(normalized_stage)
+                await progress_status.update_stage(percent=percent, step=step)
+
+        if (
+            extras_line
+            and normalized_stage not in {"completed", "failed"}
+            and extras_line != extras_last_text
+            and not update.get("note")
+        ):
+            extras_last_text = extras_line
+            await message.answer(extras_line, parse_mode=ParseMode.HTML)
+
+    return send_progress
 
 
 async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> None:
@@ -1420,76 +1617,19 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
 
             status_msg: Message | None = None
             progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
-            extras_last_text: str | None = None
-            progress_status: ProgressStatus | None = None
 
-            if operation == "lawsuit_analysis":
-                stage_order = [key for key in _LAWSUIT_STAGE_ORDER if key in stage_labels]
-                if not stage_order:
-                    stage_order = list(stage_labels.keys())
-                stage_index_map = {key: idx for idx, key in enumerate(stage_order, start=1)}
-                progress_steps: list[dict[str, str]] = []
-                for key in stage_order:
-                    title, icon = stage_labels.get(key, (key, ""))
-                    progress_steps.append({"label": f"{icon} {title}".strip()})
-                if not progress_steps:
-                    progress_steps = [{"label": "Анализ"}]
-                progress_status = ProgressStatus(
-                    message.bot,
-                    message.chat.id,
-                    steps=progress_steps,
-                    show_context_toggle=False,
-                    show_checklist=True,
-                    auto_advance_stages=False,
-                    min_edit_interval=0.5,
-                    display_total_seconds=180,
+            progress_config = _PROGRESS_OPERATION_CONFIG.get(operation)
+            if progress_config:
+                send_progress = await _make_status_progress_handler(
+                    message,
+                    progress_state,
+                    stage_labels=stage_labels,
+                    stage_order=progress_config["stage_order"],
+                    default_step_label=progress_config["default_label"],
+                    display_total_seconds=progress_config["display_total_seconds"],
+                    min_edit_interval=progress_config.get("min_edit_interval", 0.5),
+                    auto_cycle_interval=progress_config.get("auto_cycle_interval", 1.0),
                 )
-                await progress_status.start(auto_cycle=True, interval=1.0)
-
-                async def send_progress(update: dict[str, Any]) -> None:
-                    nonlocal progress_state, extras_last_text, progress_status
-                    stage = str(update.get("stage") or progress_state["stage"] or "processing")
-                    if stage not in stage_index_map and stage not in {"completed", "failed"}:
-                        stage = progress_state["stage"]
-                    percent_val = update.get("percent")
-                    if percent_val is None:
-                        percent = progress_state["percent"]
-                    else:
-                        percent = max(0, min(100, int(round(float(percent_val)))))
-                        if percent < progress_state["percent"] and stage != "failed":
-                            percent = progress_state["percent"]
-                    progress_state["stage"] = stage
-                    progress_state["percent"] = percent
-
-                    note_text = str(update.get("note") or "").strip() or None
-                    extras_line = _format_progress_extras(update)
-
-                    if progress_status:
-                        if stage == "completed":
-                            extra_note = note_text or (extras_line or None)
-                            await progress_status.complete(note=extra_note)
-                            msg_id = progress_status.message_id
-                            chat_id = progress_status.chat_id
-                            bot = progress_status.bot
-                            if msg_id:
-                                with suppress(Exception):
-                                    await bot.delete_message(chat_id, msg_id)
-                            progress_status = None
-                        elif stage == "failed":
-                            fail_note = note_text or (extras_line or update.get("error"))
-                            await progress_status.fail(note=fail_note)
-                        else:
-                            step = stage_index_map.get(stage)
-                            await progress_status.update_stage(percent=percent, step=step)
-
-                    if (
-                        extras_line
-                        and stage not in {"completed", "failed"}
-                        and extras_line != extras_last_text
-                        and not update.get("note")
-                    ):
-                        extras_last_text = extras_line
-                        await message.answer(extras_line, parse_mode=ParseMode.HTML)
             else:
                 status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
                 send_progress, progress_state = _make_progress_updater(
@@ -1519,7 +1659,11 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                         close_method()
                 await send_progress({"stage": "uploaded", "percent": 32})
 
-                await send_progress({"stage": "processing", "percent": 45, "note": "Подготовка анонимизации"})
+                processing_payload = {"stage": "processing", "percent": 45}
+                processing_note = _PROCESSING_STAGE_NOTES.get(operation)
+                if processing_note:
+                    processing_payload["note"] = processing_note
+                await send_progress(processing_payload)
                 result = await document_manager.process_document(
                     user_id=message.from_user.id,
                     file_content=file_bytes,
@@ -1673,21 +1817,37 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
             file_size_kb = max(1, file_size // 1024)
             stage_labels = _get_stage_labels(operation)
 
-            status_msg = await message.answer(
-                f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
-                f"⏳ Операция: {html_escape(operation_name)}\n"
-                f"📏 Размер: {file_size_kb} КБ",
-                parse_mode=ParseMode.HTML,
-            )
+            status_msg: Message | None = None
+            progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
 
-            send_progress, progress_state = _make_progress_updater(
-                message,
-                status_msg,
-                file_name=file_name,
-                operation_name=operation_name,
-                file_size_kb=file_size_kb,
-                stage_labels=stage_labels,
-            )
+            progress_config = _PROGRESS_OPERATION_CONFIG.get(operation)
+            if progress_config:
+                send_progress = await _make_status_progress_handler(
+                    message,
+                    progress_state,
+                    stage_labels=stage_labels,
+                    stage_order=progress_config["stage_order"],
+                    default_step_label=progress_config["default_label"],
+                    display_total_seconds=progress_config["display_total_seconds"],
+                    min_edit_interval=progress_config.get("min_edit_interval", 0.5),
+                    auto_cycle_interval=progress_config.get("auto_cycle_interval", 1.0),
+                )
+            else:
+                status_msg = await message.answer(
+                    f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
+                    f"⏳ Операция: {html_escape(operation_name)}\n"
+                    f"📏 Размер: {file_size_kb} КБ",
+                    parse_mode=ParseMode.HTML,
+                )
+
+                send_progress, progress_state = _make_progress_updater(
+                    message,
+                    status_msg,
+                    file_name=file_name,
+                    operation_name=operation_name,
+                    file_size_kb=file_size_kb,
+                    stage_labels=stage_labels,
+                )
 
             try:
                 await send_progress({"stage": "start", "percent": 5})
@@ -1707,7 +1867,11 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                         close_method()
                 await send_progress({"stage": "uploaded", "percent": 32})
 
-                await send_progress({"stage": "processing", "percent": 45, "note": "Подготовка анонимизации"})
+                processing_payload = {"stage": "processing", "percent": 45}
+                processing_note = _PROCESSING_STAGE_NOTES.get(operation)
+                if processing_note:
+                    processing_payload["note"] = processing_note
+                await send_progress(processing_payload)
                 result = await document_manager.process_document(
                     user_id=message.from_user.id,
                     file_content=file_bytes,
