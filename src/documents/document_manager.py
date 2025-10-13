@@ -546,12 +546,14 @@ class DocumentManager:
             title = "Анализ искового заявления"
 
         divider = "──────────────────────────────"
+        title_html = html_escape(title)
+        divider_html = f"<code>{divider}</code>"
         lines: list[str] = [
-            f"📄 {title}",
-            divider,
+            f"<b>📄 {title_html}</b>",
+            divider_html,
             "",
-            "✨ Документ успешно создан!",
-            "📎 Формат: DOCX",
+            "<b>✨ Документ успешно создан!</b>",
+            "📎 <b>Формат:</b> DOCX",
         ]
 
         summary = str(analysis.get("summary") or "").strip()
@@ -559,12 +561,12 @@ class DocumentManager:
             summary_clean = re.sub(r"\s+", " ", summary)
             if len(summary_clean) > 280:
                 summary_clean = summary_clean[:277].rstrip() + "..."
-            lines.extend(["", f"📝 {summary_clean}"])
+            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(summary_clean)}"])
 
-        lines.extend(["", "💡 Проверьте содержимое и при необходимости внесите правки."])
+        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
 
         if data.get("truncated"):
-            lines.extend(["", "⚠️ Анализ выполнен по усечённому тексту документа."])
+            lines.extend(["", "<i>⚠️ Анализ выполнен по усечённому тексту документа.</i>"])
 
         return "\n".join(lines).strip()
 
