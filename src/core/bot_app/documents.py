@@ -1519,7 +1519,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                         close_method()
                 await send_progress({"stage": "uploaded", "percent": 32})
 
-                await send_progress({"stage": "processing", "percent": 45})
+                await send_progress({"stage": "processing", "percent": 45, "note": "Подготовка анонимизации"})
                 result = await document_manager.process_document(
                     user_id=message.from_user.id,
                     file_content=file_bytes,
@@ -1698,7 +1698,7 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                         close_method()
                 await send_progress({"stage": "uploaded", "percent": 32})
 
-                await send_progress({"stage": "processing", "percent": 45})
+                await send_progress({"stage": "processing", "percent": 45, "note": "Подготовка анонимизации"})
                 result = await document_manager.process_document(
                     user_id=message.from_user.id,
                     file_content=file_bytes,
@@ -1855,4 +1855,3 @@ def register_document_handlers(dp: Dispatcher) -> None:
     dp.message.register(handle_photo_upload, DocumentProcessingStates.waiting_for_document, F.photo)
     dp.message.register(cmd_askdoc, Command("askdoc"))
     dp.message.register(cmd_enddoc, Command("enddoc"))
-
