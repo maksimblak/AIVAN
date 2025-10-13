@@ -255,8 +255,6 @@ def _format_progress_extras(update: dict[str, Any]) -> str:
         done = int(update.get("pages_done") or 0)
         total = int(update["pages_total"])
         parts.append(f"📄 Страницы: {done}/{total}")
-    if update.get("masked") is not None:
-        parts.append(f"🛡️ Маскировано: {int(update['masked'])}")
     if update.get("confidence") is not None:
         parts.append(f"🔍 Уверенность: {float(update['confidence']):.1f}%")
     if update.get("note"):
