@@ -359,8 +359,8 @@ class DocumentManager:
             anonymized = (result.data.get("anonymized_text") or "").strip()
             report = result.data.get("anonymization_report")
             if anonymized:
-                path = await self._write_export(base_name, "anonymized", anonymized, ".txt")
-                exports.append({"path": str(path), "format": "txt", "label": "Анонимизированный текст"})
+                docx_path = await self._build_docx_anonymized(base_name, anonymized)
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Анонимизированный документ"})
             if report:
                 json_payload = json.dumps(report, ensure_ascii=False, indent=2)
                 path = await self._write_export(base_name, "anonymized_report", json_payload, ".json")
@@ -448,6 +448,34 @@ class DocumentManager:
             Path(path).unlink(missing_ok=True)
         except Exception:
             pass
+
+    async def _build_docx_anonymized(self, base_name: str, anonymized_text: str) -> Path:
+        docx_path = self._build_human_friendly_temp_path(base_name, "анонимизация", ".docx")
+        try:
+            markdown = self._anonymized_to_markdown(anonymized_text)
+            await asyncio.to_thread(build_docx_from_markdown, markdown, str(docx_path))
+        except DocumentDraftingError as exc:
+            raise ProcessingError(str(exc), "DOCX_EXPORT_ERROR") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise ProcessingError("Ошибка при формировании DOCX-файла", "DOCX_EXPORT_ERROR") from exc
+        return docx_path
+
+    @staticmethod
+    def _anonymized_to_markdown(text: str) -> str:
+        if not text.strip():
+            return ""
+        paragraphs = text.split("\n\n")
+        pieces = []
+        for para in paragraphs:
+            stripped = para.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("• ") or stripped.startswith("- "):
+                lines = [line.strip() for line in stripped.split("\n") if line.strip()]
+                pieces.extend(lines)
+            else:
+                pieces.append(stripped)
+        return "\n\n".join(pieces)
 
     # ----------------------------------- formatters -----------------------------------
 
