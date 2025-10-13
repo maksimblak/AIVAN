@@ -65,7 +65,7 @@ class DocumentManager:
         self.storage = self._init_storage(settings)
         self.summarizer = DocumentSummarizer(openai_service=openai_service, settings=settings)
         self.translator = DocumentTranslator(openai_service=openai_service, settings=settings)
-        self.anonymizer = DocumentAnonymizer(settings=settings)
+        self.anonymizer = DocumentAnonymizer(openai_service=openai_service, settings=settings)
         self.risk_analyzer = RiskAnalyzer(openai_service=openai_service)
         self.chat = DocumentChat(openai_service=openai_service, settings=settings)
         self.ocr_converter = OCRConverter(settings=settings)
@@ -567,6 +567,26 @@ class DocumentManager:
 
         if data.get("truncated"):
             lines.extend(["", "<i>⚠️ Анализ выполнен по усечённому тексту документа.</i>"])
+
+        report = data.get("anonymization_report") or {}
+        engine = report.get("engine")
+        notes = report.get("notes") or []
+        if engine == "openai":
+            lines.append("")
+            lines.append("<i>✔️ Анонимизация выполнена.</i>")
+        elif engine == "fallback":
+            lines.append("")
+            lines.append("<i>⚠️ Использован резервный режим анонимизации.</i>")
+        if engine == "pattern":
+            stats = report.get("statistics") or {}
+            total_masked = sum(stats.values())
+            lines.append("")
+            lines.append(f"<i>🔐 Обезличено фрагментов: {total_masked}</i>")
+        for note in notes:
+            if not note:
+                continue
+            lines.append("")
+            lines.append(f"<i>{html_escape(str(note))}</i>")
 
         return "\n".join(lines).strip()
 
