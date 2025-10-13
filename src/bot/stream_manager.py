@@ -209,10 +209,27 @@ class StreamingCallback:
 
     def __init__(self, stream_manager: StreamManager):
         self.stream_manager = stream_manager
+        self._buffer = []
 
     async def __call__(self, partial_text: str, is_final: bool):
         try:
-            await self.stream_manager.update_text(partial_text, is_final=is_final)
+            if is_final and partial_text:
+                # Финальный ответ содержит полную версию — перезапишем буфер, чтобы избежать дублирования
+                self._buffer = [partial_text]
+            elif partial_text:
+                self._buffer.append(partial_text)
+
+            if not self._buffer:
+                assembled = ""
+            elif len(self._buffer) == 1:
+                assembled = self._buffer[0]
+            else:
+                assembled = "".join(self._buffer)
+
+            await self.stream_manager.update_text(assembled, is_final=is_final)
+
+            if is_final:
+                self._buffer.clear()
         except Exception as e:
             logger.error("Error in streaming callback: %s", e)
             if is_final:

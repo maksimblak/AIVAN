@@ -113,7 +113,8 @@ class OCRConverter(DocumentProcessor):
                 raise ProcessingError("Не удалось распознать текст в документе", "OCR_NO_TEXT")
 
             cleaned_text = self._clean_ocr_text(text)
-            quality_analysis = self._analyze_ocr_quality(cleaned_text, confidence)
+            word_count = self._count_words(cleaned_text)
+            quality_analysis = self._analyze_ocr_quality(cleaned_text, confidence, word_count)
 
             result_data: Dict[str, Any] = {
                 "recognized_text": cleaned_text,
@@ -124,7 +125,7 @@ class OCRConverter(DocumentProcessor):
                 "processing_info": {
                     "file_type": file_type,
                     "text_length": len(cleaned_text),
-                    "word_count": len(cleaned_text.split()),
+                    "word_count": word_count,
                     "pages_processed": len(pages_info) if pages_info else (1 if file_type == "image" else 0),
                 },
             }
@@ -151,7 +152,7 @@ class OCRConverter(DocumentProcessor):
         Распознание текста изображений: предобработка → PaddleOCR → (опционально) OpenAI Vision → mock.
         Используется кэш по контент-хэшу и метрика читабельности.
         """
-        sha = await asyncio.to_thread(lambda: hashlib.sha256(image_path.read_bytes()).hexdigest())
+        sha = await asyncio.to_thread(self._hash_file, image_path)
 
         preprocessed: Path | None = None
         try:
@@ -599,6 +600,20 @@ class OCRConverter(DocumentProcessor):
         cleaned = self._apply_ocr_corrections(cleaned)
         return cleaned
 
+    @staticmethod
+    def _count_words(text: str) -> int:
+        """Быстрая оценка количества слов без выделения списков."""
+        in_word = False
+        count = 0
+        for ch in text:
+            if ch.isspace():
+                in_word = False
+                continue
+            if not in_word:
+                count += 1
+                in_word = True
+        return count
+
     def _apply_ocr_corrections(self, text: str) -> str:
         """Умные исправления частых ошибок режима "распознание текста" (минимум ложных срабатываний)."""
         import re
@@ -650,7 +665,7 @@ class OCRConverter(DocumentProcessor):
         score = alpha_ratio * 0.4 + word_ratio * 0.4 + (1.0 - susp_ratio) * 0.2
         return float(min(1.0, max(0.0, score)))
 
-    def _analyze_ocr_quality(self, text: str, confidence: float) -> Dict[str, Any]:
+    def _analyze_ocr_quality(self, text: str, confidence: float, word_count: int) -> Dict[str, Any]:
         """Человеко-понятная оценка качества результата распознания текста."""
         level = "низкое"
         if confidence >= 90:
@@ -662,7 +677,6 @@ class OCRConverter(DocumentProcessor):
         elif confidence >= 60:
             level = "среднее"
 
-        word_count = len(text.split()) if text else 0
         char_count = len(text) if text else 0
         suspicious_chars = sum(1 for ch in text if ch in "°§¤¦№�")
 
@@ -748,6 +762,14 @@ class OCRConverter(DocumentProcessor):
         if len(paddle_text) < 80 and score < 0.5:
             return True
         return False
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     # ——————————————————————————————————————
     # Зависимости

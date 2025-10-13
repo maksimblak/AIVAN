@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -799,10 +800,9 @@ async def _ask_legal_internal(
                                     if piece:
                                         accumulated_text += piece
                                         try:
-                                            if asyncio.iscoroutinefunction(callback):
-                                                await callback(accumulated_text, False)
-                                            else:
-                                                callback(accumulated_text, False)
+                                            cb_result = callback(piece, False)
+                                            if inspect.isawaitable(cb_result):
+                                                await cb_result
                                         except Exception as cb_err:
                                             logger.warning("Callback error during streaming: %s", cb_err)
 
@@ -852,10 +852,9 @@ async def _ask_legal_internal(
                             formatted_final = final_raw
                             if callback and formatted_final:
                                 try:
-                                    if asyncio.iscoroutinefunction(callback):
-                                        await callback(formatted_final, True)
-                                    else:
-                                        callback(formatted_final, True)
+                                    cb_result = callback(formatted_final, True)
+                                    if inspect.isawaitable(cb_result):
+                                        await cb_result
                                 except Exception as cb_err:
                                     logger.warning("Final callback error: %s", cb_err)
 

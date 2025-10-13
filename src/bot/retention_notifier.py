@@ -90,6 +90,12 @@ class RetentionNotifier:
         self.db = db
         self._running = False
         self._task: asyncio.Task | None = None
+        self._tables_initialized = False
+        self._tables_lock = asyncio.Lock()
+
+        # Отправляем не более N уведомлений одновременно, чтобы не упереться в rate limit Telegram.
+        self._send_concurrency = 5
+        self._send_delay = 0.2
 
     async def start(self) -> None:
         """Запустить фоновую задачу отправки уведомлений"""
@@ -136,6 +142,7 @@ class RetentionNotifier:
         """Обработать один сценарий уведомлений"""
         try:
             # Получаем пользователей для этого сценария
+            await self._ensure_aux_tables()
             users = await self._get_users_for_scenario(scenario)
 
             if not users:
@@ -143,21 +150,34 @@ class RetentionNotifier:
 
             logger.info(f"Processing {len(users)} users for scenario '{scenario.name}'")
 
-            # Отправляем уведомления
-            sent_count = 0
-            for user_id in users:
+            sent_users: list[int] = []
+            send_errors = 0
+            semaphore = asyncio.Semaphore(self._send_concurrency)
+
+            async def worker(user_id: int) -> None:
+                nonlocal send_errors
                 try:
-                    await self._send_notification(user_id, scenario)
-                    await self._mark_notification_sent(user_id, scenario.name)
-                    sent_count += 1
-
-                    # Небольшая задержка между отправками
-                    await asyncio.sleep(1)
-
+                    async with semaphore:
+                        delivered = await self._send_notification(user_id, scenario)
+                        if delivered:
+                            sent_users.append(user_id)
                 except Exception as e:
+                    send_errors += 1
                     logger.error(f"Failed to send notification to user {user_id}: {e}")
+                finally:
+                    await asyncio.sleep(self._send_delay)
 
-            logger.info(f"Sent {sent_count} notifications for scenario '{scenario.name}'")
+            await asyncio.gather(*(worker(uid) for uid in users))
+
+            if sent_users:
+                await self._mark_notification_sent_bulk(sent_users, scenario.name)
+
+            logger.info(
+                "Sent %s notifications for scenario '%s' (errors=%s)",
+                len(sent_users),
+                scenario.name,
+                send_errors,
+            )
 
         except Exception as e:
             logger.error(f"Error processing scenario '{scenario.name}': {e}", exc_info=True)
@@ -258,56 +278,75 @@ class RetentionNotifier:
                 )
 
             logger.info(f"Sent '{scenario.name}' notification to user {user_id}")
+            return True
 
         except Exception as e:
             # Если пользователь заблокировал бота, логируем и пропускаем
             if "bot was blocked" in str(e).lower() or "user is deactivated" in str(e).lower():
                 logger.info(f"User {user_id} blocked the bot, skipping")
                 await self._mark_user_blocked(user_id)
-            else:
-                raise
+                return False
+            raise
 
-    async def _mark_notification_sent(self, user_id: int, scenario_name: str) -> None:
-        """Отметить что уведомление отправлено"""
+    async def _mark_notification_sent_bulk(self, user_ids: list[int], scenario_name: str) -> None:
+        """Отметить что уведомления отправлены (пакетом)."""
+        if not user_ids:
+            return
+
         now = int(time.time())
+        params = [(user_id, scenario_name, now) for user_id in user_ids]
 
         async with self.db.pool.acquire() as conn:
-            # Создаём таблицу если её нет
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS retention_notifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    scenario TEXT NOT NULL,
-                    sent_at INTEGER NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id)
-                )
-            """)
-
-            # Добавляем запись
-            await conn.execute("""
+            await conn.executemany(
+                """
                 INSERT INTO retention_notifications (user_id, scenario, sent_at)
                 VALUES (?, ?, ?)
-            """, (user_id, scenario_name, now))
-
+                """,
+                params,
+            )
             await conn.commit()
 
     async def _mark_user_blocked(self, user_id: int) -> None:
         """Отметить что пользователь заблокировал бота"""
+        await self._ensure_aux_tables()
         async with self.db.pool.acquire() as conn:
-            # Создаём таблицу если её нет
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS blocked_users (
-                    user_id INTEGER PRIMARY KEY,
-                    blocked_at INTEGER NOT NULL
-                )
-            """)
-
-            await conn.execute("""
+            await conn.execute(
+                """
                 INSERT OR REPLACE INTO blocked_users (user_id, blocked_at)
                 VALUES (?, ?)
-            """, (user_id, int(time.time())))
-
+                """,
+                (user_id, int(time.time())),
+            )
             await conn.commit()
+
+    async def _ensure_aux_tables(self) -> None:
+        if self._tables_initialized:
+            return
+        async with self._tables_lock:
+            if self._tables_initialized:
+                return
+            async with self.db.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS retention_notifications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        scenario TEXT NOT NULL,
+                        sent_at INTEGER NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(user_id)
+                    )
+                    """,
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS blocked_users (
+                        user_id INTEGER PRIMARY KEY,
+                        blocked_at INTEGER NOT NULL
+                    )
+                    """,
+                )
+                await conn.commit()
+            self._tables_initialized = True
 
     # ==================== Ручные методы ====================
 
@@ -370,6 +409,7 @@ class RetentionNotifier:
 
     async def get_notification_stats(self) -> dict:
         """Получить статистику по отправленным уведомлениям"""
+        await self._ensure_aux_tables()
         async with self.db.pool.acquire() as conn:
             # Общее количество отправленных
             cursor = await conn.execute("""
