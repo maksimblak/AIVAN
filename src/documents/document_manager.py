@@ -19,7 +19,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Dict, List, Mapping
 
-from src.core.excel_export import build_risk_excel
 from src.core.settings import AppSettings
 
 from .anonymizer import DocumentAnonymizer
@@ -339,15 +338,10 @@ class DocumentManager:
         base_name = Path(doc_info.original_name or "document").stem or "document"
 
         if operation == "summarize":
-            summary = ((result.data.get("summary") or {}).get("content") or "").strip()
-            structured = (result.data.get("summary") or {}).get("structured")
-            if summary:
-                path = await self._write_export(base_name, "summary", summary, ".txt")
-                exports.append({"path": str(path), "format": "txt", "label": "Summary"})
-            if structured:
-                json_payload = json.dumps(structured, ensure_ascii=False, indent=2)
-                path = await self._write_export(base_name, "summary", json_payload, ".json")
-                exports.append({"path": str(path), "format": "json", "label": "Summary JSON"})
+            summary_block = ((result.data.get("summary") or {}).get("content") or "")
+            structured = (result.data.get("summary") or {}).get("structured") or {}
+            docx_path = await self._build_docx_summary(base_name, summary_block, structured)
+            exports.append({"path": str(docx_path), "format": "docx", "label": "Выжимка (DOCX)"})
 
         elif operation == "translate":
             translated = (result.data.get("translated_text") or "").strip()
@@ -362,22 +356,8 @@ class DocumentManager:
                 exports.append({"path": str(docx_path), "format": "docx", "label": "Анонимизированный документ"})
 
         elif operation == "analyze_risks":
-            highlighted = (result.data.get("highlighted_text") or "").strip()
-            if highlighted:
-                path = await self._write_export(base_name, "risk_highlight", highlighted, ".txt")
-                exports.append({"path": str(path), "format": "txt", "label": "Подсветка рисков"})
-            json_payload = json.dumps(result.data, ensure_ascii=False, indent=2)
-            path = await self._write_export(base_name, "risk_report", json_payload, ".json")
-            exports.append({"path": str(path), "format": "json", "label": "Отчёт"})
-            try:
-                excel_path = await asyncio.to_thread(
-                    build_risk_excel, result.data, file_stub=f"{base_name}_risks"
-                )
-                exports.append({"path": str(excel_path), "format": "xlsx", "label": "Отчёт (XLSX)"})
-            except RuntimeError as exc:
-                logger.warning("Excel export unavailable for risk analysis: %s", exc)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Failed to build Excel risk report: %s", exc, exc_info=True)
+            docx_path = await self._build_docx_risk(base_name, result.data or {})
+            exports.append({"path": str(docx_path), "format": "docx", "label": "Анализ рисков (DOCX)"})
 
         elif operation == "lawsuit_analysis":
             analysis = result.data.get("analysis") or {}
@@ -402,8 +382,8 @@ class DocumentManager:
         elif operation == "ocr":
             recognized = (result.data.get("recognized_text") or "").strip()
             if recognized:
-                path = await self._write_export(base_name, "ocr", recognized, ".txt")
-                exports.append({"path": str(path), "format": "txt", "label": "Распознанный текст"})
+                docx_path = await self._build_docx_ocr(base_name, recognized)
+                exports.append({"path": str(docx_path), "format": "docx", "label": "Распознанный текст (DOCX)"})
 
         return exports
 
@@ -437,6 +417,19 @@ class DocumentManager:
         target = Path(tempfile.gettempdir()) / f"aivan_{base}_{suffix}_{uuid.uuid4().hex}{extension}"
         return await write_text_async(target, content)
 
+    async def _build_docx_from_markdown_safe(self, base_name: str, suffix: str, markdown: str) -> Path:
+        docx_path = self._build_human_friendly_temp_path(base_name, suffix, ".docx")
+        content = (markdown or "").strip()
+        if not content:
+            content = f"# {suffix or 'Документ'}\n\n(данные отсутствуют)"
+        try:
+            await asyncio.to_thread(build_docx_from_markdown, content, str(docx_path))
+        except DocumentDraftingError as exc:
+            raise ProcessingError(str(exc), "DOCX_EXPORT_ERROR") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise ProcessingError("Ошибка при формировании DOCX-файла", "DOCX_EXPORT_ERROR") from exc
+        return docx_path
+
     @staticmethod
     def _safe_unlink(path: str | Path) -> None:
         try:
@@ -445,15 +438,79 @@ class DocumentManager:
             pass
 
     async def _build_docx_anonymized(self, base_name: str, anonymized_text: str) -> Path:
-        docx_path = self._build_human_friendly_temp_path(base_name, "анонимизация", ".docx")
-        try:
-            markdown = self._anonymized_to_markdown(anonymized_text)
-            await asyncio.to_thread(build_docx_from_markdown, markdown, str(docx_path))
-        except DocumentDraftingError as exc:
-            raise ProcessingError(str(exc), "DOCX_EXPORT_ERROR") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise ProcessingError("Ошибка при формировании DOCX-файла", "DOCX_EXPORT_ERROR") from exc
-        return docx_path
+        markdown = self._anonymized_to_markdown(anonymized_text)
+        return await self._build_docx_from_markdown_safe(base_name, "анонимизация", markdown)
+
+    async def _build_docx_summary(
+        self,
+        base_name: str,
+        summary_text: str,
+        structured: Mapping[str, Any] | Dict[str, Any] | None,
+    ) -> Path:
+        sections: list[str] = ["# Краткая выжимка"]
+        summary_clean = (summary_text or "").strip()
+        if summary_clean:
+            sections.append(summary_clean)
+
+        def _add_list(title: str, items: Any) -> None:
+            values = [str(item).strip() for item in (items or []) if str(item).strip()]
+            if not values:
+                return
+            sections.append(f"## {title}")
+            sections.extend(f"- {value}" for value in values)
+
+        data = dict(structured or {})
+        _add_list("Ключевые пункты", data.get("key_points"))
+        _add_list("Сроки", data.get("deadlines"))
+        _add_list("Ответственность", data.get("penalties"))
+        _add_list("Рекомендуемые действия", data.get("actions"))
+
+        markdown = "\n\n".join(sections)
+        return await self._build_docx_from_markdown_safe(base_name, "выжимка", markdown)
+
+    async def _build_docx_risk(self, base_name: str, risk_data: Mapping[str, Any]) -> Path:
+        data = dict(risk_data or {})
+        sections: list[str] = ["# Анализ рисков"]
+        overall = str(data.get("overall_risk_level") or "не определён")
+        sections.append(f"**Общий уровень риска:** {overall}")
+
+        summary = (data.get("ai_analysis") or {}).get("summary") or ""
+        if summary:
+            sections.append("")
+            sections.append(summary.strip())
+
+        def _format_risks(title: str, items: Any) -> None:
+            risks = []
+            for item in items or []:
+                entry = item or {}
+                desc = str(entry.get("description") or entry.get("note") or entry.get("text") or "").strip()
+                level = str((item or {}).get("risk_level") or "").strip()
+                if desc:
+                    prefix = f"[{level.upper()}] " if level else ""
+                    risks.append(f"- {prefix}{desc}")
+            if risks:
+                sections.append(f"## {title}")
+                sections.extend(risks)
+
+        _format_risks("Паттерны и правила", data.get("pattern_risks"))
+        ai_risks = ((data.get("ai_analysis") or {}).get("risks")) or []
+        _format_risks("Выявленные риски", ai_risks)
+
+        recommendations = [str(item).strip() for item in data.get("recommendations") or [] if str(item).strip()]
+        if recommendations:
+            sections.append("## Рекомендации")
+            sections.extend(f"- {text}" for text in recommendations)
+
+        compliance = (data.get("legal_compliance") or {}).get("violations") or []
+        _format_risks("Нарушения", compliance)
+
+        markdown = "\n\n".join(sections)
+        return await self._build_docx_from_markdown_safe(base_name, "анализ рисков", markdown)
+
+    async def _build_docx_ocr(self, base_name: str, recognized_text: str) -> Path:
+        text = (recognized_text or "").strip()
+        markdown = "# Распознанный текст\n\n" + (text if text else "(данные отсутствуют)")
+        return await self._build_docx_from_markdown_safe(base_name, "распознавание", markdown)
 
     @staticmethod
     def _anonymized_to_markdown(text: str) -> str:
