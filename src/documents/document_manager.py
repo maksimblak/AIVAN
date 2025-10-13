@@ -615,13 +615,19 @@ class DocumentManager:
         if total_int is not None:
             lines.extend(["", f"🛡️ Обезличено фрагментов: {total_int}"])
 
-        if counters:
+        meaningful_counters = {}
+        for key, value in counters.items():
+            try:
+                count_val = int(value)
+            except (TypeError, ValueError):
+                continue
+            if count_val > 0:
+                meaningful_counters[str(key)] = count_val
+
+        if meaningful_counters:
             top_items: list[tuple[str, int]] = []
-            for key, value in counters.items():
-                try:
-                    top_items.append((str(key), int(value)))
-                except (TypeError, ValueError):
-                    continue
+            for key, value in meaningful_counters.items():
+                top_items.append((key, value))
             top_items.sort(key=lambda item: item[1], reverse=True)
             if top_items:
                 display = ", ".join(
@@ -639,11 +645,16 @@ class DocumentManager:
 
         lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
 
-        notes = report.get("notes") or []
-        for note in notes[:3]:
+        raw_notes = report.get("notes") or []
+        meaningful_notes: list[str] = []
+        for note in raw_notes:
             note_text = str(note or "").strip()
             if not note_text:
                 continue
+            if "анонимизация выполнена" in note_text.lower():
+                continue
+            meaningful_notes.append(note_text)
+        for note_text in meaningful_notes[:3]:
             lines.extend(["", f"<i>{html_escape(note_text)}</i>"])
 
         return "\n".join(lines).strip()
