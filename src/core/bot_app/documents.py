@@ -786,39 +786,66 @@ async def _send_questions_prompt(
         return
 
     max_len = 3500
-    chunk_lines: list[str] = [
-        f"📋 <b>{title}</b>",
-        f"<code>{'─' * 35}</code>",
-        "",
-    ]
+
+    def _start_chunk(suffix: str = "") -> tuple[list[str], int, int]:
+        header_lines = [
+            f"📋 <b>{title}{suffix}</b>",
+            f"<code>{'─' * 35}</code>",
+            "",
+        ]
+        length = 0
+        count = 0
+        for line in header_lines:
+            if count:
+                length += 1
+            length += len(line)
+            count += 1
+        return header_lines, length, count
+
+    def _append_lines(
+        buffer: list[str], current_len: int, line_count: int, new_lines: Sequence[str]
+    ) -> tuple[int, int]:
+        for line in new_lines:
+            if line_count:
+                current_len += 1
+            buffer.append(line)
+            current_len += len(line)
+            line_count += 1
+        return current_len, line_count
+
+    def _estimate_len(current_len: int, line_count: int, new_lines: Sequence[str]) -> int:
+        length = current_len
+        count = line_count
+        for line in new_lines:
+            if count:
+                length += 1
+            length += len(line)
+            count += 1
+        return length
+
+    chunk_lines, chunk_len, line_count = _start_chunk()
+    base_line_count = line_count
 
     for block in question_blocks:
-        candidate = chunk_lines + [block, ""]
-        candidate_text = "\n".join(candidate)
-        if len(candidate_text) > max_len and len(chunk_lines) > 3:
-            await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
-            chunk_lines = [
-                f"📋 <b>{title} (продолжение)</b>",
-                f"<code>{'─' * 35}</code>",
-                "",
-                block,
-                "",
-            ]
-        else:
-            if len(candidate_text) > max_len:
-                await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
-                chunk_lines = [
-                    f"📋 <b>{title} (продолжение)</b>",
-                    f"<code>{'─' * 35}</code>",
-                    "",
-                    block,
-                    "",
-                ]
-            else:
-                chunk_lines.append(block)
-                chunk_lines.append("")
+        while True:
+            candidate_len = _estimate_len(chunk_len, line_count, (block, ""))
+            if candidate_len <= max_len:
+                chunk_len, line_count = _append_lines(chunk_lines, chunk_len, line_count, (block, ""))
+                break
 
-    if len(chunk_lines) > 3:
+            if line_count > base_line_count:
+                await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+                chunk_lines, chunk_len, line_count = _start_chunk(" (продолжение)")
+                base_line_count = line_count
+                continue
+
+            await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
+            chunk_lines, chunk_len, line_count = _start_chunk(" (продолжение)")
+            base_line_count = line_count
+            chunk_len, line_count = _append_lines(chunk_lines, chunk_len, line_count, (block, ""))
+            break
+
+    if line_count > base_line_count:
         await message.answer("\n".join(chunk_lines), parse_mode=ParseMode.HTML)
 
 
