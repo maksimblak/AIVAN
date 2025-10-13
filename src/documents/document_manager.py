@@ -577,22 +577,76 @@ class DocumentManager:
         return "\n".join(lines)
 
     def _format_anonymize_result(self, data: Dict[str, Any], message: str) -> str:
-        anonymized = (data.get("anonymized_text") or "")[:3500]
-        report = data.get("anonymization_report") or {}
-        total = report.get("total_matches", 0)
-        stats = report.get("counters") or {}
-        lines = [
-            "<b>Анонимизация</b>",
-            f"Обнаружено фрагментов: {int(total)}",
+        doc_info = data.get("document_info") or {}
+        original_name = str(doc_info.get("original_name") or "").strip()
+        title = Path(original_name).stem if original_name else ""
+        title = title.replace("_", " ").replace("-", " ").strip()
+        if not title:
+            title = "Анонимизация документа"
+
+        divider = "─" * 30
+        title_html = html_escape(title)
+        divider_html = f"<code>{divider}</code>"
+
+        lines: list[str] = [
+            f"<b>📄 {title_html}</b>",
+            divider_html,
             "",
-            html_escape(anonymized),
+            "<b>✨ Документ успешно обезличен!</b>",
+            "📎 <b>Формат:</b> DOCX",
         ]
-        if stats:
-            lines.append("")
-            lines.append("<b>Категории:</b>")
-            for key, value in list(stats.items())[:8]:
-                lines.append(f"• {html_escape(str(key))}: {value}")
-        return "\n".join(lines)
+
+        report = data.get("anonymization_report") or {}
+        counters = report.get("statistics") or report.get("counters") or {}
+        total_masked = report.get("processed_items")
+        if total_masked is None:
+            total_masked = report.get("total_matches")
+        if total_masked is None and counters:
+            try:
+                total_masked = sum(int(v) for v in counters.values())
+            except Exception:  # noqa: BLE001
+                total_masked = None
+
+        try:
+            total_int = int(total_masked) if total_masked is not None else None
+        except (TypeError, ValueError):
+            total_int = None
+
+        if total_int is not None:
+            lines.extend(["", f"🛡️ Обезличено фрагментов: {total_int}"])
+
+        if counters:
+            top_items: list[tuple[str, int]] = []
+            for key, value in counters.items():
+                try:
+                    top_items.append((str(key), int(value)))
+                except (TypeError, ValueError):
+                    continue
+            top_items.sort(key=lambda item: item[1], reverse=True)
+            if top_items:
+                display = ", ".join(
+                    f"{html_escape(label)}: {count}" for label, count in top_items[:4]
+                )
+                if display:
+                    lines.extend(["", f"📊 Категории: {display}"])
+
+        preview_source = str(data.get("anonymized_text") or "")
+        preview_clean = re.sub(r"\s+", " ", preview_source).strip()
+        if preview_clean:
+            if len(preview_clean) > 280:
+                preview_clean = preview_clean[:277].rstrip() + "..."
+            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_clean)}"])
+
+        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
+
+        notes = report.get("notes") or []
+        for note in notes[:3]:
+            note_text = str(note or "").strip()
+            if not note_text:
+                continue
+            lines.extend(["", f"<i>{html_escape(note_text)}</i>"])
+
+        return "\n".join(lines).strip()
 
     def _format_risk_result(self, data: Dict[str, Any], message: str) -> str:
         overall = data.get("overall_risk_level") or "не определен"
