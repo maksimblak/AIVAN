@@ -180,20 +180,27 @@ class UserBehaviorTracker:
             return
 
         async with self.db.pool.acquire() as conn:
-            for event in self.events_buffer:
-                await conn.execute("""
-                    INSERT INTO behavior_events
-                    (user_id, event_type, feature, timestamp, metadata, duration_ms, success)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
+            payload = [
+                (
                     event.user_id,
                     event.event_type,
                     event.feature,
                     event.timestamp,
                     str(event.metadata),
                     event.duration_ms,
-                    1 if event.success else 0
-                ))
+                    1 if event.success else 0,
+                )
+                for event in self.events_buffer
+            ]
+
+            await conn.executemany(
+                """
+                INSERT INTO behavior_events
+                (user_id, event_type, feature, timestamp, metadata, duration_ms, success)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                payload,
+            )
 
         logger.info(f"Flushed {len(self.events_buffer)} behavior events to DB")
         self.events_buffer.clear()
