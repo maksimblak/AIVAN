@@ -3,6 +3,7 @@
 """
 
 import pytest
+import pytest_asyncio
 import tempfile
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ from src.core.db_advanced import DatabaseAdvanced, UserRecord, TransactionRecord
 
 class TestDatabaseAdvanced:
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def db(self):
         # Создаем временную базу данных для тестов
         temp_dir = tempfile.mkdtemp()
@@ -274,4 +275,3 @@ class TestDatabaseAdvanced:
         assert low_rated[0]["request_id"] == request_id
         assert low_rated[0]["rating_count"] == 2
         assert low_rated[0]["avg_rating"] < 0.0
-

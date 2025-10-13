@@ -145,7 +145,8 @@ class ConnectionPool:
                 raise RuntimeError("Connection pool is closed")
 
             # Создаем директорию для БД если не существует
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            db_dir = os.path.dirname(os.path.abspath(self.db_path))
+            os.makedirs(db_dir, exist_ok=True)
 
             # Создаем начальные соединения
             for _ in range(min(2, self.max_connections)):  # Создаем 2 соединения для начала
@@ -458,10 +459,10 @@ class DatabaseAdvanced:
                 CREATE TABLE IF NOT EXISTS user_journey_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    event_data TEXT,
-                    timestamp INTEGER NOT NULL,
-                    session_id TEXT,
+                    step_name TEXT NOT NULL,
+                    completed INTEGER NOT NULL DEFAULT 1,
+                    metadata TEXT,
+                    created_at INTEGER NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 );
                 """
@@ -506,15 +507,35 @@ class DatabaseAdvanced:
                     "ALTER TABLE users ADD COLUMN subscription_last_purchase_at INTEGER NOT NULL DEFAULT 0;",
                     "ALTER TABLE ratings ADD COLUMN username TEXT;",
                     "ALTER TABLE ratings ADD COLUMN answer_text TEXT;",
+                    "ALTER TABLE user_journey_events ADD COLUMN step_name TEXT;",
+                    "ALTER TABLE user_journey_events ADD COLUMN completed INTEGER NOT NULL DEFAULT 1;",
+                    "ALTER TABLE user_journey_events ADD COLUMN metadata TEXT;",
+                    "ALTER TABLE user_journey_events ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
                 ]
 
                 for migration in migrations:
                     try:
                         await conn.execute(migration)
                         logger.info(f"Applied migration: {migration}")
-                    except Exception:
-                        # Колонка уже существует, игнорируем
-                        pass
+                    except Exception as migration_error:
+                        logger.debug(f"Migration skipped: {migration_error}")
+
+                # Проставляем значения по умолчанию в user_journey_events, если новые колонки добавлены
+                existing_journey_cols = await self._get_table_columns(conn, 'user_journey_events')
+                if {'event_type', 'event_data', 'timestamp'}.intersection(existing_journey_cols):
+                    await conn.execute(
+                        """
+                        UPDATE user_journey_events
+                        SET step_name = COALESCE(step_name, event_type),
+                            metadata = COALESCE(metadata, event_data),
+                            created_at = CASE
+                                WHEN created_at IS NOT NULL AND created_at > 0 THEN created_at
+                                ELSE COALESCE(timestamp, CAST(strftime('%s','now') AS INTEGER))
+                            END,
+                            completed = CASE WHEN completed IN (0,1) THEN completed ELSE 1 END
+                        WHERE step_name IS NULL OR metadata IS NULL OR created_at <= 0
+                        """
+                    )
 
                 await conn.commit()
             except Exception as e:
@@ -919,6 +940,15 @@ class DatabaseAdvanced:
         async with self.pool.acquire() as conn:
             try:
                 now = int(time.time())
+
+                minor_units = amount_minor_units
+                if minor_units is None:
+                    # По умолчанию работаем в копейках для RUB, иначе сохраняем исходное значение
+                    if currency.upper() in {"RUB", "RUR"}:
+                        minor_units = amount * 100
+                    else:
+                        minor_units = amount
+
                 cursor = await conn.execute(
                     """
                     INSERT INTO transactions
@@ -931,7 +961,7 @@ class DatabaseAdvanced:
                         provider,
                         currency,
                         amount,
-                        amount_minor_units if amount_minor_units is not None else amount,
+                        minor_units,
                         payload,
                         normalized_status.value,
                         telegram_payment_charge_id,
