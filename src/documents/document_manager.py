@@ -357,14 +357,9 @@ class DocumentManager:
 
         elif operation == "anonymize":
             anonymized = (result.data.get("anonymized_text") or "").strip()
-            report = result.data.get("anonymization_report")
             if anonymized:
                 docx_path = await self._build_docx_anonymized(base_name, anonymized)
                 exports.append({"path": str(docx_path), "format": "docx", "label": "Анонимизированный документ"})
-            if report:
-                json_payload = json.dumps(report, ensure_ascii=False, indent=2)
-                path = await self._write_export(base_name, "anonymized_report", json_payload, ".json")
-                exports.append({"path": str(path), "format": "json", "label": "Отчёт"})
 
         elif operation == "analyze_risks":
             highlighted = (result.data.get("highlighted_text") or "").strip()
