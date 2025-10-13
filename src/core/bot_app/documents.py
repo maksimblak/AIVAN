@@ -1537,6 +1537,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
                         await message.answer(
                             chunk,
+                            parse_mode=ParseMode.HTML,
                             reply_markup=reply_markup if idx == 0 else None,
                         )
 
