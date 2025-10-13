@@ -251,8 +251,6 @@ def _format_progress_extras(update: dict[str, Any]) -> str:
         parts.append(f"📦 Чанков: {int(update['chunks_total'])}")
     if update.get("language_pair"):
         parts.append(f"🌐 {html_escape(str(update['language_pair']))}")
-    if update.get("mode"):
-        parts.append(f"⚙️ Режим: {html_escape(str(update['mode']))}")
     if update.get("pages_total") is not None:
         done = int(update.get("pages_done") or 0)
         total = int(update["pages_total"])
