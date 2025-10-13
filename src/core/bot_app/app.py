@@ -46,17 +46,17 @@ def refresh_runtime_globals() -> None:
 
 def _build_base_commands() -> list[BotCommand]:
     return [
-        BotCommand(command="start", description=f"{Emoji.ROBOT} Start the bot"),
-        BotCommand(command="buy", description=f"{Emoji.MAGIC} Purchase subscription"),
-        BotCommand(command="status", description=f"{Emoji.STATS} Subscription status"),
-        BotCommand(command="mystats", description="Show my statistics"),
+        BotCommand(command="start", description=f"{Emoji.ROBOT} Запустить бота"),
+        BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
+        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
+        BotCommand(command="mystats", description="Показать мою статистику"),
     ]
 
 
 def _build_admin_commands(base_commands: Sequence[BotCommand]) -> list[BotCommand]:
     admin_specific = [
-        BotCommand(command="ratings", description="Ratings dashboard (admin)"),
-        BotCommand(command="errors", description="Error dashboard (admin)"),
+        BotCommand(command="ratings", description="Панель рейтингов (админ)"),
+        BotCommand(command="errors", description="Панель ошибок (админ)"),
     ]
     return [*base_commands, *admin_specific]
 
