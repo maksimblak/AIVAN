@@ -11,6 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -79,88 +80,254 @@ class RetentionAnalytics:
         """Пользователи с повторными платежами"""
 
         async with self.db.pool.acquire() as conn:
-            # Получаем пользователей с несколькими платежами
-            cursor = await conn.execute("""
+            now = int(time.time())
+
+            cursor = await conn.execute(
+                """
+                WITH payment_users AS (
+                    SELECT
+                        u.user_id,
+                        COUNT(t.id) AS payment_count,
+                        SUM(t.amount) AS total_spent,
+                        MIN(t.created_at) AS first_payment_at,
+                        u.total_requests,
+                        u.created_at
+                    FROM users u
+                    INNER JOIN payments t ON u.user_id = t.user_id
+                    WHERE t.status = 'completed'
+                    GROUP BY u.user_id
+                    HAVING payment_count >= ?
+                ),
+                request_summary AS (
+                    SELECT
+                        user_id,
+                        COUNT(*) AS total_requests,
+                        SUM(CASE WHEN response_time_ms > 0 THEN response_time_ms ELSE 0 END) AS total_response_ms,
+                        SUM(CASE WHEN response_time_ms > 0 THEN 1 ELSE 0 END) AS response_count,
+                        COUNT(DISTINCT request_type) AS feature_count,
+                        COUNT(DISTINCT DATE(created_at, 'unixepoch')) AS active_days,
+                        MIN(created_at) AS first_request,
+                        MAX(created_at) AS last_request
+                    FROM requests
+                    GROUP BY user_id
+                ),
+                favorite_features AS (
+                    SELECT user_id,
+                           json_group_array(json_object('feature', request_type, 'count', usage_count)) AS favorites
+                    FROM (
+                        SELECT user_id,
+                               request_type,
+                               COUNT(*) AS usage_count,
+                               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, request_type) AS rn
+                        FROM requests
+                        WHERE success = 1
+                        GROUP BY user_id, request_type
+                    )
+                    WHERE rn <= 5
+                    GROUP BY user_id
+                ),
+                peak_hours AS (
+                    SELECT user_id, hour
+                    FROM (
+                        SELECT
+                            user_id,
+                            CAST(strftime('%H', created_at, 'unixepoch') AS INTEGER) AS hour,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY user_id
+                                ORDER BY COUNT(*) OVER (PARTITION BY user_id, CAST(strftime('%H', created_at, 'unixepoch') AS INTEGER)) DESC,
+                                         CAST(strftime('%H', created_at, 'unixepoch') AS INTEGER)
+                            ) AS rn
+                        FROM requests
+                    )
+                    WHERE rn = 1
+                ),
+                peak_days AS (
+                    SELECT user_id, dow
+                    FROM (
+                        SELECT
+                            user_id,
+                            CAST(strftime('%w', created_at, 'unixepoch') AS INTEGER) AS dow,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY user_id
+                                ORDER BY COUNT(*) OVER (PARTITION BY user_id, CAST(strftime('%w', created_at, 'unixepoch') AS INTEGER)) DESC,
+                                         CAST(strftime('%w', created_at, 'unixepoch') AS INTEGER)
+                            ) AS rn
+                        FROM requests
+                    )
+                    WHERE rn = 1
+                ),
+                activity_span AS (
+                    SELECT
+                        user_id,
+                        MIN(created_at) AS min_created,
+                        MAX(created_at) AS max_created
+                    FROM requests
+                    GROUP BY user_id
+                ),
+                ordered_days AS (
+                    SELECT DISTINCT
+                        user_id,
+                        DATE(created_at, 'unixepoch') AS day
+                    FROM requests
+                ),
+                ranked_days AS (
+                    SELECT
+                        user_id,
+                        day,
+                        JULIANDAY(day) AS jul,
+                        ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY day) AS rn
+                    FROM ordered_days
+                ),
+                streak_lengths AS (
+                    SELECT
+                        user_id,
+                        COUNT(*) AS streak_len
+                    FROM (
+                        SELECT
+                            user_id,
+                            jul - rn AS grp
+                        FROM ranked_days
+                    )
+                    GROUP BY user_id, grp
+                ),
+                max_streaks AS (
+                    SELECT user_id, MAX(streak_len) AS max_streak
+                    FROM streak_lengths
+                    GROUP BY user_id
+                )
                 SELECT
-                    u.user_id,
-                    COUNT(t.id) as payment_count,
-                    SUM(t.amount) as total_spent,
-                    u.total_requests,
-                    u.created_at,
-                    MIN(t.created_at) as first_payment_at
-                FROM users u
-                INNER JOIN payments t ON u.user_id = t.user_id
-                WHERE t.status = 'completed'
-                GROUP BY u.user_id
-                HAVING payment_count >= ?
-                ORDER BY payment_count DESC, total_spent DESC
-            """, (min_payments,))
+                    pu.user_id,
+                    pu.payment_count,
+                    pu.total_spent,
+                    pu.total_requests,
+                    pu.created_at,
+                    pu.first_payment_at,
+                    rs.total_requests AS req_total,
+                    rs.total_response_ms,
+                    rs.response_count,
+                    rs.feature_count,
+                    rs.active_days,
+                    rs.first_request,
+                    rs.last_request,
+                    fav.favorites,
+                    ph.hour AS peak_hour,
+                    pd.dow AS peak_day,
+                    ms.max_streak,
+                    span.min_created,
+                    span.max_created
+                FROM payment_users pu
+                LEFT JOIN request_summary rs ON pu.user_id = rs.user_id
+                LEFT JOIN favorite_features fav ON pu.user_id = fav.user_id
+                LEFT JOIN peak_hours ph ON pu.user_id = ph.user_id
+                LEFT JOIN peak_days pd ON pu.user_id = pd.user_id
+                LEFT JOIN max_streaks ms ON pu.user_id = ms.user_id
+                LEFT JOIN activity_span span ON pu.user_id = span.user_id
+                ORDER BY pu.payment_count DESC, pu.total_spent DESC
+                """,
+                (min_payments,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
-            profiles = []
+            profiles: list[RetainedUserProfile] = []
+
             for row in rows:
-                user_id, payment_count, total_spent, total_requests, created_at, first_payment_at = row
+                (
+                    user_id,
+                    payment_count,
+                    total_spent,
+                    total_requests,
+                    created_at,
+                    first_payment_at,
+                    req_total,
+                    total_response_ms,
+                    response_count,
+                    feature_count,
+                    active_days,
+                    first_request,
+                    last_request,
+                    favorites_json,
+                    peak_hour,
+                    peak_day,
+                    max_streak,
+                    min_created,
+                    max_created,
+                ) = row
 
-                now = int(time.time())
-                lifetime_days = (now - created_at) // 86400
-                avg_requests_per_day = total_requests / max(lifetime_days, 1)
+                lifetime_days = max(1, (now - created_at) // 86400)
+                requests_total = req_total or 0
+                avg_requests_per_day = requests_total / lifetime_days
 
-                # Анализируем любимые фичи
-                favorite_features = await self._get_favorite_features(user_id)
+                avg_session_minutes = 0.0
+                if total_response_ms and response_count:
+                    avg_session_minutes = (total_response_ms / response_count) / 60000
 
-                # Паттерны использования
-                usage_patterns = await self._get_usage_patterns(user_id)
+                weeks_span = 0.0
+                if min_created is not None and max_created is not None and max_created > min_created:
+                    weeks_span = (max_created - min_created) / 604800.0
+                days_per_week = 0.0
+                if weeks_span and weeks_span > 0:
+                    days_per_week = round((active_days or 0) / weeks_span, 2)
 
-                # Session duration
-                session_duration = await self._get_avg_session_duration(user_id)
+                total_features_available = 10
+                feature_diversity = round(((feature_count or 0) / total_features_available) * 100, 2)
 
-                # Активность по дням
-                days_active = await self._get_days_active_per_week(user_id)
+                favorite_features: list[tuple[str, int]] = []
+                if favorites_json:
+                    try:
+                        decoded = json.loads(favorites_json)
+                        for item in decoded:
+                            favorite_features.append(
+                                (item.get("feature", ""), int(item.get("count", 0)))
+                            )
+                    except Exception:
+                        favorite_features = []
 
-                # Streak
-                max_streak = await self._get_max_streak(user_id)
+                usage_patterns = {
+                    "peak_hour": peak_hour,
+                    "peak_day_of_week": peak_day,
+                    "is_weekday_user": peak_day is not None and peak_day < 6,
+                    "is_daytime_user": peak_hour is not None and 9 <= peak_hour <= 18,
+                }
 
-                # Feature diversity
-                feature_diversity = await self._get_feature_diversity(user_id)
-
-                # Power user score
                 power_score = self._calculate_power_user_score(
                     payment_count=payment_count,
                     avg_requests_per_day=avg_requests_per_day,
-                    days_active_per_week=days_active,
+                    days_active_per_week=days_per_week,
                     feature_diversity=feature_diversity,
-                    lifetime_days=lifetime_days
+                    lifetime_days=lifetime_days,
                 )
 
-                # Time to first payment
-                time_to_first_payment = (first_payment_at - created_at) // 86400
+                time_to_first_payment = 0
+                if first_payment_at:
+                    time_to_first_payment = (first_payment_at - created_at) // 86400
 
-                # Retention probability (простая эвристика, можно заменить на ML)
                 retention_prob = self._predict_retention_probability(
                     payment_count=payment_count,
                     power_score=power_score,
-                    lifetime_days=lifetime_days
+                    lifetime_days=lifetime_days,
                 )
 
-                profiles.append(RetainedUserProfile(
-                    user_id=user_id,
-                    payment_count=payment_count,
-                    total_spent=total_spent,
-                    lifetime_days=lifetime_days,
-                    total_requests=total_requests,
-                    avg_requests_per_day=round(avg_requests_per_day, 2),
-                    favorite_features=favorite_features,
-                    usage_patterns=usage_patterns,
-                    session_duration_avg_minutes=session_duration,
-                    days_active_per_week=days_active,
-                    streak_max_days=max_streak,
-                    feature_diversity=feature_diversity,
-                    power_user_score=power_score,
-                    time_to_first_payment_days=time_to_first_payment,
-                    retention_probability=retention_prob
-                ))
+                profiles.append(
+                    RetainedUserProfile(
+                        user_id=user_id,
+                        payment_count=payment_count,
+                        total_spent=total_spent or 0,
+                        lifetime_days=lifetime_days,
+                        total_requests=requests_total,
+                        avg_requests_per_day=round(avg_requests_per_day, 2),
+                        favorite_features=favorite_features,
+                        usage_patterns=usage_patterns,
+                        session_duration_avg_minutes=round(avg_session_minutes, 2),
+                        days_active_per_week=days_per_week,
+                        streak_max_days=max_streak or 0,
+                        feature_diversity=feature_diversity,
+                        power_user_score=power_score,
+                        time_to_first_payment_days=time_to_first_payment,
+                        retention_probability=retention_prob,
+                    )
+                )
 
             return profiles
 
@@ -260,33 +427,37 @@ class RetentionAnalytics:
     async def _get_max_streak(self, user_id: int) -> int:
         """Максимальная серия дней подряд использования"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
-                SELECT DISTINCT DATE(created_at, 'unixepoch') as day
-                FROM requests
-                WHERE user_id = ?
-                ORDER BY day
-            """, (user_id,))
+            cursor = await conn.execute(
+                """
+                WITH ordered_days AS (
+                    SELECT DISTINCT DATE(created_at, 'unixepoch') AS day
+                    FROM requests
+                    WHERE user_id = ?
+                ),
+                ranked AS (
+                    SELECT
+                        day,
+                        JULIANDAY(day) AS jul,
+                        ROW_NUMBER() OVER (ORDER BY day) AS rn
+                    FROM ordered_days
+                ),
+                grouped AS (
+                    SELECT jul - rn AS grp
+                    FROM ranked
+                )
+                SELECT MAX(streak_len) FROM (
+                    SELECT COUNT(*) AS streak_len
+                    FROM grouped
+                    GROUP BY grp
+                )
+                """,
+                (user_id,),
+            )
 
-            rows = await cursor.fetchall()
+            row = await cursor.fetchone()
             await cursor.close()
 
-            if not rows:
-                return 0
-
-            max_streak = 1
-            current_streak = 1
-
-            for i in range(1, len(rows)):
-                prev_date = datetime.strptime(rows[i-1][0], '%Y-%m-%d')
-                curr_date = datetime.strptime(rows[i][0], '%Y-%m-%d')
-
-                if (curr_date - prev_date).days == 1:
-                    current_streak += 1
-                    max_streak = max(max_streak, current_streak)
-                else:
-                    current_streak = 1
-
-            return max_streak
+            return int(row[0]) if row and row[0] else 0
 
     async def _get_feature_diversity(self, user_id: int) -> float:
         """% фич которые пользователь использовал"""
