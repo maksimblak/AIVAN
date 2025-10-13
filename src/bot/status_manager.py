@@ -83,6 +83,7 @@ class ProgressStatus:
         self._running: bool = False
         self.start_time: Optional[float] = None
         self._lock = asyncio.Lock()
+        self._last_duration_display: str = ""
 
     # ---------- ПУБЛИЧНЫЕ МЕТОДЫ ----------
 
@@ -180,7 +181,12 @@ class ProgressStatus:
                 if new_stage is not None and new_stage > self.current_stage:
                     self.current_stage = new_stage
                     stage_changed = True
-            if percent_changed or stage_changed:
+            duration_changed = False
+            if self.display_total_seconds is not None:
+                current_duration = self.duration_text(self.current_percent)
+                if current_duration != self._last_duration_display:
+                    duration_changed = True
+            if percent_changed or stage_changed or duration_changed:
                 await self._safe_edit(self._render())
 
     def _stage_by_percent(self, pct: int) -> Optional[int]:
@@ -230,6 +236,7 @@ class ProgressStatus:
         header = "✅ ГОТОВО" if completed else "❌ ОШИБКА" if failed else "📱 ВЫПОЛНЕНИЕ..."
         pct = max(0, min(100, int(self.current_percent)))
         duration_display = self.duration_text(pct)
+        self._last_duration_display = duration_display
         lines: list[str] = [
             f"<b>{header}</b>",
             f"<code>{'━' * self.BAR_WIDTH}</code>",
