@@ -825,6 +825,10 @@ async def _send_questions_prompt(
 _TITLE_SANITIZE_RE = re.compile(r"[\\/:*?\"<>|\r\n]+")
 _TITLE_WHITESPACE_RE = re.compile(r"\s+")
 
+_CAPTION_MAX_LENGTH = 1024
+_SUMMARY_PREVIEW_MAX_ITEMS = 3
+_SUMMARY_PREVIEW_ITEM_MAX_LEN = 220
+
 
 def _prepare_document_titles(raw_title: str | None) -> tuple[str, str, str]:
     base = (raw_title or "").strip()
@@ -939,6 +943,26 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         return
 
     summary_sections: list[str] = []
+
+    def _truncate_item_text(raw_text: str) -> str:
+        text = re.sub(r"\s+", " ", raw_text).strip()
+        if len(text) <= _SUMMARY_PREVIEW_ITEM_MAX_LEN:
+            return text
+        snippet = text[: _SUMMARY_PREVIEW_ITEM_MAX_LEN].rstrip()
+        snippet = re.sub(r"\s+\S*$", "", snippet)
+        if not snippet:
+            snippet = text[: _SUMMARY_PREVIEW_ITEM_MAX_LEN]
+        return snippet.rstrip() + "…"
+
+    def _prepare_preview_items(items: Sequence[str]) -> list[str]:
+        cleaned = [str(item or "").strip() for item in items if str(item or "").strip()]
+        preview: list[str] = []
+        for raw_text in cleaned[: _SUMMARY_PREVIEW_MAX_ITEMS]:
+            preview.append(_truncate_item_text(raw_text))
+        if len(cleaned) > _SUMMARY_PREVIEW_MAX_ITEMS:
+            preview.append("…")
+        return preview
+
     def _format_summary_block(items: Sequence[str]) -> str:
         blocks: list[str] = []
         for raw in items:
@@ -970,17 +994,38 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
                 blocks.append(f"• {details}")
         return "\n\n".join(blocks)
 
-    if result.validated:
-        validated_block = _format_summary_block(result.validated)
+    validated_preview = _prepare_preview_items(result.validated or [])
+    if validated_preview:
+        validated_block = _format_summary_block(validated_preview)
         if validated_block:
             summary_sections.append(f"{Emoji.SUCCESS} <b>Проверено</b>\n{validated_block}")
 
-    if result.issues:
-        issues_block = _format_summary_block(result.issues)
+    issues_preview = _prepare_preview_items(result.issues or [])
+    if issues_preview:
+        issues_block = _format_summary_block(issues_preview)
         if issues_block:
             summary_sections.append(f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issues_block}")
 
     summary_block = "\n\n".join(summary_sections) if summary_sections else ""
+
+    def _strip_html_preserve_breaks(value: str) -> str:
+        if not value:
+            return ""
+        text = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+        text = re.sub(r"</?(?:b|strong|i|em|code)>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        return text
+
+    def _truncate_plain_text(text: str, limit: int) -> str:
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        snippet = text[: limit].rstrip()
+        snippet = re.sub(r"\s+\S*$", "", snippet)
+        if not snippet:
+            snippet = text[: limit]
+        return snippet.rstrip() + "…"
 
     if progress:
         await progress.update_stage(percent=85, step=3)
@@ -990,20 +1035,38 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await asyncio.to_thread(build_docx_from_markdown, result.markdown, str(tmp_path))
         display_title, caption, filename = _prepare_document_titles(result.title or title)
 
-        caption_parts = [
+        header_parts = [
             f"{Emoji.DOCUMENT} <b>{display_title}</b>",
             f"<code>{'─' * 30}</code>",
         ]
+        footer_parts = [
+            f"{Emoji.MAGIC} Анализ успешно произведён!",
+            "📎 Формат: DOCX",
+            f"<i>{Emoji.IDEA} Проверьте содержимое и при необходимости внесите правки</i>",
+        ]
+
+        caption_parts = header_parts.copy()
         if summary_block:
             caption_parts.append(summary_block)
-        caption_parts.extend(
-            [
-                f"{Emoji.MAGIC} Анализ успешно произведён!",
-                "📎 Формат: DOCX",
-                f"<i>{Emoji.IDEA} Проверьте содержимое и при необходимости внесите правки</i>",
-            ]
-        )
+        caption_parts.extend(footer_parts)
         final_caption = "\n\n".join(caption_parts)
+
+        if len(final_caption) > _CAPTION_MAX_LENGTH and summary_block:
+            base_caption = "\n\n".join(header_parts + footer_parts)
+            available = _CAPTION_MAX_LENGTH - len(base_caption) - 2  # reserve for separators
+            condensed_summary = ""
+            if available > 0:
+                summary_plain = _strip_html_preserve_breaks(summary_block)
+                truncated_plain = _truncate_plain_text(summary_plain, available)
+                if truncated_plain:
+                    condensed_summary = html_escape(truncated_plain).replace("\n", "\n")
+            if condensed_summary:
+                caption_parts = header_parts + [condensed_summary] + footer_parts
+            else:
+                caption_parts = header_parts + footer_parts
+            final_caption = "\n\n".join(caption_parts)
+            if len(final_caption) > _CAPTION_MAX_LENGTH:
+                final_caption = "\n\n".join(header_parts + footer_parts)
 
         if progress:
             await progress.update_stage(percent=95, step=4)

@@ -340,12 +340,18 @@ class SystemResourcesHealthCheck(HealthCheck):
         super().__init__("system_resources", **kwargs)
         self._history_size = history_size
         self._metrics_history: deque[dict[str, float]] = deque(maxlen=history_size)
+        try:  # pragma: no cover - prime psutil for non-blocking calls
+            import psutil
+
+            psutil.cpu_percent(interval=None)
+        except Exception:
+            pass
 
     async def check(self) -> HealthCheckResult:
         try:
             import psutil
 
-            cpu_percent = await asyncio.to_thread(psutil.cpu_percent, interval=1)
+            cpu_percent = psutil.cpu_percent(interval=None)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
 

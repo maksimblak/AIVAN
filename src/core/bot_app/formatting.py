@@ -15,23 +15,50 @@ def chunk_text(text: str, max_length: int | None = None, *, default_limit: int =
     if len(text) <= limit:
         return [text]
 
+    separator = "\n\n"
+    separator_len = len(separator)
     chunks: list[str] = []
-    current_chunk = ""
+    current_parts: list[str] = []
+    current_len = 0
+
+    def flush_current() -> None:
+        nonlocal current_parts, current_len
+        if not current_parts:
+            return
+        joined = separator.join(current_parts).strip()
+        chunks.append(joined)
+        current_parts = []
+        current_len = 0
 
     for paragraph in text.split("\n\n"):
-        if len(current_chunk + paragraph + "\n\n") <= limit:
-            current_chunk += paragraph + "\n\n"
-        elif current_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = paragraph + "\n\n"
-        else:
-            while len(paragraph) > limit:
-                chunks.append(paragraph[:limit])
-                paragraph = paragraph[limit:]
-            current_chunk = paragraph + "\n\n"
+        part = paragraph
+        while True:
+            separator_overhead = separator_len if current_parts else 0
+            candidate_len = current_len + separator_overhead + len(part)
+            if candidate_len <= limit:
+                if current_parts:
+                    current_len += separator_len
+                current_parts.append(part)
+                current_len += len(part)
+                break
 
-    if current_chunk:
-        chunks.append(current_chunk.strip())
+            if current_parts:
+                flush_current()
+                continue
+
+            if len(part) <= limit:
+                current_parts.append(part)
+                current_len = len(part)
+                break
+
+            chunks.append(part[:limit])
+            part = part[limit:]
+            if not part:
+                current_parts = []
+                current_len = 0
+                break
+
+    flush_current()
 
     return chunks
 
