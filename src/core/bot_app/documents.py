@@ -854,7 +854,7 @@ _TITLE_WHITESPACE_RE = re.compile(r"\s+")
 
 _CAPTION_MAX_LENGTH = 1024
 _SUMMARY_PREVIEW_MAX_ITEMS = 3
-_SUMMARY_PREVIEW_ITEM_MAX_LEN = 220
+_SUMMARY_PREVIEW_ITEM_MAX_LEN = 500
 
 
 def _prepare_document_titles(raw_title: str | None) -> tuple[str, str, str]:
