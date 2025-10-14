@@ -696,7 +696,6 @@ class DocumentManager:
         return "\n".join(lines).strip()
 
     def _format_risk_result(self, data: Dict[str, Any], message: str) -> str:
-        overall_raw = str(data.get("overall_risk_level") or "").lower().strip()
         recommendations = data.get("recommendations") or []
         pattern_risks = data.get("pattern_risks") or []
         ai_analysis = data.get("ai_analysis") or {}
@@ -723,41 +722,7 @@ class DocumentManager:
             "📎 <b>Формат:</b> DOCX",
         ]
 
-        risk_labels = {
-            "low": "уровень: низкий",
-            "medium": "уровень: средний",
-            "high": "уровень: высокий",
-            "critical": "уровень: критический",
-        }
-
-        stats: list[str] = []
-        if overall_raw in risk_labels:
-            stats.append(risk_labels[overall_raw])
-
-        pattern_count = len(pattern_risks)
-        ai_count = len(ai_risks)
         compliance_count = len(compliance_violations)
-        rec_count = len(recommendations)
-        ai_chunks = ai_analysis.get("chunks_analyzed")
-        total_risks = pattern_count + ai_count + compliance_count
-
-        if pattern_count:
-            stats.append(f"паттернов: {pattern_count}")
-        if ai_count:
-            stats.append(f"ИИ-рисков: {ai_count}")
-        if compliance_count:
-            stats.append(f"комплаенс: {compliance_count}")
-        if rec_count:
-            stats.append(f"рекомендаций: {rec_count}")
-        if ai_chunks:
-            stats.append(f"chunks: {ai_chunks}")
-        if total_risks:
-            stats.append(f"всего: {total_risks}")
-
-        if stats:
-            stats_text = ", ".join(html_escape(item) for item in stats)
-            lines.extend(["", f"📊 Категории: {stats_text}"])
-
 
         lines.append("")
         lines.append(f"⚠️ Нарушений: {compliance_count}")
