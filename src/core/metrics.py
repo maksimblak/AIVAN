@@ -118,6 +118,25 @@ class MetricsCollector:
                     ["provider", "currency", "status"],
                     registry=self.registry,
                 ),
+                # Security metrics
+                "security_violations_total": Counter(
+                    "security_violations_total",
+                    "Total number of security violations detected",
+                    ["violation_type", "severity", "source"],
+                    registry=self.registry,
+                ),
+                "sql_injection_attempts_total": Counter(
+                    "sql_injection_attempts_total",
+                    "Total number of SQL injection attempts detected",
+                    ["pattern_type", "source"],
+                    registry=self.registry,
+                ),
+                "xss_attempts_total": Counter(
+                    "xss_attempts_total",
+                    "Total number of XSS attempts detected",
+                    ["pattern_type", "source"],
+                    registry=self.registry,
+                ),
                 # Гистограммы времени отклика
                 "openai_request_duration_seconds": Histogram(
                     "openai_request_duration_seconds",
@@ -340,6 +359,25 @@ class MetricsCollector:
             "payment_transactions_total",
             {"provider": provider, "currency": currency, "status": status},
         )
+
+    def record_security_violation(
+        self, violation_type: str, severity: str, source: str = "unknown"
+    ) -> None:
+        """Запись нарушения безопасности"""
+        self.inc_counter(
+            "security_violations_total",
+            {"violation_type": violation_type, "severity": severity, "source": source},
+        )
+
+    def record_sql_injection_attempt(self, pattern_type: str, source: str = "user_input") -> None:
+        """Запись попытки SQL injection"""
+        self.inc_counter(
+            "sql_injection_attempts_total", {"pattern_type": pattern_type, "source": source}
+        )
+
+    def record_xss_attempt(self, pattern_type: str, source: str = "user_input") -> None:
+        """Запись попытки XSS атаки"""
+        self.inc_counter("xss_attempts_total", {"pattern_type": pattern_type, "source": source})
 
     def record_openai_tokens(self, model: str, prompt_tokens: int, completion_tokens: int) -> None:
         """Запись использованных токенов OpenAI"""

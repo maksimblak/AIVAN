@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ValidationError(Exception):
@@ -187,16 +190,54 @@ class InputValidator:
     @classmethod
     def _check_security_patterns(cls, text: str, result: ValidationResult) -> None:
         """Проверка на подозрительные паттерны безопасности"""
-        for pattern in cls.SUSPICIOUS_PATTERNS:
+        try:
+            from src.core.metrics import get_metrics_collector
+            metrics = get_metrics_collector()
+        except Exception as e:
+            logger.debug(f"Failed to import metrics collector: {e}")
+            metrics = None
+
+        # Проверка XSS паттернов
+        for i, pattern in enumerate(cls.SUSPICIOUS_PATTERNS):
             if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
                 result.errors.append("Обнаружен подозрительный контент (критично)")
                 result.severity = ValidationSeverity.CRITICAL
+
+                # Запись метрики XSS попытки
+                pattern_name = cls._get_xss_pattern_name(i)
+                if metrics:
+                    try:
+                        metrics.record_xss_attempt(pattern_type=pattern_name, source="user_input")
+                        metrics.record_security_violation(
+                            violation_type="xss", severity="critical", source="user_input"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to record XSS metric: {e}")
+
+                logger.warning(
+                    f"XSS attempt detected: pattern={pattern_name}, text_preview={text[:100]}"
+                )
                 return
 
         # Проверка SQL инъекций
-        for pattern in cls.SQL_INJECTION_PATTERNS:
+        for i, pattern in enumerate(cls.SQL_INJECTION_PATTERNS):
             if re.search(pattern, text):
                 result.warnings.append("Обнаружены подозрительные SQL-паттерны")
+
+                # Запись метрики SQL injection попытки
+                pattern_name = cls._get_sql_pattern_name(i)
+                if metrics:
+                    try:
+                        metrics.record_sql_injection_attempt(pattern_type=pattern_name, source="user_input")
+                        metrics.record_security_violation(
+                            violation_type="sql_injection", severity="warning", source="user_input"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to record SQL injection metric: {e}")
+
+                logger.warning(
+                    f"SQL injection attempt detected: pattern={pattern_name}, text_preview={text[:100]}"
+                )
                 break
 
     @classmethod
@@ -216,6 +257,35 @@ class InputValidator:
                 result.severity = ValidationSeverity.ERROR
                 result.is_valid = False
                 break
+
+    @classmethod
+    def _get_sql_pattern_name(cls, index: int) -> str:
+        """Получение имени SQL injection паттерна по индексу"""
+        pattern_names = [
+            "sql_keywords",  # union, select, etc.
+            "sql_comment",  # '; --
+            "sql_or_equals",  # or '1'='1'
+            "sql_numeric_equals",  # or 1=1
+            "sql_dangerous_commands",  # drop, delete, truncate
+        ]
+        return pattern_names[index] if index < len(pattern_names) else f"unknown_{index}"
+
+    @classmethod
+    def _get_xss_pattern_name(cls, index: int) -> str:
+        """Получение имени XSS паттерна по индексу"""
+        pattern_names = [
+            "script_tag",
+            "javascript_protocol",
+            "data_html",
+            "vbscript_protocol",
+            "event_handler",
+            "iframe_tag",
+            "object_tag",
+            "embed_tag",
+            "link_tag",
+            "meta_tag",
+        ]
+        return pattern_names[index] if index < len(pattern_names) else f"unknown_{index}"
 
     @classmethod
     def _sanitize_text(cls, text: str) -> str:

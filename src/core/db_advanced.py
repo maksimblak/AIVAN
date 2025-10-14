@@ -605,6 +605,34 @@ class DatabaseAdvanced:
     # Методы с улучшенной производительностью и транзакциями
 
     async def _get_table_columns(self, conn, table: str) -> set[str]:
+        """Получение списка колонок таблицы с проверкой имени таблицы"""
+        # Whitelist допустимых таблиц для защиты от SQL injection
+        ALLOWED_TABLES = frozenset([
+            "users", "transactions", "payments", "requests", "ratings",
+            "nps_surveys", "behavior_events", "user_journey_events"
+        ])
+
+        if table not in ALLOWED_TABLES:
+            # Попытка записать метрику, но не падать если metrics недоступны
+            try:
+                from src.core.metrics import get_metrics_collector
+                metrics = get_metrics_collector()
+                if metrics:
+                    metrics.record_sql_injection_attempt(
+                        pattern_type="invalid_table_name",
+                        source="database_layer"
+                    )
+                    metrics.record_security_violation(
+                        violation_type="sql_injection",
+                        severity="warning",
+                        source="database_layer"
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to record metrics for invalid table access: {e}")
+
+            logger.warning(f"Attempted table access with invalid name: {table}")
+            raise ValueError(f"Invalid table name: {table}")
+
         cursor = await conn.execute(f'PRAGMA table_info({table})')
         rows = await cursor.fetchall()
         await cursor.close()

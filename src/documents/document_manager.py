@@ -739,6 +739,7 @@ class DocumentManager:
         compliance_count = len(compliance_violations)
         rec_count = len(recommendations)
         ai_chunks = ai_analysis.get("chunks_analyzed")
+        total_risks = pattern_count + ai_count + compliance_count
 
         if pattern_count:
             stats.append(f"паттернов: {pattern_count}")
@@ -750,6 +751,8 @@ class DocumentManager:
             stats.append(f"рекомендаций: {rec_count}")
         if ai_chunks:
             stats.append(f"chunks: {ai_chunks}")
+        if total_risks:
+            stats.append(f"всего: {total_risks}")
 
         if stats:
             stats_text = ", ".join(html_escape(item) for item in stats)
