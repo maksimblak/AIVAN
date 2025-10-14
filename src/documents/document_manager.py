@@ -535,8 +535,6 @@ class DocumentManager:
         summary_payload = data.get("summary") or {}
         summary_block = summary_payload.get("content") or ""
         structured = summary_payload.get("structured") or {}
-        metadata = data.get("metadata") or {}
-        processing_info = data.get("processing_info") or {}
 
         key_points = structured.get("key_points") or []
         deadlines = structured.get("deadlines") or []
@@ -560,34 +558,6 @@ class DocumentManager:
             "<b>✨ Краткая выжимка готова!</b>",
             "📎 <b>Формат:</b> DOCX",
         ]
-
-        stats: list[str] = []
-        chunks_processed = processing_info.get("chunks_processed")
-        if chunks_processed:
-            stats.append(f"chunks: {chunks_processed}")
-
-        detail_level = str(data.get("detail_level") or "").lower()
-        detail_map = {"detailed": "детализация: подробная", "brief": "детализация: краткая"}
-        if detail_level in detail_map:
-            stats.append(detail_map[detail_level])
-
-        language_display = metadata.get("language_display") or metadata.get("language")
-        if language_display:
-            stats.append(f"язык: {language_display}")
-
-        key_count = len(key_points)
-        if key_count:
-            stats.append(f"ключевых пунктов: {key_count}")
-        deadlines_count = len(deadlines)
-        if deadlines_count:
-            stats.append(f"сроков: {deadlines_count}")
-        penalties_count = len(penalties)
-        if penalties_count:
-            stats.append(f"санкций: {penalties_count}")
-
-        if stats:
-            stats_text = ", ".join(html_escape(item) for item in stats)
-            lines.extend(["", f"📊 Категории: {stats_text}"])
 
         structured_summary = str(structured.get("summary") or "").strip()
         preview_source = structured_summary or summary_block
@@ -720,7 +690,6 @@ class DocumentManager:
         return "\n".join(lines).strip()
 
     def _format_risk_result(self, data: Dict[str, Any], message: str) -> str:
-        overall_raw = str(data.get("overall_risk_level") or "").lower().strip()
         recommendations = data.get("recommendations") or []
         pattern_risks = data.get("pattern_risks") or []
         ai_analysis = data.get("ai_analysis") or {}
@@ -746,38 +715,6 @@ class DocumentManager:
             "<b>✨ Анализ рисков выполнен!</b>",
             "📎 <b>Формат:</b> DOCX",
         ]
-
-        risk_labels = {
-            "low": "уровень: низкий",
-            "medium": "уровень: средний",
-            "high": "уровень: высокий",
-            "critical": "уровень: критический",
-        }
-
-        stats: list[str] = []
-        if overall_raw in risk_labels:
-            stats.append(risk_labels[overall_raw])
-
-        pattern_count = len(pattern_risks)
-        ai_count = len(ai_risks)
-        compliance_count = len(compliance_violations)
-        rec_count = len(recommendations)
-        ai_chunks = ai_analysis.get("chunks_analyzed")
-
-        if pattern_count:
-            stats.append(f"паттернов: {pattern_count}")
-        if ai_count:
-            stats.append(f"ИИ-рисков: {ai_count}")
-        if compliance_count:
-            stats.append(f"комплаенс: {compliance_count}")
-        if rec_count:
-            stats.append(f"рекомендаций: {rec_count}")
-        if ai_chunks:
-            stats.append(f"chunks: {ai_chunks}")
-
-        if stats:
-            stats_text = ", ".join(html_escape(item) for item in stats)
-            lines.extend(["", f"📊 Категории: {stats_text}"])
 
         preview_source = ai_summary or message
         preview_clean = re.sub(r"\s+", " ", preview_source).strip()
