@@ -126,6 +126,7 @@ class OpenAIService:
         *,
         force_refresh: bool = False,
         pseudo_chunk: int = 600,
+        attachments: Sequence[QuestionAttachment] | None = None,
     ) -> dict[str, Any]:
         """
         Стрим с кэш-фолбэком. Возвращает финальный dict, а дельты отдает через `callback`.

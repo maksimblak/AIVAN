@@ -13,6 +13,7 @@ __all__ = ["ProgressStatus", "progress_router", "register_progressbar"]
 
 # Роутер для callback-кнопки в самом сообщении прогресса
 progress_router = Router()
+_MISSING = object()
 
 
 class ProgressStatus:
@@ -84,12 +85,14 @@ class ProgressStatus:
         self.start_time: Optional[float] = None
         self._lock = asyncio.Lock()
         self._last_duration_display: str = ""
+        self.extra_info: Optional[str] = None
 
     # ---------- ПУБЛИЧНЫЕ МЕТОДЫ ----------
 
     async def start(self, auto_cycle: bool = True, interval: float = 2.0) -> None:
         self.start_time = time.monotonic()
         self._running = True
+        self.extra_info = None
         msg = await self.bot.send_message(
             self.chat_id,
             self._render(),
@@ -108,11 +111,13 @@ class ProgressStatus:
         self._running = False
         self.current_percent = 100
         self.current_stage = len(self.steps)
+        self.extra_info = None
         await self._safe_edit(self._render(completed=True, note=note))
         getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
 
     async def fail(self, note: Optional[str] = None) -> None:
         self._running = False
+        self.extra_info = None
         await self._safe_edit(self._render(failed=True, note=note))
         getattr(self.bot, "_ps_registry", {}).pop((self.chat_id, self.message_id), None)
 
@@ -121,6 +126,7 @@ class ProgressStatus:
         percent: Optional[int] = None,
         label: Optional[str] = None,
         step: Optional[int] = None,
+        extra: Optional[str] | object = _MISSING,
     ) -> None:
         if percent is not None:
             self.current_percent = max(self.current_percent, min(int(percent), 100))
@@ -136,6 +142,10 @@ class ProgressStatus:
                     break
         if target_stage is not None:
             self.current_stage = max(self.current_stage, target_stage)
+
+        if extra is not _MISSING:
+            normalized = str(extra or "").strip()
+            self.extra_info = normalized or None
 
         await self._safe_edit(self._render())
 
@@ -259,8 +269,13 @@ class ProgressStatus:
                     next_label = esc(self.steps[idx].get("label", ""))
                     lines.append(f"○ {next_label}")
 
+        extra_text: Optional[str] = None
         if note:
-            lines += ["", f"<i>{esc(note)}</i>"]
+            extra_text = note
+        elif not (completed or failed):
+            extra_text = self.extra_info
+        if extra_text:
+            lines += ["", f"<i>{esc(extra_text)}</i>"]
         return "\n".join(lines)[:3990]
 
     def _progress_bar(self, pct: int) -> str:

@@ -99,6 +99,10 @@ class CacheBackend(ABC):
     async def get_stats(self) -> dict[str, Any]:
         """Получить статистику кеша"""
         pass
+    async def cleanup_expired(self) -> None:
+        """Опциональная очистка устаревших записей."""
+        return None
+
 
 
 class InMemoryCacheBackend(CacheBackend):
@@ -201,12 +205,15 @@ class InMemoryCacheBackend(CacheBackend):
         try:
             while True:
                 await asyncio.sleep(self.cleanup_interval)
-                async with self._lock:
-                    await self._cleanup_expired()
+                await self.cleanup_expired()
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"Cache cleanup loop error: {e}")
+
+    async def cleanup_expired(self) -> None:
+        async with self._lock:
+            await self._cleanup_expired()
 
     async def get_stats(self) -> dict[str, Any]:
         async with self._lock:

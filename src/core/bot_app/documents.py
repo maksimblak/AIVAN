@@ -449,10 +449,11 @@ async def _make_status_progress_handler(
 
         note_text = str(update.get("note") or "").strip() or None
         extras_line = _format_progress_extras(update)
+        extras_value = (extras_line or "").strip() or None
 
         if progress_status:
             if normalized_stage == "completed":
-                extra_note = note_text or (extras_line or None)
+                extra_note = note_text or extras_value
                 await progress_status.complete(note=extra_note)
                 msg_id = progress_status.message_id
                 chat_id = progress_status.chat_id
@@ -462,11 +463,12 @@ async def _make_status_progress_handler(
                         await bot.delete_message(chat_id, msg_id)
                 progress_status = None
             elif normalized_stage == "failed":
-                fail_note = note_text or (extras_line or update.get("error"))
+                fail_note = note_text or extras_value or update.get("error")
                 await progress_status.fail(note=fail_note)
             else:
                 step = stage_index_map.get(normalized_stage)
-                await progress_status.update_stage(percent=percent, step=step)
+                await progress_status.update_stage(percent=percent, step=step, extra=extras_value)
+            extras_last_text = extras_line
 
         if (
             extras_line

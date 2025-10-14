@@ -298,8 +298,16 @@ class CacheCleanupTask(BackgroundTask):
                     stats_before = await service.cache.get_cache_stats()
 
                     # Выполняем cleanup если есть такой метод
-                    if hasattr(service.cache.backend, "_cleanup_expired"):
-                        await service.cache.backend._cleanup_expired()
+                    backend = service.cache.backend
+                    cleanup_fn = getattr(backend, "cleanup_expired", None)
+                    if callable(cleanup_fn):
+                        cleanup_result = cleanup_fn()
+                        if inspect.isawaitable(cleanup_result):
+                            await cleanup_result
+                    elif hasattr(backend, "_cleanup_expired"):
+                        cleanup_result = backend._cleanup_expired()  # type: ignore[attr-defined]
+                        if inspect.isawaitable(cleanup_result):
+                            await cleanup_result
 
                     stats_after = await service.cache.get_cache_stats()
 
@@ -432,7 +440,16 @@ class MetricsCollectionTask(BackgroundTask):
         for name, component in self.components.items():
             try:
                 if hasattr(component, "get_stats"):
-                    stats = await component.get_stats()
+                    stats_callable = component.get_stats
+                    try:
+                        stats_result = stats_callable()
+                    except TypeError:
+                        # метод может ожидать аргументы, пропускаем
+                        raise
+                    if inspect.isawaitable(stats_result):
+                        stats = await stats_result
+                    else:
+                        stats = stats_result
                     metrics["components"][name] = stats
 
             except Exception as e:
