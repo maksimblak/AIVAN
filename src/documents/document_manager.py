@@ -720,25 +720,116 @@ class DocumentManager:
         return "\n".join(lines).strip()
 
     def _format_risk_result(self, data: Dict[str, Any], message: str) -> str:
-        overall = data.get("overall_risk_level") or "не определен"
+        overall_raw = str(data.get("overall_risk_level") or "").lower().strip()
         recommendations = data.get("recommendations") or []
         pattern_risks = data.get("pattern_risks") or []
-        lines = [
-            "<b>Анализ рисков</b>",
-            f"Общий уровень риска: {html_escape(str(overall))}",
+        ai_analysis = data.get("ai_analysis") or {}
+        ai_risks = ai_analysis.get("risks") or []
+        ai_summary = str(ai_analysis.get("summary") or "").strip()
+        compliance = data.get("legal_compliance") or {}
+        compliance_violations = compliance.get("violations") or []
+
+        doc_info = data.get("document_info") or {}
+        original_name = str(doc_info.get("original_name") or "").strip()
+        title = Path(original_name).stem if original_name else ""
+        title = title.replace("_", " ").replace("-", " ").strip()
+        if not title:
+            title = "Анализ рисков"
+
+        divider_html = "<code>" + ("─" * 30) + "</code>"
+        title_html = html_escape(title)
+
+        lines: list[str] = [
+            f"<b>📄 {title_html}</b>",
+            divider_html,
+            "",
+            "<b>✨ Анализ рисков выполнен!</b>",
+            "📎 <b>Формат:</b> DOCX",
         ]
-        if pattern_risks:
+
+        risk_labels = {
+            "low": "уровень: низкий",
+            "medium": "уровень: средний",
+            "high": "уровень: высокий",
+            "critical": "уровень: критический",
+        }
+
+        stats: list[str] = []
+        if overall_raw in risk_labels:
+            stats.append(risk_labels[overall_raw])
+
+        pattern_count = len(pattern_risks)
+        ai_count = len(ai_risks)
+        compliance_count = len(compliance_violations)
+        rec_count = len(recommendations)
+        ai_chunks = ai_analysis.get("chunks_analyzed")
+
+        if pattern_count:
+            stats.append(f"паттернов: {pattern_count}")
+        if ai_count:
+            stats.append(f"ИИ-рисков: {ai_count}")
+        if compliance_count:
+            stats.append(f"комплаенс: {compliance_count}")
+        if rec_count:
+            stats.append(f"рекомендаций: {rec_count}")
+        if ai_chunks:
+            stats.append(f"chunks: {ai_chunks}")
+
+        if stats:
+            stats_text = ", ".join(html_escape(item) for item in stats)
+            lines.extend(["", f"📊 Категории: {stats_text}"])
+
+        preview_source = ai_summary or message
+        preview_clean = re.sub(r"\s+", " ", preview_source).strip()
+        if preview_clean:
+            if len(preview_clean) > 280:
+                preview_clean = preview_clean[:277].rstrip() + "..."
+            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_clean)}"])
+
+        def _format_risk_entry(item: Mapping[str, Any]) -> str:
+            level = str(item.get("risk_level") or "").lower().strip()
+            desc = str(item.get("description") or "").strip()
+            level_map = {
+                "low": "низкий",
+                "medium": "средний",
+                "high": "высокий",
+                "critical": "критический",
+            }
+            level_display = level_map.get(level, level or "-")
+            if len(desc) > 160:
+                desc = desc[:157].rstrip() + "..."
+            return f"{level_display}: {desc}" if desc else level_display
+
+        def append_section(title: str, icon: str, items: list[Any], formatter) -> None:
+            if not items:
+                return
             lines.append("")
-            lines.append("<b>Важные находки:</b>")
-            for item in pattern_risks[:5]:
-                desc = item.get("description") or ""
-                level = item.get("risk_level") or ""
-                lines.append(f"• {html_escape(str(level))}: {html_escape(desc)}")
+            lines.append(f"<b>{icon} {title}</b>")
+            for entry in items[:5]:
+                formatted = formatter(entry)
+                lines.append(f"• {html_escape(formatted)}")
+
+        append_section("Паттерны", "📌", pattern_risks, _format_risk_entry)
+        append_section("ИИ-оценка", "🤖", ai_risks, _format_risk_entry)
+
+        def _format_violation(item: Mapping[str, Any]) -> str:
+            note = str(item.get("note") or "").strip()
+            text = str(item.get("text") or "").strip()
+            base = note or text
+            if len(base) > 160:
+                base = base[:157].rstrip() + "..."
+            return base or "Нарушение без описания"
+
+        append_section("Комплаенс", "⚠️", compliance_violations, _format_violation)
+
         if recommendations:
             lines.append("")
-            lines.append("<b>Рекомендации:</b>")
+            lines.append("<b>✅ Рекомендации</b>")
             for rec in recommendations[:6]:
                 lines.append(f"• {html_escape(str(rec))}")
+
+        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
+
         return "\n".join(lines)
 
     def _format_lawsuit_result(self, data: Dict[str, Any], message: str) -> str:
