@@ -907,12 +907,10 @@ class DocumentAnonymizer(DocumentProcessor):
             notes_accum = unique_notes
 
         if structured_chunks:
-            report_notes = notes_accum or [
-                "Анонимизация выполнена моделью OpenAI. Структура замен предоставлена моделью.",
-            ]
+            report_notes = notes_accum
         else:
             report_notes = notes_accum or [
-                "Анонимизация выполнена моделью OpenAI. Структуру замен получить не удалось.",
+                "Структуру замен получить не удалось.",
             ]
 
         report = {
