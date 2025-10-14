@@ -577,21 +577,7 @@ class DocumentManager:
         return "\n".join(lines)
 
     def _format_anonymize_result(self, data: Dict[str, Any], message: str) -> str:
-        doc_info = data.get("document_info") or {}
-        original_name = str(doc_info.get("original_name") or "").strip()
-        title = Path(original_name).stem if original_name else ""
-        title = title.replace("_", " ").replace("-", " ").strip()
-        if not title:
-            title = "Анонимизация документа"
-
-        divider = "─" * 30
-        title_html = html_escape(title)
-        divider_html = f"<code>{divider}</code>"
-
         lines: list[str] = [
-            f"<b>📄 {title_html}</b>",
-            divider_html,
-            "",
             "<b>✨ Документ успешно обезличен!</b>",
             "📎 <b>Формат:</b> DOCX",
         ]
@@ -615,26 +601,6 @@ class DocumentManager:
         if total_int is not None:
             lines.extend(["", f"🛡️ Обезличено фрагментов: {total_int}"])
 
-        meaningful_counters = {}
-        for key, value in counters.items():
-            try:
-                count_val = int(value)
-            except (TypeError, ValueError):
-                continue
-            if count_val > 0:
-                meaningful_counters[str(key)] = count_val
-
-        if meaningful_counters:
-            top_items: list[tuple[str, int]] = []
-            for key, value in meaningful_counters.items():
-                top_items.append((key, value))
-            top_items.sort(key=lambda item: item[1], reverse=True)
-            if top_items:
-                display = ", ".join(
-                    f"{html_escape(label)}: {count}" for label, count in top_items[:4]
-                )
-                if display:
-                    lines.extend(["", f"📊 Категории: {display}"])
 
         preview_source = str(data.get("anonymized_text") or "")
         preview_clean = re.sub(r"\s+", " ", preview_source).strip()
