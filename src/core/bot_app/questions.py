@@ -12,6 +12,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import FSInputFile, Message
 
+from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
 from src.bot.status_manager import ProgressStatus
 from src.bot.stream_manager import StreamManager, StreamingCallback
 from src.bot.typing_indicator import send_typing_once, typing_action
@@ -26,7 +27,7 @@ from src.core.exceptions import (
 )
 from src.core.safe_telegram import send_html_text
 from src.core.bot_app import context as simple_context
-from src.core.bot_app.common import get_user_session, get_safe_db_method
+from src.core.bot_app.common import get_user_session, get_safe_db_method, ensure_valid_user_id
 from src.core.bot_app.feedback import (
     ensure_rating_snapshot,
     handle_pending_feedback,
@@ -307,13 +308,33 @@ async def process_question(
         return None
     question_text = cleaned
 
-    request_text = question_text
+    practice_mode_active = bool(getattr(user_session, "practice_search_mode", False))
+    system_prompt_override: str | None = None
+    rag_context = ""
+
+    if practice_mode_active:
+        system_prompt_override = JUDICIAL_PRACTICE_SEARCH_PROMPT
+        rag_service = getattr(simple_context, "judicial_rag", None)
+        if rag_service is not None:
+            try:
+                rag_context, _ = await rag_service.build_context(question_text)
+            except Exception as rag_exc:  # noqa: BLE001
+                logger.warning("Failed to build judicial practice context: %s", rag_exc)
+        setattr(user_session, "practice_search_mode", False)
+
+    request_blocks = [question_text]
+
+    if rag_context:
+        request_blocks.append("[Контекст судебной практики]\n" + rag_context)
+
     if attachments_list:
         attachment_lines = []
         for idx, item in enumerate(attachments_list, start=1):
             size_kb = max(1, item.size // 1024)
             attachment_lines.append(f"{idx}. {item.filename} ({item.mime_type}, {size_kb} KB)")
-        request_text = f"{question_text}\n\n[Attachments]\n" + "\n".join(attachment_lines)
+        request_blocks.append("[Вложения]\n" + "\n".join(attachment_lines))
+
+    request_text = "\n\n".join(request_blocks)
 
     logger.info("Processing question from user %s: %s", user_id, question_text[:100])
     timer = ResponseTimer()
@@ -388,6 +409,7 @@ async def process_question(
 
             result = await openai_service.answer_question(
                 request_text,
+                system_prompt=system_prompt_override,
                 attachments=attachments_list or None,
                 stream_callback=callback,
                 model=model_to_use,

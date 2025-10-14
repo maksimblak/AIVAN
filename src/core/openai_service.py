@@ -273,6 +273,48 @@ class OpenAIService:
             logger.error("OpenAI streaming request failed: %s", e)
             raise
 
+    async def answer_question(
+        self,
+        user_text: str,
+        *,
+        system_prompt: str | None = None,
+        attachments: Sequence[QuestionAttachment] | None = None,
+        stream_callback: StreamCallback | None = None,
+        force_refresh: bool = False,
+        model: str | None = None,  # reserved for future routing
+        user_id: int | None = None,  # reserved for future telemetry
+    ) -> dict[str, Any]:
+        """
+        Высокоуровневый помощник для обработки пользовательского вопроса.
+
+        Позволяет прокинуть системный промт и выбрать стриминговый или обычный сценарий.
+        Параметры `model` и `user_id` зарезервированы для совместимости с существующими
+        вызовами и могут использоваться позже для маршрутизации запросов.
+        """
+        _ = model  # placeholders for future use
+        _ = user_id
+
+        if not system_prompt:
+            from src.bot.promt import LEGAL_SYSTEM_PROMPT
+
+            system_prompt = LEGAL_SYSTEM_PROMPT
+
+        if stream_callback:
+            return await self.ask_legal_stream(
+                system_prompt,
+                user_text,
+                callback=stream_callback,
+                force_refresh=force_refresh,
+                attachments=attachments,
+            )
+
+        return await self.ask_legal(
+            system_prompt,
+            user_text,
+            attachments=attachments,
+            force_refresh=force_refresh,
+        )
+
     # ------------------------ служебные методы ------------------------
 
     async def get_stats(self) -> dict[str, Any]:
