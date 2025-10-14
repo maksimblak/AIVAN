@@ -532,36 +532,86 @@ class DocumentManager:
     # ----------------------------------- formatters -----------------------------------
 
     def _format_summary_result(self, data: Dict[str, Any], message: str) -> str:
-        summary_block = (data.get("summary") or {}).get("content") or ""
-        structured = (data.get("summary") or {}).get("structured") or {}
+        summary_payload = data.get("summary") or {}
+        summary_block = summary_payload.get("content") or ""
+        structured = summary_payload.get("structured") or {}
+        metadata = data.get("metadata") or {}
+        processing_info = data.get("processing_info") or {}
+
         key_points = structured.get("key_points") or []
         deadlines = structured.get("deadlines") or []
         penalties = structured.get("penalties") or []
         checklist = structured.get("actions") or []
 
-        lines = ["<b>Саммаризация документа</b>"]
-        if summary_block:
-            lines.append(html_escape(summary_block))
-        if key_points:
+        doc_info = data.get("document_info") or {}
+        original_name = str(doc_info.get("original_name") or "").strip()
+        title = Path(original_name).stem if original_name else ""
+        title = title.replace("_", " ").replace("-", " ").strip()
+        if not title:
+            title = "Краткая выжимка документа"
+
+        divider_html = "<code>" + ("─" * 30) + "</code>"
+        title_html = html_escape(title)
+
+        lines: list[str] = [
+            f"<b>📄 {title_html}</b>",
+            divider_html,
+            "",
+            "<b>✨ Краткая выжимка готова!</b>",
+            "📎 <b>Формат:</b> DOCX",
+        ]
+
+        stats: list[str] = []
+        chunks_processed = processing_info.get("chunks_processed")
+        if chunks_processed:
+            stats.append(f"chunks: {chunks_processed}")
+
+        detail_level = str(data.get("detail_level") or "").lower()
+        detail_map = {"detailed": "детализация: подробная", "brief": "детализация: краткая"}
+        if detail_level in detail_map:
+            stats.append(detail_map[detail_level])
+
+        language_display = metadata.get("language_display") or metadata.get("language")
+        if language_display:
+            stats.append(f"язык: {language_display}")
+
+        key_count = len(key_points)
+        if key_count:
+            stats.append(f"ключевых пунктов: {key_count}")
+        deadlines_count = len(deadlines)
+        if deadlines_count:
+            stats.append(f"сроков: {deadlines_count}")
+        penalties_count = len(penalties)
+        if penalties_count:
+            stats.append(f"санкций: {penalties_count}")
+
+        if stats:
+            stats_text = ", ".join(html_escape(item) for item in stats)
+            lines.extend(["", f"📊 Категории: {stats_text}"])
+
+        structured_summary = str(structured.get("summary") or "").strip()
+        preview_source = structured_summary or summary_block
+        preview_flat = re.sub(r"\s+", " ", str(preview_source)).strip()
+        if preview_flat:
+            if len(preview_flat) > 280:
+                preview_flat = preview_flat[:277].rstrip() + "..."
+            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_flat)}"])
+
+        def append_section(title: str, icon: str, items: list[Any], limit: int = 5) -> None:
+            if not items:
+                return
             lines.append("")
-            lines.append("<b>Ключевые пункты:</b>")
-            for item in key_points[:8]:
-                lines.append(f"• {html_escape(str(item))}")
-        if deadlines:
-            lines.append("")
-            lines.append("<b>Сроки:</b>")
-            for item in deadlines[:6]:
-                lines.append(f"• {html_escape(str(item))}")
-        if penalties:
-            lines.append("")
-            lines.append("<b>Ответственность:</b>")
-            for item in penalties[:6]:
-                lines.append(f"• {html_escape(str(item))}")
-        if checklist:
-            lines.append("")
-            lines.append("<b>Рекомендуемые действия:</b>")
-            for item in checklist[:6]:
-                lines.append(f"• {html_escape(str(item))}")
+            lines.append(f"<b>{icon} {title}</b>")
+            for entry in items[:limit]:
+                lines.append(f"• {html_escape(str(entry))}")
+
+        append_section("Основное", "📌", key_points, limit=6)
+        append_section("Сроки", "⏰", deadlines, limit=5)
+        append_section("Ответственность", "⚖️", penalties, limit=5)
+        append_section("Рекомендуемые действия", "✅", checklist, limit=6)
+
+        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
+
         return "\n".join(lines)
 
     def _format_translation_result(self, data: Dict[str, Any], message: str) -> str:
