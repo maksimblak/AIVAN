@@ -601,6 +601,50 @@ class DocumentManager:
         if total_int is not None:
             lines.extend(["", f"🛡️ Обезличено фрагментов: {total_int}"])
 
+        replacements_map = data.get("anonymization_map") or {}
+        processed_items = report.get("processed_items") or []
+        if replacements_map and processed_items:
+            type_labels = report.get("type_labels") or {}
+            seen_pairs: set[tuple[str, str]] = set()
+            display_rows: list[str] = []
+            for item in processed_items:
+                original = str(item.get("value") or "").strip()
+                if not original:
+                    continue
+                replacement_raw = replacements_map.get(original)
+                if not replacement_raw:
+                    continue
+
+                original_clean = re.sub(r"\s+", " ", original).strip()
+                if len(original_clean) > 60:
+                    original_clean = original_clean[:57].rstrip() + "..."
+
+                replacement_display = replacement_raw.strip()
+                if not replacement_display:
+                    continue
+
+                label = str(item.get("label") or "").strip()
+                if not label:
+                    item_type = str(item.get("type") or "").strip()
+                    label = str(type_labels.get(item_type, "") or "").strip()
+                label_display = label or "Сущность"
+
+                key = (original.strip().lower(), replacement_display.lower())
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+
+                display_rows.append(
+                    f"• {html_escape(original_clean)} → {html_escape(replacement_display)}"
+                    f" ({html_escape(label_display)})"
+                )
+                if len(display_rows) >= 5:
+                    break
+
+            if display_rows:
+                lines.extend(["", "<b>🔁 Замены:</b>"])
+                lines.extend(display_rows)
+
 
         preview_source = str(data.get("anonymized_text") or "")
         preview_clean = re.sub(r"\s+", " ", preview_source).strip()
