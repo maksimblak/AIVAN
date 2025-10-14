@@ -31,28 +31,42 @@ def _build_user_message_content(user_text: str, attachments: Sequence[QuestionAt
     if base_text:
         content.append({"type": "text", "text": base_text})
 
+    inline_limit = _get_env_non_negative_int("OPENAI_INLINE_ATTACHMENT_MAX_BYTES", 65536)
+
     for item in attachments:
         if not item or not getattr(item, "data", b""):
             continue
         mime = (item.mime_type or "application/octet-stream").lower()
-        encoded = base64.b64encode(item.data).decode("ascii")
+        data_bytes = getattr(item, "data", b"") or b""
+        size_bytes = getattr(item, "size", None)
+        if size_bytes is None:
+            size_bytes = len(data_bytes)
+
         if mime.startswith("image/"):
+            encoded = base64.b64encode(data_bytes).decode("ascii") if data_bytes else ""
             data_url = f"data:{mime};base64,{encoded}"
             content.append({"type": "input_image", "image_url": {"url": data_url}})
         else:
             details = (
                 f"Attached file: {item.filename or 'file'}\n"
                 f"MIME type: {item.mime_type}\n"
-                f"Size: {item.size} bytes\n"
+                f"Size: {size_bytes} bytes\n"
             )
-            chunk = f"{details}Base64 contents:\n{encoded}"
+            if inline_limit and data_bytes and size_bytes <= inline_limit:
+                encoded = base64.b64encode(data_bytes).decode("ascii")
+                chunk = f"{details}Base64 contents:\n{encoded}"
+            elif inline_limit and size_bytes > inline_limit:
+                chunk = (
+                    f"{details}Contents omitted: size exceeds inline limit of {inline_limit} bytes."
+                )
+            else:
+                chunk = f"{details}Contents omitted: inline attachments are disabled."
             content.append({"type": "text", "text": chunk})
 
     if not content:
         return base_text or user_text
     return content
 
-_SETTINGS: AppSettings = get_settings()
 
 
 MODEL_CAPABILITIES: dict[str, dict[str, bool]] = {}
@@ -92,9 +106,9 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
 
     parts: list[str] = []
     if summary:
-        parts.append(f"<b>Кратко:</b> {html.escape(summary)}")
+        parts.append(f"<b>РљСЂР°С‚РєРѕ:</b> {html.escape(summary)}")
     if analysis:
-        parts.append(f"<b>Анализ:</b> {html.escape(analysis)}")
+        parts.append(f"<b>РђРЅР°Р»РёР·:</b> {html.escape(analysis)}")
 
     basis_lines: list[str] = []
     for item in legal_basis:
@@ -103,21 +117,21 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
         reference = str(item.get('reference') or '').strip()
         explanation = str(item.get('explanation') or '').strip()
         if reference and explanation:
-            basis_lines.append(f"• {html.escape(reference)} — {html.escape(explanation)}")
+            basis_lines.append(f"вЂў {html.escape(reference)} вЂ” {html.escape(explanation)}")
         elif reference:
-            basis_lines.append(f"• {html.escape(reference)}")
+            basis_lines.append(f"вЂў {html.escape(reference)}")
     if basis_lines:
         basis_block = '\n'.join(basis_lines)
-        parts.append(f"<b>Правовое основание:</b>\n{basis_block}")
+        parts.append(f"<b>РџСЂР°РІРѕРІРѕРµ РѕСЃРЅРѕРІР°РЅРёРµ:</b>\n{basis_block}")
 
     risk_lines: list[str] = []
     for risk in risks:
         risk_text = str(risk or '').strip()
         if risk_text:
-            risk_lines.append(f"• {html.escape(risk_text)}")
+            risk_lines.append(f"вЂў {html.escape(risk_text)}")
     if risk_lines:
         risk_block = '\n'.join(risk_lines)
-        parts.append(f"<b>Риски:</b>\n{risk_block}")
+        parts.append(f"<b>Р РёСЃРєРё:</b>\n{risk_block}")
 
     if disclaimer:
         parts.append(f"<i>{html.escape(disclaimer)}</i>")
@@ -172,6 +186,10 @@ def _extract_text_from_content(
 
 StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
+def _settings() -> AppSettings:
+    return get_settings()
+
+
 __all__ = [
     "ask_legal",
     "ask_legal_stream",
@@ -183,7 +201,8 @@ __all__ = [
 
 
 def _get_env_float(name: str, default: float) -> float:
-    raw = _SETTINGS.get_str(name)
+    settings = _settings()
+    raw = settings.get_str(name)
     if raw is None or not raw.strip():
         return default
     try:
@@ -197,7 +216,8 @@ def _get_env_float(name: str, default: float) -> float:
 
 
 def _get_env_int(name: str, default: int) -> int:
-    raw = _SETTINGS.get_str(name)
+    settings = _settings()
+    raw = settings.get_str(name)
     if raw is None or not raw.strip():
         return default
     try:
@@ -213,7 +233,8 @@ def _get_env_int(name: str, default: int) -> int:
 
 
 def _get_env_non_negative_int(name: str, default: int) -> int:
-    raw = _SETTINGS.get_str(name)
+    settings = _settings()
+    raw = settings.get_str(name)
     if raw is None or not raw.strip():
         return default
     try:
@@ -227,7 +248,8 @@ def _get_env_non_negative_int(name: str, default: int) -> int:
 
 
 def _resolve_proxy_url() -> str | None:
-    proxy = _SETTINGS.get_str("OPENAI_HTTP_PROXY") or _SETTINGS.get_str("OPENAI_PROXY")
+    settings = _settings()
+    proxy = settings.get_str("OPENAI_HTTP_PROXY") or settings.get_str("OPENAI_PROXY")
     if not proxy:
         return None
     proxy = proxy.strip()
@@ -236,8 +258,8 @@ def _resolve_proxy_url() -> str | None:
     if '://' not in proxy:
         proxy = f"http://{proxy}"
 
-    user = _SETTINGS.get_str("OPENAI_PROXY_USER")
-    password = _SETTINGS.get_str("OPENAI_PROXY_PASSWORD") or _SETTINGS.get_str("OPENAI_PROXY_PASS")
+    user = settings.get_str("OPENAI_PROXY_USER")
+    password = settings.get_str("OPENAI_PROXY_PASSWORD") or settings.get_str("OPENAI_PROXY_PASS")
     if user and password and '@' not in proxy:
         parsed = urlparse(proxy)
         netloc = parsed.netloc or parsed.path
@@ -275,7 +297,7 @@ def _build_http_client() -> httpx.AsyncClient:
     if proxy:
         client_kwargs['proxies'] = proxy
 
-    verify = _SETTINGS.get_str("OPENAI_CA_BUNDLE")
+    verify = _settings().get_str("OPENAI_CA_BUNDLE")
     if verify:
         client_kwargs['verify'] = verify
 
@@ -283,25 +305,26 @@ def _build_http_client() -> httpx.AsyncClient:
 
 
 async def _create_async_client() -> AsyncOpenAI:
+    settings = _settings()
     api_key = (
-        _SETTINGS.openai_api_key
-        or _SETTINGS.get_str("OPENAI_KEY")
-        or _SETTINGS.get_str("AZURE_OPENAI_KEY")
+        settings.openai_api_key
+        or settings.get_str("OPENAI_KEY")
+        or settings.get_str("AZURE_OPENAI_KEY")
         or ""
     ).strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable is required")
 
     base_url = (
-        _SETTINGS.get_str("OPENAI_BASE_URL")
-        or _SETTINGS.get_str("OPENAI_API_BASE")
-        or _SETTINGS.get_str("AZURE_OPENAI_ENDPOINT")
+        settings.get_str("OPENAI_BASE_URL")
+        or settings.get_str("OPENAI_API_BASE")
+        or settings.get_str("AZURE_OPENAI_ENDPOINT")
     )
     organization = (
-        _SETTINGS.get_str("OPENAI_ORGANIZATION")
-        or _SETTINGS.get_str("OPENAI_ORG_ID")
+        settings.get_str("OPENAI_ORGANIZATION")
+        or settings.get_str("OPENAI_ORG_ID")
     )
-    project = _SETTINGS.get_str("OPENAI_PROJECT")
+    project = settings.get_str("OPENAI_PROJECT")
 
     http_client = _build_http_client()
     max_retries = _get_env_non_negative_int("OPENAI_MAX_RETRIES", 1)
@@ -450,7 +473,7 @@ class _TelegramHTMLFormatter(HTMLParser):
         "del": "s",
         "strike": "s",
     }
-    _BULLET_SYMBOL = "▫ "
+    _BULLET_SYMBOL = "в–« "
     _INDENT_UNIT = "&nbsp;&nbsp;"
 
     def __init__(self) -> None:
@@ -706,12 +729,13 @@ async def _ask_legal_internal(
     attachments: Sequence[QuestionAttachment] | None = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
-    model = (_SETTINGS.get_str("OPENAI_MODEL") or "gpt-5").strip()
-    max_out = _SETTINGS.get_int("MAX_OUTPUT_TOKENS", 4096)
-    verb = (_SETTINGS.get_str("OPENAI_VERBOSITY") or "medium").lower()
-    effort = (_SETTINGS.get_str("OPENAI_REASONING_EFFORT") or "medium").lower()
-    temperature = _SETTINGS.get_float("OPENAI_TEMPERATURE", 0.15)
-    top_p = _SETTINGS.get_float("OPENAI_TOP_P", 0.3)
+    settings = _settings()
+    model = (settings.get_str("OPENAI_MODEL") or "gpt-5").strip()
+    max_out = settings.get_int("MAX_OUTPUT_TOKENS", 4096)
+    verb = (settings.get_str("OPENAI_VERBOSITY") or "medium").lower()
+    effort = (settings.get_str("OPENAI_REASONING_EFFORT") or "medium").lower()
+    temperature = settings.get_float("OPENAI_TEMPERATURE", 0.15)
+    top_p = settings.get_float("OPENAI_TOP_P", 0.3)
 
     user_message = _build_user_message_content(user_text, attachments)
 
@@ -733,7 +757,7 @@ async def _ask_legal_internal(
         model_caps.setdefault(key, value)
     include_sampling = model_caps.get("supports_sampling", True)
 
-    if not _SETTINGS.get_bool("DISABLE_WEB", False):
+    if not settings.get_bool("DISABLE_WEB", False):
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     async with shared_openai_client() as oai:
@@ -762,7 +786,7 @@ async def _ask_legal_internal(
 
         last_err = None
         if model not in _VALIDATED_MODELS:
-            if not _SETTINGS.get_bool("OPENAI_SKIP_MODEL_CHECK", False):
+            if not settings.get_bool("OPENAI_SKIP_MODEL_CHECK", False):
                 for i in range(2):
                     try:
                         await oai.models.retrieve(model)
@@ -987,3 +1011,4 @@ async def _ask_legal_internal(
             break
 
         return {"ok": False, "error": last_err or "unknown_error", "structured": structured_payload}
+

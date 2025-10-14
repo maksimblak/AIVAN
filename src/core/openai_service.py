@@ -142,7 +142,8 @@ class OpenAIService:
         parts: list[str] = []
 
         # кэш (и псевдострим из кэша)
-        if self.cache and self.enable_cache and not force_refresh:
+        use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
+        if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
                     system_prompt=system_prompt, user_text=user_text
@@ -178,10 +179,21 @@ class OpenAIService:
         # если в gateway есть стрим — пробуем оба режима
         if oai_ask_legal_stream:
             try:
-                candidate = oai_ask_legal_stream(system_prompt, user_text, on_delta)  # type: ignore[misc]
+                candidate = oai_ask_legal_stream(
+                    system_prompt,
+                    user_text,
+                    on_delta,
+                    attachments=attachments,
+                )  # type: ignore[misc]
             except TypeError:
+                if attachments:
+                    raise
                 # сигнатура без колбэка — возможно, async-генератор
-                candidate = oai_ask_legal_stream(system_prompt, user_text)  # type: ignore[misc]
+                candidate = oai_ask_legal_stream(  # type: ignore[misc]
+                    system_prompt,
+                    user_text,
+                    attachments=attachments,
+                )
 
             try:
                 # режим async-генератора
@@ -195,7 +207,7 @@ class OpenAIService:
 
                     resp = {"ok": True, "text": formatted_text}
                     # кэшируем
-                    if self.cache and self.enable_cache and text:
+                    if self.cache and self.enable_cache and not attachments and text:
                         try:
                             await self.cache.cache_response(system_prompt, user_text, resp)
                         except Exception as e:  # noqa: BLE001
@@ -217,7 +229,7 @@ class OpenAIService:
                 else:
                     result = {"ok": True, "text": formatted_text}
 
-                if self.cache and self.enable_cache and formatted_text:
+                if self.cache and self.enable_cache and not attachments and formatted_text:
                     try:
                         await self.cache.cache_response(system_prompt, user_text, result)  # type: ignore[arg-type]
                     except Exception as e:  # noqa: BLE001
@@ -230,7 +242,7 @@ class OpenAIService:
 
         # фолбэк: обычный запрос + псевдострим кусками
         try:
-            result = await oai_ask_legal(system_prompt, user_text)
+            result = await oai_ask_legal(system_prompt, user_text, attachments=attachments)
             original_text = str(result.get("text", "") or "")
             formatted_text = format_legal_response_text(original_text)
 
@@ -248,7 +260,7 @@ class OpenAIService:
                 result["text"] = formatted_text
 
             # кэшируем обычным способом (если еще не закэшировано)
-            if self.cache and self.enable_cache and result.get("ok") and result.get("text"):
+            if self.cache and self.enable_cache and not attachments and result.get("ok") and result.get("text"): 
                 try:
                     await self.cache.cache_response(system_prompt, user_text, result)
                 except Exception as e:  # noqa: BLE001
