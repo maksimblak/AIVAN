@@ -1,0 +1,167 @@
+---
+# Prometheus Alert Rules для AIVAN Bot
+# Эти правила детектируют security incidents и отправляют алерты
+
+groups:
+  - name: security_alerts
+    interval: 30s
+    rules:
+      # Критичные SQL injection попытки
+      - alert: HighRateSQLInjectionAttempts
+        expr: rate(sql_injection_attempts_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "Высокая частота SQL injection попыток"
+          description: "Обнаружено {{ $value | humanize }} попыток SQL injection в секунду за последние 5 минут. Source: {{ $labels.source }}, Pattern: {{ $labels.pattern_type }}"
+
+      # Burst SQL injection атак
+      - alert: SQLInjectionBurst
+        expr: increase(sql_injection_attempts_total[1m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "Burst SQL injection атака"
+          description: "Обнаружено {{ $value }} попыток SQL injection за последнюю минуту. Возможна автоматизированная атака."
+
+      # XSS попытки
+      - alert: XSSAttemptsDetected
+        expr: rate(xss_attempts_total[5m]) > 2
+        for: 2m
+        labels:
+          severity: high
+          category: security
+        annotations:
+          summary: "Обнаружены XSS попытки"
+          description: "{{ $value | humanize }} XSS попыток в секунду. Pattern: {{ $labels.pattern_type }}"
+
+      # Общие security violations
+      - alert: SecurityViolationsSpike
+        expr: rate(security_violations_total{severity="critical"}[10m]) > 1
+        for: 5m
+        labels:
+          severity: high
+          category: security
+        annotations:
+          summary: "Всплеск критичных security violations"
+          description: "{{ $value | humanize }} критичных нарушений безопасности в секунду. Type: {{ $labels.violation_type }}"
+
+      # SQL injection из database layer (особенно опасно)
+      - alert: DatabaseLayerSQLInjection
+        expr: sql_injection_attempts_total{source="database_layer"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "SQL injection в слое базы данных"
+          description: "Обнаружена попытка SQL injection в database layer. Это указывает на bypass валидации входных данных!"
+
+      # Аномальное количество нарушений от одного пользователя
+      - alert: SingleUserSecurityViolations
+        expr: |
+          topk(5,
+            sum by (user_id) (
+              increase(security_violations_total[10m])
+            )
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Множественные нарушения от одного пользователя"
+          description: "User {{ $labels.user_id }} совершил {{ $value }} нарушений безопасности за 10 минут"
+
+  - name: operational_alerts
+    interval: 30s
+    rules:
+      # Высокая частота ошибок БД
+      - alert: DatabaseErrorRateHigh
+        expr: rate(database_operations_total{status="error"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Высокая частота ошибок БД"
+          description: "{{ $value | humanizePercentage }} операций БД завершаются с ошибкой"
+
+      # OpenAI API failures
+      - alert: OpenAIHighErrorRate
+        expr: rate(openai_requests_total{status="error"}[5m]) > 0.2
+        for: 3m
+        labels:
+          severity: warning
+          category: openai
+        annotations:
+          summary: "Высокая частота ошибок OpenAI API"
+          description: "{{ $value | humanizePercentage }} запросов к OpenAI завершаются с ошибкой"
+
+  - name: performance_alerts
+    interval: 1m
+    rules:
+      # Медленные OpenAI запросы
+      - alert: OpenAISlowResponses
+        expr: histogram_quantile(0.95, rate(openai_request_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "Медленные ответы от OpenAI"
+          description: "95-й перцентиль времени ответа OpenAI: {{ $value }}s"
+
+      # Высокое использование токенов
+      - alert: HighTokenConsumption
+        expr: rate(openai_tokens_used_total[1h]) > 1000000
+        for: 10m
+        labels:
+          severity: warning
+          category: cost
+        annotations:
+          summary: "Высокое потребление токенов OpenAI"
+          description: "{{ $value | humanize }} токенов в секунду. Проверьте на аномальную активность."
+
+  - name: availability_alerts
+    interval: 30s
+    rules:
+      # Система в состоянии degraded
+      - alert: SystemDegraded
+        expr: system_status{system_status="degraded"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          category: availability
+        annotations:
+          summary: "Система в degraded состоянии"
+          description: "AIVAN работает в ограниченном режиме"
+
+      # Низкое количество доступных DB connections
+      - alert: DatabaseConnectionPoolLow
+        expr: database_connections_active / database_connections_active < 0.2
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Мало доступных соединений к БД"
+          description: "Доступно менее 20% соединений к базе данных"
+
+# Настройки для AlertManager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - localhost:9093
+
+# Рекомендуемая конфигурация scrape
+scrape_configs:
+  - job_name: 'aivan-bot'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:8000']  # prometheus_port из settings
