@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64 as _b64
+import json
 import hmac
 import hashlib as _hash
 import logging
@@ -792,6 +793,12 @@ class DocumentAnonymizer(DocumentProcessor):
             }
 
         anonymized_parts: List[str] = []
+        processed_items: List[Dict[str, Any]] = []
+        stats: Dict[str, int] = {}
+        type_labels: Dict[str, str] = {}
+        notes_accum: List[str] = []
+        replacements_seen: set[tuple[str, str]] = set()
+        structured_chunks = 0
         total = len(chunks)
 
         for index, chunk in enumerate(chunks, start=1):
@@ -819,18 +826,101 @@ class DocumentAnonymizer(DocumentProcessor):
                 )
 
             chunk_text = response.get("text") or ""
-            anonymized_parts.append(self._strip_html(chunk_text).strip())
+            parsed = self._parse_ai_json_output(chunk_text)
+
+            replacements: List[Dict[str, Any]] = []
+            if isinstance(parsed, dict):
+                structured_chunks += 1
+                chunk_anonymized = str(
+                    parsed.get("anonymized_chunk")
+                    or parsed.get("anonymized_text")
+                    or parsed.get("text")
+                    or ""
+                ).strip()
+                notes = parsed.get("notes") or []
+                for note in notes:
+                    note_str = str(note or "").strip()
+                    if note_str:
+                        notes_accum.append(note_str)
+                raw_replacements = parsed.get("replacements") or []
+                if isinstance(raw_replacements, list):
+                    replacements = [item for item in raw_replacements if isinstance(item, dict)]
+                if not chunk_anonymized:
+                    chunk_anonymized = self._strip_html(chunk_text).strip()
+            else:
+                chunk_anonymized = self._strip_html(chunk_text).strip()
+
+            anonymized_parts.append(chunk_anonymized)
+
+            for item in replacements:
+                original = str(item.get("original") or "").strip()
+                replacement = str(item.get("replacement") or "").strip()
+                if not original:
+                    continue
+
+                kind_raw = str(item.get("kind") or "").strip().lower()
+                kind = kind_raw or "custom"
+                label = str(item.get("label") or "").strip() or self._pretty_type(kind)
+                snippet = str(item.get("context") or "").strip()
+
+                key = (original.lower(), replacement.lower())
+                if key in replacements_seen:
+                    continue
+                replacements_seen.add(key)
+
+                stats[kind] = stats.get(kind, 0) + 1
+                if label:
+                    type_labels.setdefault(kind, label)
+
+                processed_item: Dict[str, Any] = {
+                    "type": kind,
+                    "label": label,
+                    "value": original,
+                }
+                if snippet:
+                    processed_item["snippet"] = snippet
+                if replacement:
+                    processed_item["replacement"] = replacement
+
+                processed_items.append(processed_item)
+                if replacement:
+                    self.anonymization_map.setdefault(original, replacement)
+                else:
+                    self.anonymization_map.setdefault(original, "")
 
         anonymized = "\n\n".join(part for part in anonymized_parts if part)
 
+        report_stats: Dict[str, Any] = {"chunks": total}
+        for key, value in stats.items():
+            report_stats[key] = value
+
+        if notes_accum:
+            unique_notes: List[str] = []
+            seen_notes_set: set[str] = set()
+            for note in notes_accum:
+                if note in seen_notes_set:
+                    continue
+                seen_notes_set.add(note)
+                unique_notes.append(note)
+                if len(unique_notes) >= 5:
+                    break
+            notes_accum = unique_notes
+
+        if structured_chunks:
+            report_notes = notes_accum or [
+                "Анонимизация выполнена моделью OpenAI. Структура замен предоставлена моделью.",
+            ]
+        else:
+            report_notes = notes_accum or [
+                "Анонимизация выполнена моделью OpenAI. Структуру замен получить не удалось.",
+            ]
+
         report = {
-            "processed_items": [],
-            "statistics": {"chunks": total},
-            "type_labels": {},
+            "processed_items": processed_items,
+            "statistics": report_stats,
+            "type_labels": type_labels,
             "engine": "openai",
-            "notes": [
-                "Анонимизация выполнена моделью OpenAI. Детализированный список замен недоступен.",
-            ],
+            "notes": report_notes,
         }
         return anonymized, report
 
@@ -854,11 +944,33 @@ class DocumentAnonymizer(DocumentProcessor):
         }
         instruction = instructions.get(mode, instructions["replace"])
 
+        schema = dedent(
+            """
+            Верни строго JSON без пояснений и форматирующего текста. Структура:
+            {
+              "anonymized_chunk": "...",
+              "replacements": [
+                {
+                  "kind": "names|phones|emails|addresses|documents|bank_details|iban|dates|badge_numbers|registration_numbers|domains|urls|custom",
+                  "label": "Человекочитаемое название типа",
+                  "original": "Текст из исходного фрагмента до замены (с сохранением регистра и знаков)",
+                  "replacement": "Текст, который ты поставил вместо оригинала (пустая строка, если удалил)",
+                  "context": "Короткий (<=120 символов) фрагмент исходного текста вокруг замены"
+                }
+              ],
+              "notes": ["опционально пояснения"]
+            }
+            Если замен нет, верни пустой массив replacements. Используй ровно те же псевдонимы, маски
+            или маркеры, которые вставляешь в текст. Не добавляй Markdown и комментарии.
+            """
+        ).strip()
+
         return dedent(
             f"""
+            Ты выступаешь сервисом анонимизации. {schema}
             Перед тобой часть документа ({index} из {total}). {instruction}
-            Сохраняй структуру, нумерацию, правовые ссылки и абзацы. Не добавляй комментарии
-            и не используй форматирование или разметку. Ответь исключительно обезличенным текстом.
+            Сохраняй структуру, нумерацию, правовые ссылки и абзацы.
+            Работай аккуратно: не удаляй лишних символов и не меняй порядок абзацев.
 
             <НАЧАЛО_ФРАГМЕНТА>
             {chunk}
@@ -871,6 +983,34 @@ class DocumentAnonymizer(DocumentProcessor):
         if not content:
             return ""
         return re.sub(r"<[^>]+>", "", content)
+
+    @staticmethod
+    def _parse_ai_json_output(content: str) -> Dict[str, Any] | None:
+        if not content:
+            return None
+
+        cleaned = content.strip()
+        if not cleaned:
+            return None
+
+        fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", cleaned, re.DOTALL)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                snippet = cleaned[start : end + 1]
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError as exc:  # noqa: PERF203
+                    logger.debug("Failed to parse AI anonymization JSON snippet: %s", snippet, exc_info=True)
+                    return None
+            logger.debug("Failed to parse AI anonymization JSON: %s", cleaned, exc_info=True)
+            return None
 
     # ------------------------- ПОДМЕНА / ФОРМАТИРОВАНИЕ -------------------------
 

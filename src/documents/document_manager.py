@@ -612,7 +612,7 @@ class DocumentManager:
                 if not original:
                     continue
                 replacement_raw = replacements_map.get(original)
-                if not replacement_raw:
+                if replacement_raw is None:
                     continue
 
                 original_clean = re.sub(r"\s+", " ", original).strip()
@@ -621,7 +621,7 @@ class DocumentManager:
 
                 replacement_display = replacement_raw.strip()
                 if not replacement_display:
-                    continue
+                    replacement_display = "[удалено]"
 
                 label = str(item.get("label") or "").strip()
                 if not label:
