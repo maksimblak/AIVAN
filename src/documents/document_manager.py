@@ -758,16 +758,8 @@ class DocumentManager:
             stats_text = ", ".join(html_escape(item) for item in stats)
             lines.extend(["", f"📊 Категории: {stats_text}"])
 
-        def _format_total_risks(count: int) -> str:
-            suffix = "рисков"
-            if count % 10 == 1 and count % 100 != 11:
-                suffix = "риск"
-            elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-                suffix = "риска"
-            return f"Найдено {count} {suffix}"
 
-        total_risks = pattern_count + ai_count + compliance_count
-        lines.extend(["", f"🛡️ {_format_total_risks(total_risks)}"])
+        lines.append("")
         lines.append(f"⚠️ Нарушений: {compliance_count}")
 
         preview_source = ai_summary or message

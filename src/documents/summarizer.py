@@ -149,10 +149,7 @@ class DocumentSummarizer(DocumentProcessor):
         self.allow_ai = settings.get_bool("SUMMARY_ALLOW_AI", True)
         self.max_key_items = settings.get_int("SUMMARY_MAX_ITEMS", 12)
         # Увеличиваем дефолтный размер чанка до 10k символов, чтобы сокращать число запросов
-        chunk_size = settings.get_int("SUMMARY_CHUNK_SIZE", 10_000)
-        if chunk_size <= 0:
-            chunk_size = 10_000
-        self.chunk_size = chunk_size
+        self.chunk_size = settings.get_int("SUMMARY_CHUNK_SIZE", 4000)
         self.chunk_overlap = settings.get_int("SUMMARY_CHUNK_OVERLAP", 400)
 
     # ------------------------------- Публичный API -------------------------------
