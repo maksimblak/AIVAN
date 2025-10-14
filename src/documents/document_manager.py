@@ -567,13 +567,19 @@ class DocumentManager:
                 preview_flat = preview_flat[:277].rstrip() + "..."
             lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_flat)}"])
 
-        def append_section(title: str, icon: str, items: list[Any], limit: int = 5) -> None:
+        def append_section(title: str, icon: str, items: list[Any], limit: int = 5, *, clip: int = 220) -> None:
             if not items:
                 return
             lines.append("")
             lines.append(f"<b>{icon} {title}</b>")
             for entry in items[:limit]:
-                lines.append(f"• {html_escape(str(entry))}")
+                text = str(entry or "").strip()
+                if not text:
+                    continue
+                flattened = re.sub(r"\s+", " ", text)
+                if clip and len(flattened) > clip:
+                    flattened = flattened[: clip - 3].rstrip() + "..."
+                lines.append(f"• {html_escape(flattened)}")
 
         append_section("Основное", "📌", key_points, limit=6)
         append_section("Сроки", "⏰", deadlines, limit=5)
