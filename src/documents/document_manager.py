@@ -833,7 +833,7 @@ class DocumentManager:
                 formatted = formatter(entry)
                 lines.append(f"• {formatted}")
 
-        append_section("Паттерны", "📌", pattern_risks, _format_risk_entry)
+        append_section("Проверка по шаблонам", "📌", pattern_risks, _format_risk_entry)
         append_section("ИИ-оценка", "🤖", ai_risks, _format_risk_entry)
 
         if recommendations:
