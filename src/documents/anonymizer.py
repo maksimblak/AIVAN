@@ -22,6 +22,8 @@ import logging
 from src.core.settings import AppSettings
 
 import re
+import tempfile
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
@@ -979,7 +981,7 @@ class DocumentAnonymizer(DocumentProcessor):
                 percent = 40 + (index / max(1, total)) * 40
                 await progress_callback("anonymizing", percent, masked=len(self.anonymization_map))
 
-        output_path = self._build_human_friendly_temp_path(file_path.stem, "анонимизация", ".docx")
+        output_path = self._build_temp_docx_path(file_path, "анонимизация")
         doc.save(str(output_path))
 
         report = {
@@ -1002,6 +1004,31 @@ class DocumentAnonymizer(DocumentProcessor):
             "mode": anonymization_mode,
             "anonymized_docx": str(output_path),
         }
+
+    @staticmethod
+    def _sanitize_filename_component(value: str, fallback: str | None = None) -> str:
+        sanitized = re.sub(r"[\\/:*?\"<>|\r\n]+", " ", value or "")
+        sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-_")
+        if not sanitized and fallback is not None:
+            sanitized = fallback
+        return sanitized
+
+    def _build_temp_docx_path(self, original: Path, suffix: str) -> Path:
+        base_clean = self._sanitize_filename_component(original.stem, fallback="Документ")
+        suffix_clean = self._sanitize_filename_component(suffix, fallback="")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        name_parts = [base_clean]
+        if suffix_clean:
+            name_parts.append(suffix_clean)
+        name_core = " - ".join(name_parts)
+        filename = f"{name_core} ({timestamp}).docx"
+        temp_dir = Path(tempfile.gettempdir())
+        candidate = temp_dir / filename
+        counter = 1
+        while candidate.exists():
+            candidate = temp_dir / f"{name_core} ({timestamp}_{counter}).docx"
+            counter += 1
+        return candidate
 
     def _prepare_custom_specs(
         self, custom_patterns: List[dict[str, str]] | List[str] | None
