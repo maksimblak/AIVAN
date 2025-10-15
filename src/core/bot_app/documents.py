@@ -294,11 +294,36 @@ def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
         payload["chunks_total"] = len(summary_struct.get("key_points") or [])
     elif op == "anonymize":
         report = data.get("anonymization_report") or {}
-        masked = report.get("processed_items")
-        if masked is None:
-            stats = report.get("statistics") or {}
-            masked = sum(int(v) for v in stats.values()) if stats else 0
-        payload["masked"] = int(masked or 0)
+        def _as_int(value: Any) -> int | None:
+            if value is None:
+                return None
+            if isinstance(value, list):
+                return len(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                try:
+                    return int(float(stripped))
+                except ValueError:
+                    return None
+            return None
+
+        masked_count: int | None = _as_int(report.get("processed_items"))
+        if masked_count is None:
+            masked_count = _as_int(report.get("total_matches"))
+        if masked_count is None:
+            counters = report.get("statistics") or report.get("counters") or {}
+            total = 0
+            for raw_value in counters.values():
+                as_int = _as_int(raw_value)
+                if as_int is not None:
+                    total += as_int
+            if total:
+                masked_count = total
+        payload["masked"] = masked_count if masked_count is not None else 0
     elif op == "translate":
         meta = data.get("translation_metadata") or {}
         payload["language_pair"] = meta.get("language_pair")
