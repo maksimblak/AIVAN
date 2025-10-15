@@ -27,9 +27,16 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Awaitable, Callable, Dict, List, Tuple, TYPE_CHECKING
 
-from docx import Document
-from docx.table import _Cell, Table
-from docx.text.paragraph import Paragraph
+try:
+    from docx import Document
+    from docx.table import _Cell, Table
+    from docx.text.paragraph import Paragraph
+
+    _HAS_DOCX = True
+except ImportError:  # pragma: no cover - optional dependency
+    Document = None  # type: ignore
+    _Cell = Table = Paragraph = None  # type: ignore
+    _HAS_DOCX = False
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -775,7 +782,6 @@ class DocumentAnonymizer(DocumentProcessor):
         combined: re.Pattern[str],
         *,
         mode: str,
-        *,
         stats: Dict[str, int],
         processed_items: List[Dict[str, Any]],
         counts_by_type: Dict[str, int],
@@ -930,6 +936,11 @@ class DocumentAnonymizer(DocumentProcessor):
         custom_specs: List[PatternSpec] | None,
         progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
     ) -> dict[str, Any]:
+        if not _HAS_DOCX or Document is None:
+            raise ProcessingError(
+                "Анонимизация DOCX требует установленного пакета python-docx",
+                "DOCX_DEPENDENCY_MISSING",
+            )
         doc = Document(str(file_path))
 
         active_specs, label_map, combined = self._build_active_specs(exclude_set, custom_specs)
