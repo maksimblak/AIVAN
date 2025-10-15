@@ -241,8 +241,6 @@ def _format_risk_count(count: int) -> str:
 
 def _format_progress_extras(update: dict[str, Any]) -> str:
     parts: list[str] = []
-    if update.get("risks_found") is not None:
-        parts.append(_format_risk_count(update["risks_found"]))
     if update.get("violations") is not None:
         parts.append(f"⚠️ Нарушений: {int(update['violations'])}")
     if update.get("chunks_total") and update.get("chunk_index"):
