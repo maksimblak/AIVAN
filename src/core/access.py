@@ -40,7 +40,6 @@ class AccessService:
             return AccessDecision(
                 allowed=True,
                 is_admin=True,
-                message="Administrator access active.",
             )
 
         has_subscription = await self._db.has_active_subscription(user_id)
