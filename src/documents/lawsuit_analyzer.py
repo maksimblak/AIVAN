@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -230,7 +230,22 @@ https://pravo.ru
   "missing_elements": ["чего может не хватать (документы, факты, формулировки)"],
   "recommendations": ["что доработать перед подачей"],
   "procedural_notes": ["важные процессуальные нюансы (подсудность, госпошлина, сроки)"],
-  "confidence": "high|medium|low"
+  "confidence": "high|medium|low",
+  "overall_assessment": "краткая общая оценка иска и позиции",
+  "risk_highlights": ["ключевые ошибки и процессуальные риски"],
+  "strategy": {
+    "success_probability": "примерно в процентах или словами (например, «≈70%»)",
+    "actions": ["2–3 шага для усиления позиции"]
+  },
+  "case_law": [
+    {
+      "court": "название суда",
+      "year": "год решения",
+      "link": "https://ссылка_на_решение",
+      "summary": "краткий вывод по делу"
+    }
+  ],
+  "improvement_steps": ["конкретные действия перед подачей"]
 }
 
 Если каких-то данных нет — оставь поле пустым или список/строку пустой. Никакого текста вне JSON.
@@ -320,6 +335,38 @@ def _clean_list(items: Any) -> list[str]:
     return cleaned
 
 
+def _normalize_case_law(items: Any) -> list[dict[str, str]]:
+    """Привести блок с судебной практикой к списку словарей с ожидаемыми ключами."""
+    normalized: list[dict[str, str]] = []
+
+    if isinstance(items, Mapping):
+        iterable: Iterable[Any] = [items]
+    elif isinstance(items, Iterable) and not isinstance(items, (str, bytes)):
+        iterable = items
+    else:
+        return normalized
+
+    for entry in iterable:
+        if not isinstance(entry, Mapping):
+            continue
+        court = str(entry.get("court") or "").strip()
+        year = str(entry.get("year") or "").strip()
+        link = str(entry.get("link") or "").strip()
+        summary = str(entry.get("summary") or "").strip()
+        if not any((court, year, link, summary)):
+            continue
+        normalized.append(
+            {
+                "court": court,
+                "year": year,
+                "link": link,
+                "summary": summary,
+            }
+        )
+
+    return normalized
+
+
 class LawsuitAnalyzer(DocumentProcessor):
     """Анализирует исковые заявления: требования, доказательства, риски и рекомендации."""
 
@@ -387,6 +434,8 @@ class LawsuitAnalyzer(DocumentProcessor):
                 raise ProcessingError("Пустой ответ модели", "OPENAI_EMPTY")
             payload = _extract_first_json(raw_text)
 
+        strategy_payload = payload.get("strategy") or {}
+
         analysis = {
             "summary": str(payload.get("summary") or "").strip(),
             "parties": {
@@ -403,6 +452,14 @@ class LawsuitAnalyzer(DocumentProcessor):
             "recommendations": _clean_list(payload.get("recommendations")),
             "procedural_notes": _clean_list(payload.get("procedural_notes")),
             "confidence": str(payload.get("confidence") or "").strip(),
+            "overall_assessment": str(payload.get("overall_assessment") or "").strip(),
+            "risk_highlights": _clean_list(payload.get("risk_highlights")),
+            "strategy": {
+                "success_probability": str(strategy_payload.get("success_probability") or "").strip(),
+                "actions": _clean_list(strategy_payload.get("actions")),
+            },
+            "case_law": _normalize_case_law(payload.get("case_law")),
+            "improvement_steps": _clean_list(payload.get("improvement_steps")),
         }
 
         confidence_label = analysis.get("confidence")
@@ -463,6 +520,56 @@ class LawsuitAnalyzer(DocumentProcessor):
         append_block("Недостающие элементы", analysis.get("missing_elements") or [])
         append_block("Рекомендации", analysis.get("recommendations") or [])
         append_block("Процессуальные заметки", analysis.get("procedural_notes") or [])
+
+        overall = analysis.get("overall_assessment")
+        if overall:
+            lines.extend(["## Общая оценка", overall.strip(), ""])
+
+        append_block("Риски и ошибки", analysis.get("risk_highlights") or [])
+
+        strategy = analysis.get("strategy") or {}
+        strategy_probability = strategy.get("success_probability")
+        strategy_actions = strategy.get("actions") or []
+        if strategy_probability or strategy_actions:
+            lines.append("## Судебная стратегия")
+            if strategy_probability:
+                lines.append(f"- Вероятность успеха: {strategy_probability.strip()}")
+            for action in strategy_actions:
+                lines.append(f"- {action.strip()}")
+            lines.append("")
+
+        case_law_items = analysis.get("case_law") or []
+        if case_law_items:
+            lines.append("## Судебная практика")
+            for entry in case_law_items:
+                court = str(entry.get("court") or "").strip()
+                year = str(entry.get("year") or "").strip()
+                summary_text = str(entry.get("summary") or "").strip()
+                link = str(entry.get("link") or "").strip()
+
+                parts: list[str] = []
+                if court and year:
+                    parts.append(f"{court} ({year})")
+                elif court:
+                    parts.append(court)
+                elif year:
+                    parts.append(year)
+
+                if summary_text:
+                    parts.append(summary_text)
+
+                line = " — ".join(parts) if parts else ""
+                if link:
+                    if line:
+                        line = f"{line} [{link}]"
+                    else:
+                        line = link
+
+                if line:
+                    lines.append(f"- {line}")
+            lines.append("")
+
+        append_block("Рекомендации по улучшению", analysis.get("improvement_steps") or [])
 
         confidence = analysis.get("confidence")
         if confidence:
