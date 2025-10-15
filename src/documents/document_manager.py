@@ -965,14 +965,65 @@ class DocumentManager:
         return "\n".join(lines)
 
     def _format_ocr_result(self, data: Dict[str, Any], message: str) -> str:
-        text = (data.get("recognized_text") or "")[:3500]
+        """Форматирование результата распознавания текста с улучшенным UI."""
+        text = (data.get("recognized_text") or "").strip()
         confidence = float(data.get("confidence_score", 0.0))
-        lines = [
-            "<b>Распознанный текст</b>",
-            f"Точность: {confidence:.1f}%",
+
+        doc_info = data.get("document_info") or {}
+        original_name = str(doc_info.get("original_name") or "").strip()
+        title = Path(original_name).stem if original_name else ""
+        title = title.replace("_", " ").replace("-", " ").strip()
+        if not title:
+            title = "Распознавание текста"
+
+        title_html = html_escape(title)
+
+        # Определяем качество распознавания
+        if confidence >= 90:
+            quality_icon = "🟢"
+            quality_label = "Отличное"
+        elif confidence >= 75:
+            quality_icon = "🟡"
+            quality_label = "Хорошее"
+        elif confidence >= 50:
+            quality_icon = "🟠"
+            quality_label = "Среднее"
+        else:
+            quality_icon = "🔴"
+            quality_label = "Низкое"
+
+        lines: list[str] = [
+            f"<b>📸 {title_html}</b>",
             "",
-            html_escape(text),
+            f"✨ <b>Текст распознан</b> • {quality_icon} {quality_label}",
+            f"📊 <b>Точность:</b> {confidence:.1f}%",
         ]
+
+        # Показываем превью текста (первые 400 символов)
+        if text:
+            text_preview = text[:400]
+            if len(text) > 400:
+                text_preview += "..."
+
+            # Подсчитываем базовую статистику
+            words_count = len(text.split())
+            lines_count = len([line for line in text.split('\n') if line.strip()])
+
+            lines.extend([
+                "",
+                f"📝 <b>Объём:</b> {words_count} слов • {lines_count} строк",
+                "",
+                "<b>Превью:</b>",
+                f"<i>{html_escape(text_preview)}</i>",
+            ])
+        else:
+            lines.extend([
+                "",
+                "⚠️ <i>Текст не распознан или документ пуст</i>",
+            ])
+
+        lines.extend(["", "📎 Полный текст: <b>DOCX</b>"])
+
         return "\n".join(lines)
 
     def _format_generic_result(self, data: Dict[str, Any], message: str) -> str:
