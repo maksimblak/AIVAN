@@ -173,6 +173,7 @@ class ProgressStatus:
         while self._running:
             await asyncio.sleep(interval)
             percent_changed = False
+            duration_changed = False
             if self.display_total_seconds:
                 duration = max(1, self.display_total_seconds)
                 elapsed = self._elapsed_seconds()
@@ -191,11 +192,9 @@ class ProgressStatus:
                 if new_stage is not None and new_stage > self.current_stage:
                     self.current_stage = new_stage
                     stage_changed = True
-            duration_changed = False
-            if self.display_total_seconds is not None:
-                current_duration = self.duration_text(self.current_percent)
-                if current_duration != self._last_duration_display:
-                    duration_changed = True
+            current_duration = self.duration_text(self.current_percent)
+            if current_duration != self._last_duration_display:
+                duration_changed = True
             if percent_changed or stage_changed or duration_changed:
                 await self._safe_edit(self._render())
 
