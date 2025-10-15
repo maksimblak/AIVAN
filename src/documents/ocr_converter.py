@@ -12,6 +12,7 @@ import base64
 import hashlib
 import logging
 import mimetypes
+import os
 from src.core.settings import AppSettings
 
 import tempfile
@@ -251,12 +252,10 @@ class OCRConverter(DocumentProcessor):
                 except Exception:
                     pass
 
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                try:
-                    im.save(tmp.name, format="PNG", optimize=True)
-                    return Path(tmp.name)
-                finally:
-                    tmp.close()
+                fd, temp_path = tempfile.mkstemp(suffix=".png")
+                os.close(fd)
+                im.save(temp_path, format="PNG", optimize=True)
+                return Path(temp_path)
 
             return await asyncio.to_thread(_do)
 
@@ -530,10 +529,10 @@ class OCRConverter(DocumentProcessor):
                     for i in range(len(doc)):
                         page = doc[i]
                         pm = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # x2 масштаб
-                        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                        pm.save(tmp.name)
-                        paths.append(Path(tmp.name))
-                        tmp.close()
+                        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+                        os.close(fd)
+                        pm.save(tmp_path)
+                        paths.append(Path(tmp_path))
                     return paths
                 finally:
                     doc.close()
