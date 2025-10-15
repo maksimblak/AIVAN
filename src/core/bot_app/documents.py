@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 import re
 import tempfile
@@ -279,6 +280,39 @@ def _get_stage_labels(operation: str) -> dict[str, tuple[str, str]]:
     return labels
 
 
+def _coerce_numeric_count(value: Any) -> int | None:
+    """Приводит разные формы счётчиков к целому числу."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return None
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(float(stripped))
+        except ValueError:
+            return None
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if isinstance(value, dict):
+        total = 0
+        has_values = False
+        for item in value.values():
+            item_count = _coerce_numeric_count(item)
+            if item_count is None:
+                continue
+            total += item_count
+            has_values = True
+        return total if has_values else None
+    return None
+
+
 def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
     data = getattr(result_obj, "data", None) or {}
     payload: dict[str, Any] = {}
@@ -294,35 +328,14 @@ def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
         payload["chunks_total"] = len(summary_struct.get("key_points") or [])
     elif op == "anonymize":
         report = data.get("anonymization_report") or {}
-        def _as_int(value: Any) -> int | None:
-            if value is None:
-                return None
-            if isinstance(value, list):
-                return len(value)
-            if isinstance(value, (int, float)):
-                return int(value)
-            if isinstance(value, str):
-                stripped = value.strip()
-                if not stripped:
-                    return None
-                try:
-                    return int(float(stripped))
-                except ValueError:
-                    return None
-            return None
-
-        masked_count: int | None = _as_int(report.get("processed_items"))
+        masked_count: int | None = _coerce_numeric_count(report.get("processed_items"))
         if masked_count is None:
-            masked_count = _as_int(report.get("total_matches"))
+            masked_count = _coerce_numeric_count(report.get("total_matches"))
         if masked_count is None:
             counters = report.get("statistics") or report.get("counters") or {}
-            total = 0
-            for raw_value in counters.values():
-                as_int = _as_int(raw_value)
-                if as_int is not None:
-                    total += as_int
-            if total:
-                masked_count = total
+            counters_total = _coerce_numeric_count(counters)
+            if counters_total is not None:
+                masked_count = counters_total
         payload["masked"] = masked_count if masked_count is not None else 0
     elif op == "translate":
         meta = data.get("translation_metadata") or {}
