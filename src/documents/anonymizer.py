@@ -574,9 +574,9 @@ class DocumentAnonymizer(DocumentProcessor):
 
         custom_specs = self._prepare_custom_specs(custom_patterns)
 
-        if path.suffix.lower() == ".docx":
+        if Path(file_path).suffix.lower() == ".docx":
             result_data = await self._anonymize_docx_document(
-                path,
+                Path(file_path),
                 anonymization_mode=anonymization_mode,
                 exclude_set=exclude_set,
                 custom_specs=custom_specs,
