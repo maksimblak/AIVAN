@@ -360,10 +360,14 @@ class DocumentManager:
                 exports.append({"path": str(path), "format": "txt", "label": "Перевод"})
 
         elif operation == "anonymize":
-            anonymized = (result.data.get("anonymized_text") or "").strip()
-            if anonymized:
-                docx_path = await self._build_docx_anonymized(base_name, anonymized)
-                exports.append({"path": str(docx_path), "format": "docx", "label": "Анонимизированный документ"})
+            docx_ready = result.data.get("anonymized_docx")
+            if docx_ready:
+                exports.append({"path": str(docx_ready), "format": "docx", "label": "Анонимизированный документ"})
+            else:
+                anonymized = (result.data.get("anonymized_text") or "").strip()
+                if anonymized:
+                    docx_path = await self._build_docx_anonymized(base_name, anonymized)
+                    exports.append({"path": str(docx_path), "format": "docx", "label": "Анонимизированный документ"})
 
         elif operation == "analyze_risks":
             docx_path = await self._build_docx_risk(base_name, result.data or {})

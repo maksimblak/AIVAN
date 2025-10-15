@@ -27,6 +27,10 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Awaitable, Callable, Dict, List, Tuple, TYPE_CHECKING
 
+from docx import Document
+from docx.table import _Cell, Table
+from docx.text.paragraph import Paragraph
+
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
 
@@ -563,6 +567,19 @@ class DocumentAnonymizer(DocumentProcessor):
 
         custom_specs = self._prepare_custom_specs(custom_patterns)
 
+        if path.suffix.lower() == ".docx":
+            result_data = await self._anonymize_docx_document(
+                path,
+                anonymization_mode=anonymization_mode,
+                exclude_set=exclude_set,
+                custom_specs=custom_specs,
+                progress_callback=_notify,
+            )
+            await _notify("completed", 100, masked=len(self.anonymization_map))
+            return DocumentResult.success_result(
+                data=result_data, message="Обезличивание документа успешно завершено"
+            )
+
         use_ai = (
             self._ai_enabled
             and self._openai_service is not None
@@ -721,6 +738,259 @@ class DocumentAnonymizer(DocumentProcessor):
                 for spec in custom_specs
             ]
         return "".join(out), report
+
+    def _build_active_specs(
+        self,
+        exclude: set[str],
+        custom_specs: List[PatternSpec] | None = None,
+    ) -> tuple[list[PatternSpec], Dict[str, str], re.Pattern[str]]:
+        specs: List[PatternSpec] = list(self._base_specs)
+        if custom_specs:
+            specs.extend(custom_specs)
+
+        exclude_custom_all = any(key in exclude for key in ("custom", "custom_patterns"))
+
+        active_specs: List[PatternSpec] = []
+        label_map: Dict[str, str] = {}
+        for spec in specs:
+            if spec.kind in exclude:
+                continue
+            if exclude_custom_all and spec.kind.startswith("custom_"):
+                continue
+            active_specs.append(spec)
+            label_map[spec.kind] = spec.label or self._pretty_type(spec.kind)
+
+        if not active_specs:
+            combined = re.compile(r"^$", flags=re.IGNORECASE | re.UNICODE)
+        else:
+            named_parts = [f"(?P<{s.kind}>{s.pattern})" for s in active_specs]
+            combined = re.compile("|".join(named_parts), flags=re.IGNORECASE | re.UNICODE)
+        return active_specs, label_map, combined
+
+    def _anonymize_block(
+        self,
+        text: str,
+        active_specs: List[PatternSpec],
+        label_map: Dict[str, str],
+        combined: re.Pattern[str],
+        *,
+        mode: str,
+        *,
+        stats: Dict[str, int],
+        processed_items: List[Dict[str, Any]],
+        counts_by_type: Dict[str, int],
+    ) -> tuple[str, List[Dict[str, Any]]]:
+        if not active_specs or not text:
+            return text, []
+
+        out: List[str] = []
+        idx = 0
+        matches: List[Dict[str, Any]] = []
+
+        for match in combined.finditer(text):
+            start, end = match.start(), match.end()
+            if start < idx:
+                continue
+
+            spec = None
+            for candidate in active_specs:
+                if match.group(candidate.kind):
+                    spec = candidate
+                    break
+            if spec is None:
+                continue
+
+            original = match.group(0)
+            if spec.validate and not spec.validate(original):
+                continue
+
+            out.append(text[idx:start])
+            data_type = label_map.get(spec.kind, self._pretty_type(spec.kind))
+            replacement = self._get_replacement_deterministic(
+                original=original,
+                kind=spec.kind,
+                data_type=data_type,
+                mode=mode,
+                counts_by_type=counts_by_type,
+            )
+            out.append(replacement)
+            idx = end
+
+            left = max(0, start - 20)
+            right = min(len(text), end + 20)
+            processed_items.append(
+                {
+                    "type": spec.kind,
+                    "label": data_type,
+                    "value": original,
+                    "start": start,
+                    "end": end,
+                    "snippet": text[left:right],
+                }
+            )
+            stats[spec.kind] = stats.get(spec.kind, 0) + 1
+            matches.append({"start": start, "end": end, "replacement": replacement})
+
+        out.append(text[idx:])
+        return "".join(out), matches
+
+    def _iter_table_paragraphs(self, table: Table):
+        for row in table.rows:
+            for cell in row.cells:
+                yield from self._iter_cell_paragraphs(cell)
+
+    def _iter_cell_paragraphs(self, cell: _Cell):
+        for paragraph in cell.paragraphs:
+            yield paragraph
+        for table in cell.tables:
+            yield from self._iter_table_paragraphs(table)
+
+    def _iter_document_paragraphs(self, doc: Document):
+        for paragraph in doc.paragraphs:
+            yield paragraph
+        for table in doc.tables:
+            yield from self._iter_table_paragraphs(table)
+        for section in doc.sections:
+            for part_name in (
+                "header",
+                "first_page_header",
+                "even_page_header",
+                "footer",
+                "first_page_footer",
+                "even_page_footer",
+            ):
+                part = getattr(section, part_name, None)
+                if part is None:
+                    continue
+                for paragraph in part.paragraphs:
+                    yield paragraph
+                for table in part.tables:
+                    yield from self._iter_table_paragraphs(table)
+
+    def _apply_matches_to_runs(self, runs: List, matches: List[Dict[str, Any]]) -> None:
+        if not matches or not runs:
+            return
+
+        runs_info: List[Dict[str, Any]] = []
+        cursor = 0
+        for run in runs:
+            text = run.text or ""
+            runs_info.append({"run": run, "start": cursor, "end": cursor + len(text)})
+            cursor += len(text)
+
+        for match in reversed(matches):
+            start = match["start"]
+            end = match["end"]
+            replacement = match["replacement"]
+            affected_indices = [
+                idx
+                for idx, info in enumerate(runs_info)
+                if info["end"] > start and info["start"] < end
+            ]
+            if not affected_indices:
+                continue
+            first_idx = affected_indices[0]
+            last_idx = affected_indices[-1]
+
+            for idx in affected_indices:
+                info = runs_info[idx]
+                run = info["run"]
+                run_text = run.text or ""
+                run_start = info["start"]
+                run_end = info["end"]
+                local_start = max(0, start - run_start)
+                local_end = min(len(run_text), end - run_start)
+
+                if idx == first_idx and idx == last_idx:
+                    before = run_text[:local_start]
+                    after = run_text[local_end:]
+                    run.text = before + replacement + after
+                elif idx == first_idx:
+                    before = run_text[:local_start]
+                    run.text = before + replacement
+                elif idx == last_idx:
+                    after = run_text[local_end:]
+                    run.text = after
+                else:
+                    run.text = ""
+
+                new_len = len(run.text or "")
+                delta = new_len - (run_end - run_start)
+                info["end"] = info["start"] + new_len
+                for j in range(idx + 1, len(runs_info)):
+                    runs_info[j]["start"] += delta
+                    runs_info[j]["end"] += delta
+
+    async def _anonymize_docx_document(
+        self,
+        file_path: Path,
+        *,
+        anonymization_mode: str,
+        exclude_set: set[str],
+        custom_specs: List[PatternSpec] | None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> dict[str, Any]:
+        doc = Document(str(file_path))
+
+        active_specs, label_map, combined = self._build_active_specs(exclude_set, custom_specs)
+        stats: Dict[str, int] = {spec.kind: 0 for spec in active_specs}
+        processed_items: List[Dict[str, Any]] = []
+        plain_parts: List[str] = []
+        counts_by_type: Dict[str, int] = {}
+
+        paragraphs = list(self._iter_document_paragraphs(doc))
+        total = len(paragraphs)
+
+        for index, paragraph in enumerate(paragraphs, start=1):
+            runs = paragraph.runs
+            if not runs:
+                plain_parts.append("")
+                continue
+            original_text = "".join(run.text or "" for run in runs)
+            if not original_text:
+                plain_parts.append("")
+                continue
+
+            anonymized_text, matches = self._anonymize_block(
+                original_text,
+                active_specs,
+                label_map,
+                combined,
+                mode=anonymization_mode,
+                stats=stats,
+                processed_items=processed_items,
+                counts_by_type=counts_by_type,
+            )
+            plain_parts.append(anonymized_text)
+            if matches:
+                self._apply_matches_to_runs(runs, matches)
+            if progress_callback:
+                percent = 40 + (index / max(1, total)) * 40
+                await progress_callback("anonymizing", percent, masked=len(self.anonymization_map))
+
+        output_path = self._build_human_friendly_temp_path(file_path.stem, "анонимизация", ".docx")
+        doc.save(str(output_path))
+
+        report = {
+            "processed_items": processed_items,
+            "statistics": stats,
+            "type_labels": label_map,
+            "engine": "pattern_docx",
+            "excluded_types": sorted(exclude_set) if exclude_set else [],
+        }
+        if custom_specs:
+            report["custom_patterns"] = [{"kind": spec.kind, "label": label_map.get(spec.kind, spec.label)} for spec in custom_specs]
+
+        anonymized_text = "\n\n".join(part for part in plain_parts if part is not None)
+
+        return {
+            "anonymized_text": anonymized_text.strip(),
+            "anonymization_report": report,
+            "anonymization_map": self.anonymization_map.copy(),
+            "original_file": str(file_path),
+            "mode": anonymization_mode,
+            "anonymized_docx": str(output_path),
+        }
 
     def _prepare_custom_specs(
         self, custom_patterns: List[dict[str, str]] | List[str] | None
