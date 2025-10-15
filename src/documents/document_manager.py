@@ -806,13 +806,13 @@ class DocumentManager:
                 desc = desc[:157].rstrip() + "..."
             desc_html = html_escape(desc)
             hint = str(item.get("strategy_hint") or "").strip()
-            hint_html = html_escape(hint) if hint else ""
-            base = f"{icon} <b>{label.capitalize()}</b>"
-            if desc_html:
-                base += f" — {desc_html}"
-            if hint_html:
-                base += f"<br><i>{hint_html}</i>"
-            return base
+        hint_html = html_escape(hint) if hint else ""
+        base = f"{icon} <b>{label.capitalize()}</b>"
+        if desc_html:
+            base += f" — {desc_html}"
+        if hint_html:
+            base += f"\n    <i>{hint_html}</i>"
+        return base
 
         def append_section(title: str, icon: str, items: list[Any], formatter) -> None:
             if not items:
@@ -850,7 +850,7 @@ class DocumentManager:
         if desc_html:
             badge += f" — {desc_html}"
         if hint_html:
-            badge += f"<br><i>{hint_html}</i>"
+            badge += f"\n    <i>{hint_html}</i>"
         return badge
 
     def _format_lawsuit_result(self, data: Dict[str, Any], message: str) -> str:
