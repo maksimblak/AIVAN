@@ -489,22 +489,57 @@ class DocumentManager:
             sections.append("")
             sections.append(summary.strip())
 
-        def _format_risks(title: str, items: Any) -> None:
-            risks = []
-            for item in items or []:
-                entry = item or {}
-                desc = str(entry.get("description") or entry.get("note") or entry.get("text") or "").strip()
-                level = str((item or {}).get("risk_level") or "").strip()
-                if desc:
-                    prefix = f"[{level.upper()}] " if level else ""
-                    risks.append(f"- {prefix}{desc}")
-            if risks:
-                sections.append(f"## {title}")
-                sections.extend(risks)
+        def _normalise(text: str, limit: int | None = None) -> str:
+            base = re.sub(r"\s+", " ", text or "").strip()
+            if limit and len(base) > limit:
+                return base[: limit - 3].rstrip() + "..."
+            return base
 
-        _format_risks("Паттерны и правила", data.get("pattern_risks"))
+        def _risk_icon(level: str) -> str:
+            mapping = {
+                "critical": "❗",
+                "high": "⚠️",
+                "medium": "🔶",
+                "low": "🔹",
+            }
+            return mapping.get(level.lower(), "•")
+
+        def _format_risk_block(entry: Mapping[str, Any]) -> list[str]:
+            level = str(entry.get("risk_level") or entry.get("level") or "").strip().lower()
+            icon = _risk_icon(level)
+            desc = _normalise(str(entry.get("description") or entry.get("note") or entry.get("text") or ""), 320)
+            snippet = _normalise(str(entry.get("clause_text") or ""), 420)
+            hint = _normalise(str(entry.get("strategy_hint") or ""), 320)
+            law_refs = [ _normalise(str(ref), 160) for ref in (entry.get("law_refs") or []) if str(ref).strip() ]
+            header_level = level.upper() if level else "N/A"
+            header = f"- **{icon} [{header_level}] {desc}**" if desc else f"- **{icon} [{header_level}] Риск без описания**"
+            block = [header]
+            if snippet:
+                block.append(f"  - Фрагмент: {snippet}")
+            if hint:
+                block.append(f"  - Что сделать: {hint}")
+            if law_refs:
+                block.append(f"  - Нормы: {', '.join(law_refs[:4])}")
+            return block
+
+        def _append_risks(title: str, items: Any) -> None:
+            seen: set[tuple[str, str]] = set()
+            blocks: list[str] = []
+            for entry in items or []:
+                desc_key = _normalise(str(entry.get("description") or entry.get("note") or ""), None).lower()
+                snippet_key = _normalise(str(entry.get("clause_text") or ""), None).lower()
+                key = (desc_key, snippet_key)
+                if desc_key and key in seen:
+                    continue
+                seen.add(key)
+                blocks.extend(_format_risk_block(entry))
+            if blocks:
+                sections.append(f"## {title}")
+                sections.extend(blocks)
+
+        _append_risks("Проверка по шаблонам", data.get("pattern_risks"))
         ai_risks = ((data.get("ai_analysis") or {}).get("risks")) or []
-        _format_risks("Выявленные риски", ai_risks)
+        _append_risks("Выявленные риски", ai_risks)
 
         recommendations = [str(item).strip() for item in data.get("recommendations") or [] if str(item).strip()]
         if recommendations:
@@ -512,7 +547,7 @@ class DocumentManager:
             sections.extend(f"- {text}" for text in recommendations)
 
         compliance = (data.get("legal_compliance") or {}).get("violations") or []
-        _format_risks("Нарушения", compliance)
+        _append_risks("Нарушения", compliance)
 
         markdown = "\n\n".join(sections)
         return await self._build_docx_from_markdown_safe(base_name, "анализ рисков", markdown)
