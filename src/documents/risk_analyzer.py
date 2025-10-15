@@ -38,7 +38,7 @@ class RiskItem:
     start: int
     end: int
     law_refs: List[str]
-    source: str  # "patterns" | "ai_analysis" | "compliance"
+    source: str  # "patterns" | "ai_analysis"
 
 
 # ------------------------------ Промпты ИИ ------------------------------
@@ -144,68 +144,6 @@ RISK_ANALYSIS_PROMPT = """
 - law_refs — только реальные нормы и акты, которые ты процитировал.
 - Никаких лишних ключей и пояснений вне JSON.
 """
-
-COMPLIANCE_PROMPT = """
-
-Ты — ИИ-Иван, юридический ИИ-ассистент. Работаешь для юристов и анализируешь исковые заявления.
-
-Твоя задача — одновременно:
-1. Оценить перспективы дела и подсказать, как усилить правовую позицию в иске.
-2. Проверить текст на корректность и отсутствие ошибок по чек-листу.
-
-Алгоритм:
-- Сначала мысленно анализируй судебную практику и кейсы коллег (укажи основные источники и критерии оценки, которыми руководствовался).
-- Затем последовательно проверь иск по каждому пункту чек-листа (формальные реквизиты, содержание, подсудность, расчёты, процессуальные риски, доказательства, противоречия, процессуальные требования, риски для сторон, текстуальные ошибки).
-- Для каждого найденного недостатка оцени серьёзность последствий: высокий риск (критические нарушения), средний (значимые, но устранимые до подачи), низкий (формальные неточности).
-
-Формат вывода — СТРОГО валидный JSON следующей структуры (никакого текста вне JSON):
-{
-  "outcome_assessment": {
-    "success_chance": "низкий|средний|высокий",
-    "reasoning": "<b>Краткий анализ практики</b> … (HTML согласно правилам Telegram)",
-    "strategy": [
-      "<b>Вариант 1:</b> …",
-      "<b>Вариант 2:</b> …"
-    ],
-    "practice_sources": [
-      "<a href="https://...">Дело №…</a>",
-      "<a href="https://...">Постановление…</a>"
-    ]
-  },
-  "document_validation": {
-    "issues": [
-      {
-        "id": "string",
-        "criterion": "формальные реквизиты | содержание | подсудность | расчёты | процессуальные риски | доказательства | противоречия | процессуальные требования | риски для сторон | текстовые ошибки",
-        "severity": "low|medium|high",
-        "description": "описание проблемы с допустимой HTML-разметкой",
-        "recommendation": "конкретное действие для устранения",
-        "span": {"start": 100, "end": 150},
-        "law_refs": ["<u>ст. 131 ГПК РФ</u> — …", "<a href="https://...">Постановление Пленума ВС №…</a>"],
-        "related_risk": "какие последствия несёт"
-      }
-    ],
-    "summary": "<b>Итог по проверке:</b> …"
-  },
-  "violations": [
-    {
-      "id": "string",
-      "text": "дословная проблемная формулировка",
-      "span": {"start": 100, "end": 150},
-      "law_refs": ["<u>ст. ...</u>"],
-      "note": "почему это нарушение / как исправить"
-    }
-  ]
-}
-
-Требования к JSON:
-- Все поля выводи даже при отсутствии данных (используй пустые массивы/строки).
-- span.start и span.end — индексы символов во входном тексте; если точно указать нельзя, ставь null.
-- law_refs — только реальные нормы и судебные акты, которые ты указал в описании.
-- Используй HTML-теги только из разрешённого списка (<b>, <i>, <u>, <s>, <code>, <pre>, <blockquote>, <a>, <tg-spoiler>) и соблюдай их вложенность.
-- Не добавляй пояснений вне JSON.
-"""
-
 
 # ------------------------- Основной класс-анализатор -------------------------
 
@@ -343,28 +281,19 @@ class RiskAnalyzer(DocumentProcessor):
             chunks=ai_payload.get("chunks_analyzed"),
         )
 
-        # 3) Комплаенс/нарушения
-        compliance = await self._check_legal_compliance(cleaned_text)
-        await _notify(
-            "compliance_check",
-            78,
-            violations=len(compliance.get("violations", [])),
-        )
-
-        # 4) Сведение, дедупликация, агрегация
+        # 3) Сведение, дедупликация, агрегация
         combined = self._merge_and_deduplicate(
             pattern_risks,
             ai_risks,
-            self._violations_to_risks(compliance.get("violations", [])),
         )
         overall = self._calculate_overall_risk_weighted(combined, ai_overall)
-        await _notify("aggregation", 90, risks_found=len(combined))
+        await _notify("aggregation", 80, risks_found=len(combined))
 
-        # 5) Подсветка по спанам
+        # 4) Подсветка по спанам
         highlighted_text = self._highlight_with_spans(cleaned_text, combined)
         await _notify(
             "highlighting",
-            96,
+            92,
             risks_found=len(combined),
         )
 
@@ -380,9 +309,9 @@ class RiskAnalyzer(DocumentProcessor):
                 "chunks_analyzed": ai_payload.get("chunks_analyzed", 1),
             },
             "legal_compliance": {
-                "status": compliance.get("status"),
-                "analysis": compliance.get("analysis"),
-                "violations": compliance.get("violations", []),
+                "status": "skipped",
+                "analysis": "",
+                "violations": [],
             },
             "recommendations": self._generate_recommendations(combined, ai_recs),
             "highlighted_text": highlighted_text,
@@ -518,52 +447,6 @@ class RiskAnalyzer(DocumentProcessor):
         return {}
 
     # --------------------------- Комплаенс/нарушения ---------------------------
-
-    async def _check_legal_compliance(self, text: str) -> Dict[str, Any]:
-        try:
-            frag = text[:8000]
-            resp = await self.openai_service.ask_legal(system_prompt=COMPLIANCE_PROMPT, user_text=frag)
-            if not resp or not resp.get("ok"):
-                return {"status": "failed", "analysis": "Не удалось провести проверку", "violations": []}
-            data = self._safe_json_loads(resp.get("text", "") or "")
-            violations = []
-            for v in (data.get("violations") or []):
-                span = v.get("span") or {}
-                s, e = int(span.get("start", -1)), int(span.get("end", -1))
-                if s >= 0 and e > s:
-                    violations.append(
-                        {
-                            "id": str(v.get("id") or f"law:{s}"),
-                            "text": str(v.get("text") or ""),
-                            "span": {"start": s, "end": e},
-                            "law_refs": [str(x) for x in (v.get("law_refs") or [])],
-                            "note": str(v.get("note") or ""),
-                        }
-                    )
-            return {"status": "completed", "analysis": resp.get("text", ""), "violations": violations}
-        except Exception as e:
-            logger.error("Ошибка проверки законодательства: %s", e)
-            return {"status": "error", "analysis": f"Ошибка: {e}", "violations": []}
-
-    def _violations_to_risks(self, violations: List[Dict[str, Any]]) -> List[RiskItem]:
-        out: List[RiskItem] = []
-        for v in violations:
-            span = v.get("span") or {}
-            s, e = int(span.get("start", -1)), int(span.get("end", -1))
-            if s >= 0 and e > s:
-                out.append(
-                    RiskItem(
-                        id=str(v.get("id") or f"law:{s}"),
-                        risk_level=RiskLevel.MEDIUM.value,
-                        description=(v.get("note") or "Потенциальное нарушение").strip(),
-                        clause_text=str(v.get("text") or ""),
-                        start=s,
-                        end=e,
-                        law_refs=[str(x) for x in (v.get("law_refs") or [])],
-                        source="compliance",
-                    )
-                )
-        return out
 
     # ------------------------- Сведение/агрегация -------------------------
 
