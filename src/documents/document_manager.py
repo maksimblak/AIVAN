@@ -701,8 +701,6 @@ class DocumentManager:
         ai_analysis = data.get("ai_analysis") or {}
         ai_risks = ai_analysis.get("risks") or []
         ai_summary = str(ai_analysis.get("summary") or "").strip()
-        compliance = data.get("legal_compliance") or {}
-        compliance_violations = compliance.get("violations") or []
 
         doc_info = data.get("document_info") or {}
         original_name = str(doc_info.get("original_name") or "").strip()
@@ -722,10 +720,59 @@ class DocumentManager:
             "📎 <b>Формат:</b> DOCX",
         ]
 
-        compliance_count = len(compliance_violations)
+        level_meta = {
+            "critical": ("🔴", "критический"),
+            "high": ("🟥", "высокий"),
+            "medium": ("🟧", "средний"),
+            "low": ("🟨", "низкий"),
+        }
+        severity_order = ["critical", "high", "medium", "low"]
 
-        lines.append("")
-        lines.append(f"⚠️ Нарушений: {compliance_count}")
+        all_risks: list[Mapping[str, Any]] = []
+        all_risks.extend(pattern_risks)
+        all_risks.extend(ai_risks)
+
+        if all_risks:
+            lines.append("")
+            lines.append("<b>📊 Итоги проверки</b>")
+            lines.append(f"• Всего рисков: <b>{len(all_risks)}</b>")
+
+            counts: dict[str, int] = {lvl: 0 for lvl in severity_order}
+            for item in all_risks:
+                level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
+                if level in counts:
+                    counts[level] += 1
+            for level in severity_order:
+                count = counts[level]
+                if not count:
+                    continue
+                icon, label = level_meta[level]
+                lines.append(f"• {icon} {label.capitalize()}: <b>{count}</b>")
+
+            # Top risk cards
+            def _severity_rank(item: Mapping[str, Any]) -> tuple[int, str]:
+                level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
+                rank = severity_order.index(level) if level in severity_order else len(severity_order)
+                return rank, str(item.get("description") or item.get("note") or "")
+
+            unique_risks: list[Mapping[str, Any]] = []
+            seen_ids: set[str] = set()
+            for risk in sorted(all_risks, key=_severity_rank):
+                risk_id = str(risk.get("id") or "")
+                if risk_id in seen_ids:
+                    continue
+                seen_ids.add(risk_id)
+                unique_risks.append(risk)
+                if len(unique_risks) >= 6:
+                    break
+
+            lines.append("")
+            lines.append("<b>📌 Карта рисков</b>")
+            for risk in unique_risks:
+                lines.append(f"• {self._format_risk_badge(risk, level_meta)}")
+        else:
+            lines.append("")
+            lines.append("<b>✅ Существенных рисков не обнаружено</b>")
 
         preview_source = ai_summary or message
         preview_clean = re.sub(r"\s+", " ", preview_source).strip()
@@ -735,18 +782,20 @@ class DocumentManager:
             lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_clean)}"])
 
         def _format_risk_entry(item: Mapping[str, Any]) -> str:
-            level = str(item.get("risk_level") or "").lower().strip()
-            desc = str(item.get("description") or "").strip()
-            level_map = {
-                "low": "низкий",
-                "medium": "средний",
-                "high": "высокий",
-                "critical": "критический",
-            }
-            level_display = level_map.get(level, level or "-")
+            level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
+            icon, label = level_meta.get(level, ("⚪", level or "-"))
+            desc = str(item.get("description") or item.get("note") or "").strip()
             if len(desc) > 160:
                 desc = desc[:157].rstrip() + "..."
-            return f"{level_display}: {desc}" if desc else level_display
+            desc_html = html_escape(desc)
+            hint = str(item.get("strategy_hint") or "").strip()
+            hint_html = html_escape(hint) if hint else ""
+            base = f"{icon} <b>{label.capitalize()}</b>"
+            if desc_html:
+                base += f" — {desc_html}"
+            if hint_html:
+                base += f"<br><i>{hint_html}</i>"
+            return base
 
         def append_section(title: str, icon: str, items: list[Any], formatter) -> None:
             if not items:
@@ -755,20 +804,10 @@ class DocumentManager:
             lines.append(f"<b>{icon} {title}</b>")
             for entry in items[:5]:
                 formatted = formatter(entry)
-                lines.append(f"• {html_escape(formatted)}")
+                lines.append(f"• {formatted}")
 
         append_section("Паттерны", "📌", pattern_risks, _format_risk_entry)
         append_section("ИИ-оценка", "🤖", ai_risks, _format_risk_entry)
-
-        def _format_violation(item: Mapping[str, Any]) -> str:
-            note = str(item.get("note") or "").strip()
-            text = str(item.get("text") or "").strip()
-            base = note or text
-            if len(base) > 160:
-                base = base[:157].rstrip() + "..."
-            return base or "Нарушение без описания"
-
-        append_section("Комплаенс", "⚠️", compliance_violations, _format_violation)
 
         if recommendations:
             lines.append("")
@@ -779,6 +818,23 @@ class DocumentManager:
         lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_risk_badge(item: Mapping[str, Any], level_meta: Mapping[str, tuple[str, str]]) -> str:
+        level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
+        icon, label = level_meta.get(level, ("⚪", level or "-"))
+        desc = str(item.get("description") or item.get("note") or "").strip()
+        if len(desc) > 160:
+            desc = desc[:157].rstrip() + "..."
+        desc_html = html_escape(desc)
+        hint = str(item.get("strategy_hint") or "").strip()
+        hint_html = html_escape(hint) if hint else ""
+        badge = f"{icon} <b>{label.capitalize()}</b>"
+        if desc_html:
+            badge += f" — {desc_html}"
+        if hint_html:
+            badge += f"<br><i>{hint_html}</i>"
+        return badge
 
     def _format_lawsuit_result(self, data: Dict[str, Any], message: str) -> str:
         analysis: dict[str, Any] = data.get("analysis") or {}
