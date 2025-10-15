@@ -712,14 +712,6 @@ class DocumentManager:
         divider_html = "<code>" + ("─" * 30) + "</code>"
         title_html = html_escape(title)
 
-        lines: list[str] = [
-            f"<b>📄 {title_html}</b>",
-            divider_html,
-            "",
-            "<b>✨ Анализ рисков выполнен!</b>",
-            "📎 <b>Формат:</b> DOCX",
-        ]
-
         level_meta = {
             "critical": ("🔴", "критический"),
             "high": ("🟥", "высокий"),
@@ -732,10 +724,24 @@ class DocumentManager:
         all_risks.extend(pattern_risks)
         all_risks.extend(ai_risks)
 
+        overall_level = str(data.get("overall_risk_level") or "").lower().strip()
+        overall_icon, overall_label = level_meta.get(overall_level, ("⚪", "нет данных"))
+        overall_label_display = overall_label.capitalize() if overall_label else "Не определён"
+
+        lines: list[str] = [
+            f"<b>📄 {title_html}</b>",
+            divider_html,
+            "",
+            "<b>✨ Анализ рисков выполнен!</b>",
+            f"{overall_icon} <b>Общий уровень:</b> {overall_label_display}",
+            f"📎 <b>Формат:</b> DOCX",
+        ]
+
         if all_risks:
             lines.append("")
             lines.append("<b>📊 Итоги проверки</b>")
             lines.append(f"• Всего рисков: <b>{len(all_risks)}</b>")
+            lines.append(f"• Источники: {len(pattern_risks)} паттерновых, {len(ai_risks)} ИИ")
 
             counts: dict[str, int] = {lvl: 0 for lvl in severity_order}
             for item in all_risks:
@@ -747,7 +753,18 @@ class DocumentManager:
                 if not count:
                     continue
                 icon, label = level_meta[level]
-                lines.append(f"• {icon} {label.capitalize()}: <b>{count}</b>")
+                lines.append(f"  {icon} {label.capitalize()}: <b>{count}</b>")
+
+            board_lines = ["Уровень    Кол-во"]
+            for level in severity_order:
+                count = counts.get(level, 0)
+                if not count:
+                    continue
+                icon, label = level_meta[level]
+                board_lines.append(f"{icon} {label.capitalize():<10} {count}")
+            if len(board_lines) > 1:
+                lines.append("")
+                lines.append("<pre>" + "\n".join(board_lines) + "</pre>")
 
             # Top risk cards
             def _severity_rank(item: Mapping[str, Any]) -> tuple[int, str]:
@@ -768,8 +785,8 @@ class DocumentManager:
 
             lines.append("")
             lines.append("<b>📌 Карта рисков</b>")
-            for risk in unique_risks:
-                lines.append(f"• {self._format_risk_badge(risk, level_meta)}")
+            for idx, risk in enumerate(unique_risks, 1):
+                lines.append(f"{idx}. {self._format_risk_badge(risk, level_meta)}")
         else:
             lines.append("")
             lines.append("<b>✅ Существенных рисков не обнаружено</b>")
