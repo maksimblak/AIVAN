@@ -54,6 +54,7 @@ class DerivedRuntime:
     subscription_plan_map: dict[str, SubscriptionPlanPricing] = field(default_factory=dict)
     max_message_length: int = 4000
     safe_limit: int = 3900
+    models: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
