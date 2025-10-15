@@ -812,24 +812,50 @@ class DocumentManager:
             level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
             icon, label = level_meta.get(level, ("⚪", level or "-"))
             desc = str(item.get("description") or item.get("note") or "").strip()
-            if len(desc) > 160:
-                desc = desc[:157].rstrip() + "..."
+            if len(desc) > 220:
+                desc = desc[:217].rstrip() + "..."
             desc_html = html_escape(desc)
             hint = str(item.get("strategy_hint") or "").strip()
             hint_html = html_escape(hint) if hint else ""
+            snippet = str(item.get("clause_text") or "").strip()
+            if len(snippet) > 260:
+                snippet = snippet[:257].rstrip() + "..."
+            snippet_html = html_escape(snippet) if snippet else ""
+            law_refs = [html_escape(str(ref)) for ref in (item.get("law_refs") or []) if ref]
+
             base = f"{icon} <b>{label.capitalize()}</b>"
             if desc_html:
                 base += f" — {desc_html}"
             if hint_html:
                 base += f"\n    <i>{hint_html}</i>"
+            if snippet_html:
+                base += f"\n    <i>Фрагмент: {snippet_html}</i>"
+            if law_refs:
+                base += f"\n    <i>Нормы: {', '.join(law_refs[:4])}</i>"
             return base
 
         def append_section(title: str, icon: str, items: list[Any], formatter) -> None:
             if not items:
                 return
+            seen_keys: set[tuple[str, str]] = set()
+            filtered: list[Any] = []
+            for entry in items:
+                desc_key = re.sub(r"\s+", " ", str(entry.get("description") or entry.get("note") or "").strip().lower())
+                snippet_key = re.sub(r"\s+", " ", str(entry.get("clause_text") or "").strip().lower())
+                key = (desc_key, snippet_key)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                filtered.append(entry)
+                if len(filtered) >= 5:
+                    break
+
+            if not filtered:
+                return
+
             lines.append("")
             lines.append(f"<b>{icon} {title}</b>")
-            for entry in items[:5]:
+            for entry in filtered:
                 formatted = formatter(entry)
                 lines.append(f"• {formatted}")
 
