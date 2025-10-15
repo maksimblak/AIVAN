@@ -741,6 +741,7 @@ class DocumentManager:
         return "\n".join(lines).strip()
 
     def _format_risk_result(self, data: Dict[str, Any], message: str) -> str:
+        """Форматирование результата анализа рисков с улучшенным UI."""
         recommendations = data.get("recommendations") or []
         pattern_risks = data.get("pattern_risks") or []
         ai_analysis = data.get("ai_analysis") or {}
@@ -754,156 +755,110 @@ class DocumentManager:
         if not title:
             title = "Анализ рисков"
 
-        divider_html = "<code>" + ("─" * 30) + "</code>"
         title_html = html_escape(title)
 
         level_meta = {
             "critical": ("🔴", "критический"),
-            "high": ("🟥", "высокий"),
-            "medium": ("🟧", "средний"),
-            "low": ("🟨", "низкий"),
+            "high": ("🟠", "высокий"),
+            "medium": ("🟡", "средний"),
+            "low": ("⚪", "низкий"),
         }
         severity_order = ["critical", "high", "medium", "low"]
 
+        # Объединяем все риски и дедуплицируем
+        all_risks_raw: list[Mapping[str, Any]] = []
+        all_risks_raw.extend(pattern_risks)
+        all_risks_raw.extend(ai_risks)
+
+        # Дедупликация по описанию и фрагменту
+        seen_keys: set[tuple[str, str]] = set()
         all_risks: list[Mapping[str, Any]] = []
-        all_risks.extend(pattern_risks)
-        all_risks.extend(ai_risks)
+        for risk in all_risks_raw:
+            desc = str(risk.get("description") or risk.get("note") or "").strip().lower()
+            snippet = str(risk.get("clause_text") or "").strip().lower()
+            key = (re.sub(r"\s+", " ", desc), re.sub(r"\s+", " ", snippet))
+            if key not in seen_keys and desc:
+                seen_keys.add(key)
+                all_risks.append(risk)
 
         overall_level = str(data.get("overall_risk_level") or "").lower().strip()
         overall_icon, overall_label = level_meta.get(overall_level, ("⚪", "нет данных"))
         overall_label_display = overall_label.capitalize() if overall_label else "Не определён"
 
+        # Header
         lines: list[str] = [
-            f"<b>📄 {title_html}</b>",
-            divider_html,
+            f"<b>⚖️ {title_html}</b>",
             "",
-            "<b>✨ Анализ рисков выполнен!</b>",
-            f"{overall_icon} <b>Общий уровень:</b> {overall_label_display}",
-            f"📎 <b>Формат:</b> DOCX",
+            f"✨ <b>Анализ выполнен</b> • {overall_icon} {overall_label_display}",
         ]
 
         if all_risks:
-            lines.append("")
-            lines.append("<b>📊 Итоги проверки</b>")
-            lines.append(f"• Всего рисков: <b>{len(all_risks)}</b>")
-            lines.append(f"• Источники: {len(pattern_risks)} паттерновых, {len(ai_risks)} ИИ")
-
+            # Подсчет по уровням
             counts: dict[str, int] = {lvl: 0 for lvl in severity_order}
             for item in all_risks:
                 level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
                 if level in counts:
                     counts[level] += 1
-            for level in severity_order:
-                count = counts[level]
-                if not count:
-                    continue
-                icon, label = level_meta[level]
-                lines.append(f"  {icon} {label.capitalize()}: <b>{count}</b>")
 
-            board_lines = ["Уровень    Кол-во"]
+            # Компактная статистика
+            stat_parts = []
             for level in severity_order:
                 count = counts.get(level, 0)
-                if not count:
-                    continue
-                icon, label = level_meta[level]
-                board_lines.append(f"{icon} {label.capitalize():<10} {count}")
-            if len(board_lines) > 1:
-                lines.append("")
-                lines.append("<pre>" + "\n".join(board_lines) + "</pre>")
+                if count > 0:
+                    icon, label = level_meta[level]
+                    stat_parts.append(f"{icon} {count}")
 
-            # Top risk cards
+            if stat_parts:
+                lines.append(f"📊 <b>Обнаружено:</b> {' | '.join(stat_parts)}")
+
+            # Сортируем риски по важности
             def _severity_rank(item: Mapping[str, Any]) -> tuple[int, str]:
                 level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
                 rank = severity_order.index(level) if level in severity_order else len(severity_order)
                 return rank, str(item.get("description") or item.get("note") or "")
 
-            unique_risks: list[Mapping[str, Any]] = []
-            seen_ids: set[str] = set()
-            for risk in sorted(all_risks, key=_severity_rank):
-                risk_id = str(risk.get("id") or "")
-                if risk_id in seen_ids:
-                    continue
-                seen_ids.add(risk_id)
-                unique_risks.append(risk)
-                if len(unique_risks) >= 6:
-                    break
+            sorted_risks = sorted(all_risks, key=_severity_rank)
 
+            # Показываем топ-4 риска
             lines.append("")
-            lines.append("<b>📌 Карта рисков</b>")
-            for idx, risk in enumerate(unique_risks, 1):
-                lines.append(f"{idx}. {self._format_risk_badge(risk, level_meta)}")
+            lines.append("<b>🎯 Ключевые риски:</b>")
+            for idx, risk in enumerate(sorted_risks[:4], 1):
+                level = str(risk.get("risk_level") or risk.get("level") or "").lower().strip()
+                icon, label = level_meta.get(level, ("⚪", "-"))
+                desc = str(risk.get("description") or risk.get("note") or "").strip()
+                if len(desc) > 180:
+                    desc = desc[:177].rstrip() + "..."
+
+                hint = str(risk.get("strategy_hint") or "").strip()
+                if len(hint) > 150:
+                    hint = hint[:147].rstrip() + "..."
+
+                lines.append(f"{idx}. {icon} <b>{html_escape(desc)}</b>")
+                if hint:
+                    lines.append(f"   <i>→ {html_escape(hint)}</i>")
         else:
             lines.append("")
-            lines.append("<b>✅ Существенных рисков не обнаружено</b>")
+            lines.append("✅ <b>Существенных рисков не обнаружено</b>")
 
-        preview_source = ai_summary or message
-        preview_clean = re.sub(r"\s+", " ", preview_source).strip()
-        if preview_clean:
-            if len(preview_clean) > 280:
-                preview_clean = preview_clean[:277].rstrip() + "..."
-            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_clean)}"])
-
-        def _format_risk_entry(item: Mapping[str, Any]) -> str:
-            level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
-            icon, label = level_meta.get(level, ("⚪", level or "-"))
-            desc = str(item.get("description") or item.get("note") or "").strip()
-            if len(desc) > 220:
-                desc = desc[:217].rstrip() + "..."
-            desc_html = html_escape(desc)
-            hint = str(item.get("strategy_hint") or "").strip()
-            hint_html = html_escape(hint) if hint else ""
-            snippet = str(item.get("clause_text") or "").strip()
-            if len(snippet) > 260:
-                snippet = snippet[:257].rstrip() + "..."
-            snippet_html = html_escape(snippet) if snippet else ""
-            law_refs = [html_escape(str(ref)) for ref in (item.get("law_refs") or []) if ref]
-
-            base = f"{icon} <b>{label.capitalize()}</b>"
-            if desc_html:
-                base += f" — {desc_html}"
-            if hint_html:
-                base += f"\n    <i>{hint_html}</i>"
-            if snippet_html:
-                base += f"\n    <i>Фрагмент: {snippet_html}</i>"
-            if law_refs:
-                base += f"\n    <i>Нормы: {', '.join(law_refs[:4])}</i>"
-            return base
-
-        def append_section(title: str, icon: str, items: list[Any], formatter) -> None:
-            if not items:
-                return
-            seen_keys: set[tuple[str, str]] = set()
-            filtered: list[Any] = []
-            for entry in items:
-                desc_key = re.sub(r"\s+", " ", str(entry.get("description") or entry.get("note") or "").strip().lower())
-                snippet_key = re.sub(r"\s+", " ", str(entry.get("clause_text") or "").strip().lower())
-                key = (desc_key, snippet_key)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                filtered.append(entry)
-                if len(filtered) >= 5:
-                    break
-
-            if not filtered:
-                return
-
-            lines.append("")
-            lines.append(f"<b>{icon} {title}</b>")
-            for entry in filtered:
-                formatted = formatter(entry)
-                lines.append(f"• {formatted}")
-
-        append_section("Проверка по шаблонам", "📌", pattern_risks, _format_risk_entry)
-        append_section("ИИ-оценка", "🤖", ai_risks, _format_risk_entry)
-
+        # Рекомендации (компактно)
         if recommendations:
-            lines.append("")
-            lines.append("<b>✅ Рекомендации</b>")
-            for rec in recommendations[:6]:
-                lines.append(f"• {html_escape(str(rec))}")
+            unique_recs = list(dict.fromkeys(str(r).strip() for r in recommendations if str(r).strip()))[:3]
+            if unique_recs:
+                lines.append("")
+                lines.append("<b>💡 Рекомендации:</b>")
+                for rec in unique_recs:
+                    if len(rec) > 200:
+                        rec = rec[:197].rstrip() + "..."
+                    lines.append(f"• {html_escape(rec)}")
 
-        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
+        # Краткое резюме (если есть)
+        if ai_summary:
+            summary_compact = re.sub(r"\s+", " ", ai_summary).strip()
+            if len(summary_compact) > 200:
+                summary_compact = summary_compact[:197].rstrip() + "..."
+            lines.extend(["", f"<i>📝 {html_escape(summary_compact)}</i>"])
+
+        lines.extend(["", "📎 Полный отчёт: <b>DOCX</b>"])
 
         return "\n".join(lines)
 
