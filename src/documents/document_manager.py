@@ -241,7 +241,17 @@ class DocumentManager:
             "chat": self._format_chat_loaded,
             "ocr": self._format_ocr_result,
         }.get(operation, self._format_generic_result)
-        return formatter(result.data, result.message)
+        rendered = formatter(result.data, result.message)
+        return self._sanitize_telegram_html(rendered)
+
+    @staticmethod
+    def _sanitize_telegram_html(text: str) -> str:
+        if not text:
+            return text
+        cleaned = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        cleaned = cleaned.replace("\r", "")
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
 
     def format_chat_answer_for_telegram(self, result: DocumentResult) -> str:
         data = result.data
@@ -806,13 +816,13 @@ class DocumentManager:
                 desc = desc[:157].rstrip() + "..."
             desc_html = html_escape(desc)
             hint = str(item.get("strategy_hint") or "").strip()
-        hint_html = html_escape(hint) if hint else ""
-        base = f"{icon} <b>{label.capitalize()}</b>"
-        if desc_html:
-            base += f" — {desc_html}"
-        if hint_html:
-            base += f"\n    <i>{hint_html}</i>"
-        return base
+            hint_html = html_escape(hint) if hint else ""
+            base = f"{icon} <b>{label.capitalize()}</b>"
+            if desc_html:
+                base += f" — {desc_html}"
+            if hint_html:
+                base += f"\n    <i>{hint_html}</i>"
+            return base
 
         def append_section(title: str, icon: str, items: list[Any], formatter) -> None:
             if not items:
