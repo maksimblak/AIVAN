@@ -156,15 +156,20 @@ def _extract_text_from_content(
         if dict_text:
             return str(dict_text)
 
-    for key in ('parsed', 'data'):
+    for key in ('parsed', 'data', 'json'):
         candidate = getattr(content, key, None)
         if candidate is None and isinstance(content, dict):
             candidate = content.get(key)
-        if isinstance(candidate, Mapping):
-            _store(candidate)
-            formatted = _format_structured_legal_response(candidate)
-            if formatted:
-                return formatted
+        if candidate is not None:
+            if isinstance(candidate, Mapping):
+                _store(candidate)
+                formatted = _format_structured_legal_response(candidate)
+                if formatted:
+                    return formatted
+            try:
+                return json.dumps(candidate, ensure_ascii=False, separators=(',', ':'))
+            except Exception:
+                return str(candidate)
 
     json_schema = getattr(content, 'json_schema', None)
     if json_schema is None and isinstance(content, dict):

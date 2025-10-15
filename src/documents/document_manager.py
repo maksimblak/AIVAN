@@ -836,6 +836,10 @@ class DocumentManager:
                 lines.append(f"{idx}. {icon} <b>{html_escape(desc)}</b>")
                 if hint:
                     lines.append(f"   <i>→ {html_escape(hint)}</i>")
+
+                # Пустая строка между пунктами (кроме последнего)
+                if idx < len(sorted_risks[:4]):
+                    lines.append("")
         else:
             lines.append("")
             lines.append("✅ <b>Существенных рисков не обнаружено</b>")
@@ -846,10 +850,14 @@ class DocumentManager:
             if unique_recs:
                 lines.append("")
                 lines.append("<b>💡 Рекомендации:</b>")
-                for rec in unique_recs:
+                for idx, rec in enumerate(unique_recs, 1):
                     if len(rec) > 200:
                         rec = rec[:197].rstrip() + "..."
                     lines.append(f"• {html_escape(rec)}")
+
+                    # Пустая строка между рекомендациями (кроме последней)
+                    if idx < len(unique_recs):
+                        lines.append("")
 
         # Краткое резюме (если есть)
         if ai_summary:
