@@ -13,6 +13,7 @@ import hashlib
 import logging
 import mimetypes
 import os
+import re
 from src.core.settings import AppSettings
 
 import tempfile
@@ -595,7 +596,13 @@ class OCRConverter(DocumentProcessor):
         """Очистка текста: схлопывание пробелов + аккуратные паттерн-фиксы."""
         if not text:
             return ""
-        cleaned = " ".join(text.split())
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = []
+        for line in normalized.split("\n"):
+            stripped = re.sub(r"[ \t]+", " ", line).strip()
+            if stripped:
+                lines.append(stripped)
+        cleaned = "\n".join(lines)
         cleaned = self._apply_ocr_corrections(cleaned)
         return cleaned
 
