@@ -652,10 +652,13 @@ class DocumentManager:
         return "\n".join(lines)
 
     def _format_anonymize_result(self, data: Dict[str, Any], message: str) -> str:
-        lines: list[str] = [
-            "<b>✨ Документ успешно обезличен!</b>",
-            "📎 <b>Формат:</b> DOCX",
-        ]
+        """Форматирование результата анонимизации с улучшенным UI."""
+        doc_info = data.get("document_info") or {}
+        original_name = str(doc_info.get("original_name") or "").strip()
+        title = Path(original_name).stem if original_name else ""
+        title = title.replace("_", " ").replace("-", " ").strip()
+        if not title:
+            title = "Анонимизация"
 
         report = data.get("anonymization_report") or {}
         counters = report.get("statistics") or report.get("counters") or {}
@@ -673,16 +676,58 @@ class DocumentManager:
         except (TypeError, ValueError):
             total_int = None
 
-        if total_int is not None:
-            lines.extend(["", f"🛡️ Обезличено фрагментов: {total_int}"])
+        lines: list[str] = [
+            f"🕶️ <b>{title}</b>",
+            "",
+            "✨ Документ обезличен",
+        ]
 
+        if total_int is not None and total_int > 0:
+            lines.append(f"🛡️ Замен: <b>{total_int}</b>")
+
+        # Собираем уникальные типы замен
         replacements_map = data.get("anonymization_map") or {}
         processed_items = report.get("processed_items") or []
+        type_labels = report.get("type_labels") or {}
+
+        # Группируем по типам
+        types_count: dict[str, int] = {}
+        if processed_items:
+            for item in processed_items:
+                label = str(item.get("label") or "").strip()
+                if not label:
+                    item_type = str(item.get("type") or "").strip()
+                    label = str(type_labels.get(item_type, "") or "").strip()
+                if label:
+                    types_count[label] = types_count.get(label, 0) + 1
+
+        # Показываем статистику по типам
+        if types_count:
+            type_icons = {
+                "ФИО": "👤",
+                "Адрес": "📍",
+                "Телефон": "📞",
+                "Email": "📧",
+                "ИНН": "🔢",
+                "Паспорт": "🆔",
+                "Организация": "🏢",
+            }
+            type_parts = []
+            for type_name, count in sorted(types_count.items(), key=lambda x: -x[1])[:5]:
+                icon = type_icons.get(type_name, "•")
+                type_parts.append(f"{icon} {type_name}: {count}")
+
+            if type_parts:
+                lines.append("")
+                lines.append("<b>📊 Типы данных:</b>")
+                for part in type_parts:
+                    lines.append(f"• {part}")
+
+        # Топ-3 примера замен (компактно)
         if replacements_map and processed_items:
-            type_labels = report.get("type_labels") or {}
             seen_pairs: set[tuple[str, str]] = set()
             display_rows: list[str] = []
-            for item in processed_items:
+            for item in processed_items[:10]:  # Проверяем больше элементов
                 original = str(item.get("value") or "").strip()
                 if not original:
                     continue
@@ -691,58 +736,40 @@ class DocumentManager:
                     continue
 
                 original_clean = re.sub(r"\s+", " ", original).strip()
-                if len(original_clean) > 60:
-                    original_clean = original_clean[:57].rstrip() + "..."
+                if len(original_clean) > 40:
+                    original_clean = original_clean[:37].rstrip() + "..."
 
                 replacement_display = replacement_raw.strip()
                 if not replacement_display:
                     replacement_display = "[удалено]"
-
-                label = str(item.get("label") or "").strip()
-                if not label:
-                    item_type = str(item.get("type") or "").strip()
-                    label = str(type_labels.get(item_type, "") or "").strip()
-                label_display = label or "Сущность"
+                if len(replacement_display) > 30:
+                    replacement_display = replacement_display[:27].rstrip() + "..."
 
                 key = (original.strip().lower(), replacement_display.lower())
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
 
-                display_rows.append(
-                    f"• {html_escape(original_clean)} → {html_escape(replacement_display)}"
-                    f" ({html_escape(label_display)})"
-                )
-                if len(display_rows) >= 5:
+                display_rows.append(f"{html_escape(original_clean)} → {html_escape(replacement_display)}")
+                if len(display_rows) >= 3:
                     break
 
             if display_rows:
-                lines.extend(["", "<b>🔁 Замены:</b>"])
-                lines.extend(display_rows)
+                lines.extend(["", "<b>🔄 Примеры:</b>"])
+                for row in display_rows:
+                    lines.append(f"• {row}")
 
-
+        # Превью (короче)
         preview_source = str(data.get("anonymized_text") or "")
         preview_clean = re.sub(r"\s+", " ", preview_source).strip()
         if preview_clean:
-            if len(preview_clean) > 280:
-                preview_clean = preview_clean[:277].rstrip() + "..."
-            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_clean)}"])
+            if len(preview_clean) > 200:
+                preview_clean = preview_clean[:197].rstrip() + "..."
+            lines.extend(["", f"<i>📝 {html_escape(preview_clean)}</i>"])
 
-        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
+        lines.extend(["", "📎 Документ: <b>DOCX</b>"])
 
-        raw_notes = report.get("notes") or []
-        meaningful_notes: list[str] = []
-        for note in raw_notes:
-            note_text = str(note or "").strip()
-            if not note_text:
-                continue
-            if "анонимизация выполнена" in note_text.lower():
-                continue
-            meaningful_notes.append(note_text)
-        for note_text in meaningful_notes[:3]:
-            lines.extend(["", f"<i>{html_escape(note_text)}</i>"])
-
-        return "\n".join(lines).strip()
+        return "\n".join(lines)
 
     def _format_risk_result(self, data: Dict[str, Any], message: str) -> str:
         """Форматирование результата анализа рисков с улучшенным UI."""
