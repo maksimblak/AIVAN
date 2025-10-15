@@ -648,8 +648,10 @@ class OCRConverter(DocumentProcessor):
         out = text
         for pat, repl in rules:
             out = re.sub(pat, repl, out, flags=re.IGNORECASE)
-        out = re.sub(r"\s+", " ", out).strip()
-        return out
+        out = re.sub(r'(?<=\S)\s+(\d+\.)', r'\n\1', out)
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        out = re.sub(r"[ \t]*\n[ \t]*", "\n", out)
+        return out.strip()
 
     def _analyze_extracted_text_quality(self, text: str) -> float:
         """Оценка пригодности встроенного PDF-текста."""
