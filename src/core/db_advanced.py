@@ -468,6 +468,20 @@ class DatabaseAdvanced:
                 """
             )
 
+            # User onboarding hints - для отслеживания показанных подсказок
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_onboarding_hints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    hint_key TEXT NOT NULL,
+                    shown_at INTEGER NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id),
+                    UNIQUE(user_id, hint_key)
+                );
+                """
+            )
+
             # Create VIEW for backwards compatibility (payments -> transactions)
             await conn.execute("DROP VIEW IF EXISTS payments")
             await conn.execute(
@@ -568,6 +582,7 @@ class DatabaseAdvanced:
                 "CREATE INDEX IF NOT EXISTS idx_nps_surveys_score ON nps_surveys(score);",
                 "CREATE INDEX IF NOT EXISTS idx_user_journey_events_user ON user_journey_events(user_id, timestamp);",
                 "CREATE INDEX IF NOT EXISTS idx_user_journey_events_session ON user_journey_events(session_id);",
+                "CREATE INDEX IF NOT EXISTS idx_user_onboarding_hints_user ON user_onboarding_hints(user_id);",
             ]
 
             for index_sql in indexes:
@@ -1768,16 +1783,65 @@ class DatabaseAdvanced:
                 logger.error(f"Database error in get_transaction_stats: {e}")
                 return {}
 
+    async def mark_hint_shown(self, user_id: int, hint_key: str) -> bool:
+        """
+        Пометить подсказку как показанную
+
+        Args:
+            user_id: ID пользователя
+            hint_key: Ключ подсказки (например, 'search_practice', 'document_analysis')
+
+        Returns:
+            True если подсказка была добавлена, False если уже существовала
+        """
+        async with self.pool.acquire() as conn:
+            try:
+                now = int(time.time())
+                await conn.execute(
+                    """INSERT OR IGNORE INTO user_onboarding_hints (user_id, hint_key, shown_at)
+                       VALUES (?, ?, ?)""",
+                    (user_id, hint_key, now),
+                )
+                self.query_count += 1 if self.enable_metrics else 0
+                return True
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in mark_hint_shown: {e}")
+                return False
+
+    async def get_shown_hints(self, user_id: int) -> set[str]:
+        """
+        Получить список уже показанных подсказок
+
+        Args:
+            user_id: ID пользователя
+
+        Returns:
+            Множество ключей показанных подсказок
+        """
+        async with self.pool.acquire() as conn:
+            try:
+                cursor = await conn.execute(
+                    "SELECT hint_key FROM user_onboarding_hints WHERE user_id = ?",
+                    (user_id,),
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                self.query_count += 1 if self.enable_metrics else 0
+                return {row[0] for row in rows}
+            except Exception as e:
+                self.error_count += 1 if self.enable_metrics else 0
+                logger.error(f"Database error in get_shown_hints: {e}")
+                return set()
+
     async def update_user_hint_counter(self, user_id: int, request_count: int) -> None:
         """
-        Обновление счётчика последней показанной подсказки
+        Обновление счётчика последней показанной подсказки (deprecated, используйте mark_hint_shown)
 
         Args:
             user_id: ID пользователя
             request_count: Номер запроса, на котором была показана подсказка
         """
-        # Пока храним в памяти, можно добавить в БД при необходимости
-        # Для простоты используем existing поле updated_at
         pass
 
     async def close(self) -> None:
