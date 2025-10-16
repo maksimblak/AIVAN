@@ -619,7 +619,24 @@ class AdminAnalytics:
                 now = int(time.time())
                 period_start = now - (days * 86400)
 
-                # Попробуем из behavior_events
+                # Используем request_type из таблицы requests (основной источник данных)
+                cursor = await conn.execute("""
+                    SELECT request_type, COUNT(*) as count
+                    FROM requests
+                    WHERE created_at >= ?
+                      AND request_type NOT IN ('legal_question', 'command', 'unknown')
+                      AND request_type IS NOT NULL
+                    GROUP BY request_type
+                    ORDER BY count DESC
+                """, (period_start,))
+
+                rows = await cursor.fetchall()
+                await cursor.close()
+
+                if rows:
+                    return {row[0]: int(row[1]) for row in rows}
+
+                # Fallback: если нет данных в requests, попробуем behavior_events
                 try:
                     cursor = await conn.execute("""
                         SELECT feature, COUNT(*) as count
@@ -636,22 +653,9 @@ class AdminAnalytics:
                     if rows:
                         return {row[0]: int(row[1]) for row in rows}
                 except Exception as behavior_exc:
-                    logger.debug("behavior_events query failed, trying fallback: %s", behavior_exc)
+                    logger.debug("behavior_events query failed: %s", behavior_exc)
 
-                # Если нет данных в behavior_events, используем request_type
-                cursor = await conn.execute("""
-                    SELECT request_type, COUNT(*) as count
-                    FROM requests
-                    WHERE created_at >= ?
-                      AND request_type NOT IN ('legal_question', 'command')
-                    GROUP BY request_type
-                    ORDER BY count DESC
-                """, (period_start,))
-
-                rows = await cursor.fetchall()
-                await cursor.close()
-
-                return {row[0]: int(row[1]) for row in rows}
+                return {}
         except Exception as exc:
             logger.error("Failed to get feature usage stats: %s", exc, exc_info=True)
             return {}  # Возвращаем пустой словарь при ошибке
