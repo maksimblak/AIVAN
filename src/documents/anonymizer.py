@@ -114,7 +114,7 @@ def _is_passport(doc: str) -> bool:
 def _iban_ok(iban: str) -> bool:
     """IBAN mod-97 (упрощённая проверка формата + контроль)."""
     s = re.sub(r"\s+", "", iban).upper()
-    if not re.fullmatch(r"[A-Z]{2}\\d{2}[A-Z0-9]{11,30}", s):
+    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{11,30}", s):
         return False
     s = s[4:] + s[:4]
     num = []
@@ -189,8 +189,6 @@ class PatternSpec:
 
 
 # ------------------------------ ОСНОВНОЙ КЛАСС ------------------------------
-
-from textwrap import dedent
 
 _AI_SYSTEM_PROMPT = dedent("""
 
@@ -465,7 +463,7 @@ class DocumentAnonymizer(DocumentProcessor):
             # Телефоны: международные/локальные, суммарно 10–15 цифр
             PatternSpec(
                 "phones",
-                r"(?:\+?\\d[\\d\-\s().]{6,}\\d)",
+                r"(?:\+?\d[\d\-\s().]{6,}\d)",
                 validate=lambda s: 10 <= len(_digits(s)) <= 15,
             ),
             # Email: поддерживаем unicode \w в локальной части
@@ -474,7 +472,7 @@ class DocumentAnonymizer(DocumentProcessor):
             PatternSpec(
                 "addresses",
                 r"\b(?:г\.\s*[А-ЯЁ][а-яё\- ]+|ул\.\s*[А-ЯЁ][а-яё\- ]+|просп\.?\s*[А-ЯЁ][а-яё\- ]+|"
-                r"пр-кт\.?\s*[А-ЯЁ][а-яё\- ]+|пер\.\s*[А-ЯЁ][а-яё\- ]+|дом\s*\\d+\w*|д\.\s*\\d+\w*)\b",
+                r"пр-кт\.?\s*[А-ЯЁ][а-яё\- ]+|пер\.\s*[А-ЯЁ][а-яё\- ]+|дом\s*\d+\w*|д\.\s*\d+\w*)\b",
             ),
             # Документы РФ: паспорт 4+6, СНИЛС, ИНН 10/12 (с проверкой)
             PatternSpec(
@@ -495,9 +493,9 @@ class DocumentAnonymizer(DocumentProcessor):
                 ),
             ),
             # IBAN (международные счета)
-            PatternSpec("iban", r"\b[A-Z]{2}\\d{2}[A-Z0-9]{11,30}\b", validate=_iban_ok),
+            PatternSpec("iban", r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", validate=_iban_ok),
             # Даты рождения (простая форма)
-            PatternSpec("dates", r"\b(0[1-9]|[12]\\d|3[01])\.(0[1-9]|1[0-2])\.(19\\d{2}|20\д{2})\b"),
+            PatternSpec("dates", r"\b(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(19\d{2}|20\d{2})\b"),
         ]
 
         label_overrides = {
@@ -515,7 +513,7 @@ class DocumentAnonymizer(DocumentProcessor):
                 spec.label = label_overrides[spec.kind]
 
         self._specs.extend([
-            PatternSpec("badge_numbers", r"\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\\d{3,10}\b", label="Табельный номер"),
+            PatternSpec("badge_numbers", r"\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\d{3,10}\b", label="Табельный номер"),
             PatternSpec("registration_numbers", r"\b(?:огрн(?:ип)?|грн|рег\.?\s*№?|окпо|оквэд|свид\.?|гос\.?рег\.?№?)\s*[:№-]*[a-z0-9\-]{5,25}\b", label="Регистрационный номер"),
             PatternSpec("domains", r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b", label="Домен"),
             PatternSpec("urls", r"\bhttps?://[^\s<'\"]+", label="Ссылка"),
@@ -979,7 +977,7 @@ class DocumentAnonymizer(DocumentProcessor):
                 self._apply_matches_to_runs(runs, matches)
             if progress_callback:
                 percent = 40 + (index / max(1, total)) * 40
-                await progress_callback("anonymizing", percent, masked=len(self.anonymization_map))
+                await progress_callback({"stage": "anonymizing", "percent": percent, "masked": len(self.anonymization_map)})
 
         output_path = self._build_temp_docx_path(file_path, "анонимизация")
         doc.save(str(output_path))
