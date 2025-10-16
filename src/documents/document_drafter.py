@@ -12,6 +12,8 @@ from typing import Any, Iterable, Mapping
 logger = logging.getLogger(__name__)
 
 
+# ============================== Errors & Models ===============================
+
 class DocumentDraftingError(RuntimeError):
     """Raised when the LLM response cannot be processed."""
 
@@ -33,11 +35,13 @@ class DraftResult:
     follow_up_questions: list[str]
 
 
+# ============================ System & User Prompts ===========================
+
 DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
 Ты — юридический ассистент, который помогает юристу подготовить и оформить правовой документ под конкретное дело. Работаешь в двух режимах, режим определяется формулировкой пользовательского запроса.
 
 Общие правила:
-- Всегда возвращай валидный JSON и не добавляй текст вне JSON.
+- Всегда возвращай валидный JSON и не добавляй текст вне JSON. Не используй кодовые блоки (```), псевдографику, backslashes для визуального форматирования.
 - Соблюдай юридическую точность, используй профессиональные стандарты и не выдумывай данные.
 - Если информации недостаточно, запроси уточнения через follow_up_questions или вопросы.
 
@@ -52,7 +56,7 @@ DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
 3. Структура `document_markdown`:
    • В начале размести блок реквизитов строками вида `Поле: Значение` (включи: `Суд`, `Истец`, `Ответчик`, `Цена иска` или иную стоимость, `Госпошлина`/сбор, `Дата`, `Подпись` с расшифровкой; при наличии — `Банковские реквизиты`, `Способ подачи`). Не используй псевдографику и обратные слэши.
    • После реквизитов добавь пустую строку и заголовок `# {название}`.
-   • Основные разделы оформляй подзаголовками `## …`; используй нумерованные списки `1.` для ключевых пунктов и маркированные списки `-` для подпунктов.
+   • Основные разделы оформляй подзаголовками `## …`; используй нумерованные списки `1.`/`1)` для ключевых пунктов и маркированные списки `-`, `*`, `•`, `—` для подпунктов.
    • Итоговые блоки (просительная часть, приложения, подпись) подавай как структурированные списки без обратных слэшей в конце строк.
    • Для расчётов и смет используй Markdown-таблицы (`| колонка | колонка |`), чтобы их можно было перенести в Word.
 4. Перед выдачей результата выполни самопроверку: перечисли учтённые ключевые данные и выявленные риски/пробелы в self_check.
@@ -70,7 +74,6 @@ DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
 Если status = "ok", поле document_markdown должно содержать полный текст, готовый к конвертации в Word.
 """.strip()
 
-
 DOCUMENT_PLANNER_SYSTEM_PROMPT = DOCUMENT_ASSISTANT_SYSTEM_PROMPT
 
 DOCUMENT_PLANNER_USER_TEMPLATE = """
@@ -80,7 +83,7 @@ DOCUMENT_PLANNER_USER_TEMPLATE = """
 Сформируй структуру ответа:
 - Поле document_title — точное наименование документа.
 - Поле need_more_info = true, если требуются ответы юриста; false, если данных достаточно для генерации.
-- Массив questions: элементы {{"id": "...", "text": "...", "purpose": "..."}} с пояснением цели вопроса.
+- Массив questions: элементы {"id": "...", "text": "...", "purpose": "..."} с пояснением цели вопроса.
 - Массив context_notes: короткие заметки, которые помогут при подготовке документа.
 
 Ответ верни строго в JSON.
@@ -98,40 +101,45 @@ DOCUMENT_GENERATOR_USER_TEMPLATE = """
 {answers}
 
 Собери итог по схеме JSON:
-{{
+{
   "status": "ok" | "need_more_info" | "abort",
   "document_title": "...",
   "document_markdown": "...",
-  "self_check": {{
+  "self_check": {
     "validated": ["..."],
     "issues": ["..."]
-  }},
+  },
   "follow_up_questions": ["..."]
-}}
+}
 """.strip()
+
+
+# ================================ Regexes =====================================
 
 _JSON_START_RE = re.compile(r"[{\[]")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _JSON_DECODER = json.JSONDecoder()
 _INLINE_MARKUP_RE = re.compile(r"(\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_|`.+?`)", re.DOTALL)
-_BULLET_ITEM_RE = re.compile(r"^([-*•])\s+(.*)")
+_BULLET_ITEM_RE = re.compile(r"^([-*•—–])\s+(.*)")
 _NUMBERED_ITEM_RE = re.compile(r"^\d+[.)]\s+(.*)")
 _METADATA_LINE_RE = re.compile(r"^([^:]{1,80}):\s+(.+)$")
 _TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 
+
+# =============================== JSON helpers =================================
 
 def _strip_code_fences(payload: str) -> str:
     stripped = payload.strip()
     lowered = stripped.lower()
     for prefix in ("```json", "```", "~~~json", "~~~"):
         if lowered.startswith(prefix):
-            stripped = stripped[len(prefix) :]
+            stripped = stripped[len(prefix):]
             stripped = stripped.lstrip("\r\n")
             break
 
     for suffix in ("```", "~~~"):
         if stripped.endswith(suffix):
-            stripped = stripped[: -len(suffix)]
+            stripped = stripped[:-len(suffix)]
             stripped = stripped.rstrip()
             break
 
@@ -140,7 +148,6 @@ def _strip_code_fences(payload: str) -> str:
 
 def _escape_unescaped_newlines(payload: str) -> str:
     """Escape literal newlines that appear inside JSON strings."""
-
     if "\n" not in payload and "\r" not in payload:
         return payload
 
@@ -218,7 +225,6 @@ def _extract_structured_payload(raw: Any) -> Mapping[str, Any] | None:
 
 def _extract_json(text: Any) -> Any:
     """Extract the first JSON structure found in text."""
-
     if isinstance(text, (dict, list)):
         return text
     if text is None:
@@ -281,6 +287,7 @@ def _format_answers(answers: Iterable[dict[str, str]]) -> str:
     return "\n".join(lines) if lines else "(Ответы пока не получены)"
 
 
+# ============================ High-level API calls ============================
 
 async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not request_text.strip():
@@ -303,18 +310,21 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
         if not raw_text:
             raise DocumentDraftingError("Пустой ответ модели")
         data = _extract_json(raw_text)
+
     title = str(data.get("document_title") or "Документ").strip()
     notes = [str(note).strip() for note in data.get("context_notes") or [] if str(note).strip()]
+
     need_more_raw = data.get("need_more_info")
     if isinstance(need_more_raw, bool):
         need_more = need_more_raw
     elif isinstance(need_more_raw, str):
         lowered = need_more_raw.strip().lower()
-        need_more = lowered in {"true", "yes", "1", "y"}
+        need_more = lowered in {"true", "yes", "1", "y", "да"}
     elif need_more_raw is None:
         need_more = False
     else:
         need_more = bool(need_more_raw)
+
     questions: list[dict[str, str]] = []
     if need_more:
         raw_questions = data.get("questions") or []
@@ -324,13 +334,7 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
                 continue
             purpose = str(raw.get("purpose") or "").strip()
             question_id = str(raw.get("id") or f"q{idx + 1}")
-            questions.append(
-                {
-                    "id": question_id,
-                    "text": text,
-                    "purpose": purpose,
-                }
-            )
+            questions.append({"id": question_id, "text": text, "purpose": purpose})
 
     return DraftPlan(title=title or "Документ", questions=questions, notes=notes)
 
@@ -363,6 +367,7 @@ async def generate_document(
         if not raw_text:
             raise DocumentDraftingError("Пустой ответ модели")
         data = _extract_json(raw_text)
+
     status = str(data.get("status") or "ok").lower()
     doc_title = str(data.get("document_title") or title).strip()
     markdown = str(data.get("document_markdown") or "")
@@ -381,24 +386,43 @@ async def generate_document(
     )
 
 
+# ============================= DOCX builder (MD) ==============================
+
 def build_docx_from_markdown(markdown: str, output_path: str) -> None:
+    """
+    Конвертирует подготовленный Markdown в DOCX, применяя базовые требования к юрдокам:
+    - Бумага A4, поля 2.5 см, шрифт Times New Roman 12 pt, междустрочный интервал 1.5
+    - Заголовки через стандартные стили, без псевдографики
+    - Метаданные "Поле: Значение" — автоматом складываются в 2‑колоночную таблицу
+    - Поддержка списков (-, *, •, —) и нумерации (1. / 1))
+    - Поддержка Markdown‑таблиц
+    - Нумерация страниц «Стр. X из Y» в нижнем колонтитуле
+    """
     try:
         from docx import Document  # type: ignore
         from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+        from docx.oxml import OxmlElement  # type: ignore
         from docx.oxml.ns import qn  # type: ignore
         from docx.shared import Cm, Pt  # type: ignore
     except ImportError as exc:  # pragma: no cover
         raise DocumentDraftingError("Не удалось подготовить DOCX без пакета python-docx") from exc
 
-    if not markdown.strip():
+    if not markdown or not markdown.strip():
         raise DocumentDraftingError("Пустой текст документа")
 
     document = Document()
     section = document.sections[0]
+
+    # Формат страницы и поля (A4 + 2.5 см)
+    with suppress(Exception):
+        section.page_width = Cm(21)
+        section.page_height = Cm(29.7)
     for attr in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
         setattr(section, attr, Cm(2.5))
 
-    def _ensure_font(style_name: str, *, size: int, bold: bool = False, italic: bool = False, align: int | None = None) -> None:
+    # ——— шрифты и стили
+    def _ensure_font(style_name: str, *, size: int, bold: bool = False,
+                     italic: bool = False, align: int | None = None) -> None:
         try:
             style = document.styles[style_name]
         except KeyError:
@@ -408,6 +432,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
         font.size = Pt(size)
         font.bold = bold
         font.italic = italic
+        # для кириллицы
         if style.element.rPr is not None:
             r_fonts = style.element.rPr.rFonts
             if r_fonts is not None:
@@ -418,6 +443,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             if align is not None:
                 paragraph_format.alignment = align
 
+    # Normal
     normal_style = document.styles["Normal"]
     normal_font = normal_style.font
     normal_font.name = "Times New Roman"
@@ -436,6 +462,35 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     _ensure_font("Heading 2", size=13, bold=True)
     _ensure_font("Heading 3", size=12, bold=True)
 
+    # ——— колонтитул: "Стр. X из Y"
+    def _add_field(paragraph, instruction: str) -> None:
+        run = paragraph.add_run()
+        fld_begin = OxmlElement("w:fldChar")
+        fld_begin.set(qn("w:fldCharType"), "begin")
+        instr = OxmlElement("w:instrText")
+        instr.set(qn("xml:space"), "preserve")
+        instr.text = instruction
+        fld_separate = OxmlElement("w:fldChar")
+        fld_separate.set(qn("w:fldCharType"), "separate")
+        fld_end = OxmlElement("w:fldChar")
+        fld_end.set(qn("w:fldCharType"), "end")
+        run._r.append(fld_begin)
+        run._r.append(instr)
+        run._r.append(fld_separate)
+        run._r.append(fld_end)
+
+    with suppress(Exception):
+        footer = section.footer
+        para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(0)
+        para.add_run("Стр. ")
+        _add_field(para, "PAGE")
+        para.add_run(" из ")
+        _add_field(para, "NUMPAGES")
+
+    # ——— inline разметка
     def _add_runs(paragraph, text: str) -> None:
         for chunk in _INLINE_MARKUP_RE.split(text):
             if not chunk:
@@ -454,6 +509,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             else:
                 run.text = chunk
 
+    # ——— meta‑блок шапки
     list_mode: str | None = None
     metadata_buffer: list[tuple[str, str]] = []
 
@@ -478,22 +534,22 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                 row = table.add_row()
                 field_cell, value_cell = row.cells
 
-                field_paragraph = field_cell.paragraphs[0]
-                field_paragraph.paragraph_format.space_before = Pt(0)
-                field_paragraph.paragraph_format.space_after = Pt(0)
-                field_paragraph.paragraph_format.first_line_indent = Cm(0)
-                field_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                field_run = field_paragraph.add_run(field)
-                field_run.bold = True
+                fp = field_cell.paragraphs[0]
+                fp.paragraph_format.space_before = Pt(0)
+                fp.paragraph_format.space_after = Pt(0)
+                fp.paragraph_format.first_line_indent = Cm(0)
+                fp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                fr = fp.add_run(field)
+                fr.bold = True
 
-                value_paragraph = value_cell.paragraphs[0]
-                value_paragraph.paragraph_format.space_before = Pt(0)
-                value_paragraph.paragraph_format.space_after = Pt(0)
-                value_paragraph.paragraph_format.first_line_indent = Cm(0)
-                value_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                _add_runs(value_paragraph, value)
+                vp = value_cell.paragraphs[0]
+                vp.paragraph_format.space_before = Pt(0)
+                vp.paragraph_format.space_after = Pt(0)
+                vp.paragraph_format.first_line_indent = Cm(0)
+                vp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                _add_runs(vp, value)
 
-            document.add_paragraph("")
+            document.add_paragraph("")  # разделение от остального текста
         else:
             for field, value in metadata_buffer:
                 paragraph = document.add_paragraph(style="Normal")
@@ -505,6 +561,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
         metadata_buffer = []
 
+    # ——— основной разбор Markdown
     lines = markdown.replace("\r\n", "\n").replace("\r", "\n").splitlines()
     idx = 0
     total_lines = len(lines)
@@ -514,6 +571,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
         idx += 1
         line = raw_line.rstrip()
 
+        # поддержка "жёсткого переноса" в Markdown (backslash в конце строки)
         if line.endswith("\\"):
             line = line[:-1].rstrip()
 
@@ -525,6 +583,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
         plain_line = line.strip()
         plain_lower = plain_line.lower()
+
+        # эвристика для "Исковое заявление ..." в первой строке — как титул
         if plain_line and plain_lower.startswith("исковое заявление"):
             title_paragraph = document.add_paragraph(style="Title")
             title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -535,11 +595,9 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             list_mode = None
             continue
 
+        # сбор мета‑строк "Поле: Значение" до первого "обычного" абзаца/заголовка/списка
         if list_mode is None and plain_line:
-            if (
-                not plain_line.startswith(("-", "*", "•", "#"))
-                and not _NUMBERED_ITEM_RE.match(plain_line)
-            ):
+            if not plain_line.startswith(("-", "*", "•", "—", "#")) and not _NUMBERED_ITEM_RE.match(plain_line):
                 colon_match = _METADATA_LINE_RE.match(plain_line)
                 if colon_match:
                     field = colon_match.group(1).strip()
@@ -548,6 +606,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                         metadata_buffer.append((field, value))
                         continue
 
+        # таблица в Markdown
         if _is_table_row(line):
             flush_metadata()
             table_lines = [line]
@@ -560,10 +619,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                     break
 
             parsed_rows = [_parse_table_row(row) for row in table_lines]
-            if len(parsed_rows) >= 2 and all(
-                _TABLE_SEPARATOR_RE.fullmatch(cell.replace(" ", ""))
-                for cell in parsed_rows[1]
-            ):
+            # вторая строка — разделитель?
+            if len(parsed_rows) >= 2 and all(_TABLE_SEPARATOR_RE.fullmatch(cell.replace(" ", "")) for cell in parsed_rows[1]):
                 data_rows = [parsed_rows[0]] + parsed_rows[2:]
             else:
                 data_rows = parsed_rows
@@ -582,9 +639,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                         paragraph.paragraph_format.space_before = Pt(0)
                         paragraph.paragraph_format.space_after = Pt(0)
                         paragraph.paragraph_format.first_line_indent = Cm(0)
-                        paragraph.alignment = (
-                            WD_ALIGN_PARAGRAPH.CENTER if row_idx == 0 else WD_ALIGN_PARAGRAPH.LEFT
-                        )
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if row_idx == 0 else WD_ALIGN_PARAGRAPH.LEFT
                         _add_runs(paragraph, cell_text)
                         if row_idx == 0:
                             for run in paragraph.runs:
@@ -595,13 +650,14 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
         flush_metadata()
 
+        # заголовки
         if line.startswith("# "):
             content = line[2:].strip()
             title_paragraph = document.add_paragraph(style="Title")
             title_paragraph.paragraph_format.space_after = Pt(12)
             title_paragraph.paragraph_format.keep_with_next = True
             title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _add_runs(title_paragraph, content.upper())
+            _add_runs(title_paragraph, content)  # без насильного UPPERCASE — юридический стиль
             list_mode = None
             continue
 
@@ -623,6 +679,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             list_mode = None
             continue
 
+        # списки
         bullet_match = _BULLET_ITEM_RE.match(line)
         number_match = _NUMBERED_ITEM_RE.match(line)
         if bullet_match:
@@ -640,6 +697,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             list_mode = "number"
             continue
 
+        # обычные абзацы
         paragraph = document.add_paragraph(style="Normal")
         paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         paragraph.paragraph_format.space_after = Pt(6)
@@ -647,6 +705,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
             paragraph.paragraph_format.left_indent = Cm(1.25)
             paragraph.paragraph_format.first_line_indent = Cm(0)
         else:
+            # строка вида "Поле: значение" — без красной строки, слева
             if ":" in plain_line and not plain_line.endswith(":"):
                 paragraph.paragraph_format.first_line_indent = Cm(0)
                 paragraph.paragraph_format.left_indent = Cm(0)
@@ -660,6 +719,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
     document.save(output_path)
 
+
+# ================================ UI helpers ==================================
 
 def _pluralize_questions(count: int) -> str:
     """Склонение слова 'вопрос' в зависимости от числа."""
