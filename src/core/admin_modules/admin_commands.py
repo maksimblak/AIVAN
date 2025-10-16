@@ -90,6 +90,10 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
         "chat": "Чат с документом",
     }
 
+    # Если данных нет, показываем все функции с нулями
+    if not feature_usage:
+        feature_usage = {key: 0 for key in feature_names.keys()}
+
     feature_lines = []
     sorted_features = sorted(feature_usage.items(), key=lambda x: x[1], reverse=True)
     for feature_key, count in sorted_features[:5]:  # Топ-5
@@ -97,9 +101,8 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
         name = feature_names.get(feature_key, feature_key)
         feature_lines.append(f"{icon} {name}: <b>{count}</b>")
 
-    feature_block = ""
-    if feature_lines:
-        feature_block = f"""
+    # Секция всегда отображается
+    feature_block = f"""
 
 <b>🔧 Популярные функции (30 дн.):</b>
 {chr(10).join(feature_lines)}"""
