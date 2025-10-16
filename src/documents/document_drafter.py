@@ -294,7 +294,11 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not request_text.strip():
         raise DocumentDraftingError("Пустой запрос")
 
-    user_prompt = DOCUMENT_PLANNER_USER_TEMPLATE.format(request=request_text.strip())
+    user_prompt = USER_TEMPLATE.format(
+        request_heading="Запрос юриста:",
+        request=request_text.strip(),
+        mode_instructions=PLANNER_MODE_INSTRUCTIONS,
+    )
     response = await openai_service.ask_legal(
         system_prompt=DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
         user_text=user_prompt,
@@ -347,10 +351,14 @@ async def generate_document(
     answers: list[dict[str, str]],
 ) -> DraftResult:
     answers_formatted = _format_answers(answers)
-    user_prompt = DOCUMENT_GENERATOR_USER_TEMPLATE.format(
-        request=request_text.strip(),
+    mode_instructions = GENERATOR_MODE_INSTRUCTIONS.format(
         title=title,
         answers=answers_formatted or "(Ответы пока не получены)",
+    )
+    user_prompt = USER_TEMPLATE.format(
+        request_heading="Запрос юриста и вводные данные:",
+        request=request_text.strip(),
+        mode_instructions=mode_instructions,
     )
     response = await openai_service.ask_legal(
         system_prompt=DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
