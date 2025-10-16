@@ -233,6 +233,33 @@ __all__ = [
     "get_next_onboarding_hint",
     "mark_hint_as_shown",
     "should_show_hint",
+    "get_contextual_hint",
     "ONBOARDING_HINTS",
     "QUICK_HINTS",
 ]
+
+
+async def get_contextual_hint(
+    db: DatabaseAdvanced | None,
+    user_id: int,
+    *,
+    context: str = "general",
+) -> str | None:
+    """
+    Вернуть подсказку, релевантную текущему контексту.
+
+    Сначала пытаемся подобрать «умную» подсказку из онбординг-пула (она учитывает
+    историю показов и не повторяется). Если подходящая подсказка для пользователя
+    закончилась, откатываемся к заранее подготовленным быстрым подсказкам.
+    """
+
+    # Приоритет — онбординг, который отслеживает прогресс пользователя
+    hint = await get_onboarding_hint(db, user_id, context=context)
+    if hint:
+        return hint
+
+    # Быстрые подсказки не хранят состояние, поэтому используем их как запасной вариант.
+    if context in QUICK_HINTS:
+        return QUICK_HINTS[context]
+
+    return QUICK_HINTS.get("general")
