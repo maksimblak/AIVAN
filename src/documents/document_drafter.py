@@ -74,44 +74,11 @@ DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
 Если status = "ok", поле document_markdown должно содержать полный текст, готовый к конвертации в Word.
 """.strip()
 
-DOCUMENT_PLANNER_SYSTEM_PROMPT = DOCUMENT_ASSISTANT_SYSTEM_PROMPT
-
 USER_TEMPLATE = """
 {request_heading}
 {request}
 
-{mode_instructions}
-""".strip()
-
-PLANNER_MODE_INSTRUCTIONS = """
-Сформируй структуру ответа:
-- Поле document_title — точное наименование документа.
-- Поле need_more_info = true, если требуются ответы юриста; false, если данных достаточно для генерации.
-- Массив questions: элементы {"id": "...", "text": "...", "purpose": "..."} с пояснением цели вопроса.
-- Массив context_notes: короткие заметки, которые помогут при подготовке документа.
-
-Ответ верни строго в JSON.
-""".strip()
-
-DOCUMENT_GENERATOR_SYSTEM_PROMPT = DOCUMENT_ASSISTANT_SYSTEM_PROMPT
-
-GENERATOR_MODE_INSTRUCTIONS = """
-Предполагаемое название документа: {title}
-
-Ответы юриста:
-{answers}
-
-Собери итог по схеме JSON:
-{{
-  "status": "ok" | "need_more_info" | "abort",
-  "document_title": "...",
-  "document_markdown": "...",
-  "self_check": {{
-    "validated": ["..."],
-    "issues": ["..."]
-  }},
-  "follow_up_questions": ["..."]
-}}
+{details}
 """.strip()
 
 
@@ -294,10 +261,20 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not request_text.strip():
         raise DocumentDraftingError("Пустой запрос")
 
+    planner_details = """
+Сформируй структуру ответа:
+- Поле document_title — точное наименование документа.
+- Поле need_more_info = true, если требуются ответы юриста; false, если данных достаточно для генерации.
+- Массив questions: элементы {"id": "...", "text": "...", "purpose": "..."} с пояснением цели вопроса.
+- Массив context_notes: короткие заметки, которые помогут при подготовке документа.
+
+Ответ верни строго в JSON.
+""".strip()
+
     user_prompt = USER_TEMPLATE.format(
         request_heading="Запрос юриста:",
         request=request_text.strip(),
-        mode_instructions=PLANNER_MODE_INSTRUCTIONS,
+        details=planner_details,
     )
     response = await openai_service.ask_legal(
         system_prompt=DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
@@ -351,14 +328,28 @@ async def generate_document(
     answers: list[dict[str, str]],
 ) -> DraftResult:
     answers_formatted = _format_answers(answers)
-    mode_instructions = GENERATOR_MODE_INSTRUCTIONS.format(
-        title=title,
-        answers=answers_formatted or "(Ответы пока не получены)",
-    )
+    generator_details = f"""
+Предполагаемое название документа: {title}
+
+Ответы юриста:
+{answers_formatted or "(Ответы пока не получены)"}
+
+Собери итог по схеме JSON:
+{{
+  "status": "ok" | "need_more_info" | "abort",
+  "document_title": "...",
+  "document_markdown": "...",
+  "self_check": {{
+    "validated": ["..."],
+    "issues": ["..."]
+  }},
+  "follow_up_questions": ["..."]
+}}
+""".strip()
     user_prompt = USER_TEMPLATE.format(
         request_heading="Запрос юриста и вводные данные:",
         request=request_text.strip(),
-        mode_instructions=mode_instructions,
+        details=generator_details,
     )
     response = await openai_service.ask_legal(
         system_prompt=DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
