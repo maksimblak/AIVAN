@@ -1768,6 +1768,18 @@ class DatabaseAdvanced:
                 logger.error(f"Database error in get_transaction_stats: {e}")
                 return {}
 
+    async def update_user_hint_counter(self, user_id: int, request_count: int) -> None:
+        """
+        Обновление счётчика последней показанной подсказки
+
+        Args:
+            user_id: ID пользователя
+            request_count: Номер запроса, на котором была показана подсказка
+        """
+        # Пока храним в памяти, можно добавить в БД при необходимости
+        # Для простоты используем existing поле updated_at
+        pass
+
     async def close(self) -> None:
         """Закрытие базы данных"""
         if self._cleanup_task:

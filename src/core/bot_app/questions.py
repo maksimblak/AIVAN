@@ -508,6 +508,17 @@ async def process_question(
                     if "practice_excel_path" in locals() and practice_excel_path:
                         practice_excel_path.unlink(missing_ok=True)
 
+        # Показываем контекстную подсказку о возможностях бота
+        try:
+            from src.core.bot_app.hints import get_contextual_hint
+            hint_context = "after_search" if practice_mode_active else "text_question"
+            hint = await get_contextual_hint(db, user_id, context=hint_context)
+            if hint:
+                with suppress(Exception):
+                    await message.answer(hint, parse_mode=ParseMode.HTML)
+        except Exception as hint_error:
+            logger.debug("Failed to send hint: %s", hint_error)
+
         quota_text = quota_text or result.get("quota_message", "")
         if quota_text:
             with suppress(Exception):
