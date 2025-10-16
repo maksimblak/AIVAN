@@ -60,6 +60,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     analytics = AdminAnalytics(_resolve_db(db))
     segments = await analytics.get_user_segments()
     conversion_metrics = await analytics.get_conversion_metrics()
+    feature_usage = await analytics.get_feature_usage_stats(days=30)
 
     plan_lines = []
     for plan_id in PLAN_SEGMENT_ORDER:
@@ -67,6 +68,41 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
         if segment:
             plan_lines.append(f"{PLAN_SEGMENT_DEFS[plan_id]['button']}: <b>{segment.user_count}</b>")
     plan_block = ("\n" + "\n".join(plan_lines)) if plan_lines else ""
+
+    # Форматируем статистику использования функций
+    feature_icons = {
+        "summarize": "📄",
+        "analyze_risks": "⚠️",
+        "lawsuit_analysis": "⚖️",
+        "anonymize": "🕶️",
+        "ocr": "📷",
+        "translate": "🌐",
+        "chat": "💬",
+    }
+
+    feature_names = {
+        "summarize": "Краткая выжимка",
+        "analyze_risks": "Риск-анализ",
+        "lawsuit_analysis": "Анализ искового",
+        "anonymize": "Обезличивание",
+        "ocr": "Распознавание текста",
+        "translate": "Перевод",
+        "chat": "Чат с документом",
+    }
+
+    feature_lines = []
+    sorted_features = sorted(feature_usage.items(), key=lambda x: x[1], reverse=True)
+    for feature_key, count in sorted_features[:5]:  # Топ-5
+        icon = feature_icons.get(feature_key, "•")
+        name = feature_names.get(feature_key, feature_key)
+        feature_lines.append(f"{icon} {name}: <b>{count}</b>")
+
+    feature_block = ""
+    if feature_lines:
+        feature_block = f"""
+
+<b>🔧 Популярные функции (30 дн.):</b>
+{chr(10).join(feature_lines)}"""
 
     return f"""
 <b>🎛 АДМИН-ПАНЕЛЬ</b>
@@ -78,7 +114,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
 📉 Отток: <b>{segments['churned'].user_count}</b>
 💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
 🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
-🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>{plan_block}
+🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>{plan_block}{feature_block}
 
 <b>📈 Конверсия Триал → Оплата:</b>
 • Всего триал-пользователей: {conversion_metrics.total_trial_users}

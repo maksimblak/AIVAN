@@ -611,6 +611,51 @@ class AdminAnalytics:
                 for row in rows
             ]
 
+    async def get_feature_usage_stats(self, days: int = 30) -> dict[str, int]:
+        """Статистика использования функций (кнопок) документов"""
+
+        try:
+            async with self.db.pool.acquire() as conn:
+                now = int(time.time())
+                period_start = now - (days * 86400)
+
+                # Попробуем из behavior_events
+                try:
+                    cursor = await conn.execute("""
+                        SELECT feature, COUNT(*) as count
+                        FROM behavior_events
+                        WHERE timestamp >= ?
+                          AND event_type = 'feature_use'
+                        GROUP BY feature
+                        ORDER BY count DESC
+                    """, (period_start,))
+
+                    rows = await cursor.fetchall()
+                    await cursor.close()
+
+                    if rows:
+                        return {row[0]: int(row[1]) for row in rows}
+                except Exception as behavior_exc:
+                    logger.debug("behavior_events query failed, trying fallback: %s", behavior_exc)
+
+                # Если нет данных в behavior_events, используем request_type
+                cursor = await conn.execute("""
+                    SELECT request_type, COUNT(*) as count
+                    FROM requests
+                    WHERE created_at >= ?
+                      AND request_type NOT IN ('legal_question', 'command')
+                    GROUP BY request_type
+                    ORDER BY count DESC
+                """, (period_start,))
+
+                rows = await cursor.fetchall()
+                await cursor.close()
+
+                return {row[0]: int(row[1]) for row in rows}
+        except Exception as exc:
+            logger.error("Failed to get feature usage stats: %s", exc, exc_info=True)
+            return {}  # Возвращаем пустой словарь при ошибке
+
     def format_segment_summary(self, segment: UserSegment, max_users: int = 5) -> str:
         """Форматирование сегмента для вывода"""
 
