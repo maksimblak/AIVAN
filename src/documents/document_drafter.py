@@ -102,16 +102,16 @@ GENERATOR_MODE_INSTRUCTIONS = """
 {answers}
 
 Собери итог по схеме JSON:
-{
+{{
   "status": "ok" | "need_more_info" | "abort",
   "document_title": "...",
   "document_markdown": "...",
-  "self_check": {
+  "self_check": {{
     "validated": ["..."],
     "issues": ["..."]
-  },
+  }},
   "follow_up_questions": ["..."]
-}
+}}
 """.strip()
 
 
