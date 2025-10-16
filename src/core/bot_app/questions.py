@@ -44,6 +44,7 @@ __all__ = [
 ]
 
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
+LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
 
 logger = logging.getLogger("ai-ivan.simple.questions")
 
@@ -511,11 +512,29 @@ async def process_question(
         # Показываем контекстную подсказку о возможностях бота
         try:
             from src.core.bot_app.hints import get_contextual_hint
-            hint_context = "after_search" if practice_mode_active else "text_question"
-            hint = await get_contextual_hint(db, user_id, context=hint_context)
-            if hint:
+
+            candidate_contexts: list[str] = []
+            if attachments_list:
+                candidate_contexts.append("document_uploaded")
+            if practice_mode_active:
+                candidate_contexts.append("after_search")
+            if len(question_text) >= LONG_TEXT_HINT_THRESHOLD:
+                candidate_contexts.append("long_text")
+            candidate_contexts.append("text_question")
+
+            seen: set[str] = set()
+            hint_text: str | None = None
+            for ctx_name in candidate_contexts:
+                if ctx_name in seen:
+                    continue
+                seen.add(ctx_name)
+                hint_text = await get_contextual_hint(db, user_id, context=ctx_name)
+                if hint_text:
+                    break
+
+            if hint_text:
                 with suppress(Exception):
-                    await message.answer(hint, parse_mode=ParseMode.HTML)
+                    await message.answer(hint_text, parse_mode=ParseMode.HTML)
         except Exception as hint_error:
             logger.debug("Failed to send hint: %s", hint_error)
 
