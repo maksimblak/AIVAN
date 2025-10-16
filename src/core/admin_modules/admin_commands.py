@@ -62,12 +62,21 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     conversion_metrics = await analytics.get_conversion_metrics()
     feature_usage = await analytics.get_feature_usage_stats(days=30)
 
+    # Подсчёт общего количества пользователей
+    total_users = sum(seg.user_count for seg in segments.values() if not seg.segment_id.startswith('plan_'))
+
+    # Форматируем планы
     plan_lines = []
+    total_paid = 0
     for plan_id in PLAN_SEGMENT_ORDER:
         segment = segments.get(f'plan_{plan_id}')
         if segment:
-            plan_lines.append(f"{PLAN_SEGMENT_DEFS[plan_id]['button']}: <b>{segment.user_count}</b>")
-    plan_block = ("\n" + "\n".join(plan_lines)) if plan_lines else ""
+            total_paid += segment.user_count
+            plan_lines.append(f"  {PLAN_SEGMENT_DEFS[plan_id]['button']} <b>{segment.user_count}</b>")
+
+    plan_block = ""
+    if plan_lines:
+        plan_block = f"\n\n<b>💎 Платные подписки:</b>\n" + "\n".join(plan_lines)
 
     # Форматируем статистику использования функций
     feature_icons = {
@@ -99,33 +108,50 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     for feature_key, count in sorted_features[:5]:  # Топ-5
         icon = feature_icons.get(feature_key, "•")
         name = feature_names.get(feature_key, feature_key)
-        feature_lines.append(f"{icon} {name}: <b>{count}</b>")
+        feature_lines.append(f"  {icon} {name}: <b>{count}</b>")
 
-    # Секция всегда отображается
-    feature_block = f"""
+    feature_block = f"\n\n<b>🔧 Популярные функции (30 дн.):</b>\n" + "\n".join(feature_lines)
 
-<b>🔧 Популярные функции (30 дн.):</b>
-{chr(10).join(feature_lines)}"""
+    # Форматируем конверсию с индикатором
+    conversion_rate = conversion_metrics.conversion_rate
+    if conversion_rate >= 15:
+        conv_indicator = "🟢"
+    elif conversion_rate >= 8:
+        conv_indicator = "🟡"
+    else:
+        conv_indicator = "🔴"
 
     return f"""
-<b>🎛 АДМИН-ПАНЕЛЬ</b>
+╔═══════════════════════════════════╗
+       <b>🎛 АДМИН-ПАНЕЛЬ</b>
+╚═══════════════════════════════════╝
 
-<b>📊 Сводка по пользователям:</b>
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  <b>📊 ПОЛЬЗОВАТЕЛИ</b>
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-⚡ Суперактивные: <b>{segments['power_users'].user_count}</b>
-⚠️ Группа риска: <b>{segments['at_risk'].user_count}</b>
-📉 Отток: <b>{segments['churned'].user_count}</b>
-💰 Переходы из триала: <b>{segments['trial_converters'].user_count}</b>
-🚫 Только бесплатные: <b>{segments['freeloaders'].user_count}</b>
-🆕 Новые пользователи (7 дн.): <b>{segments['new_users'].user_count}</b>{plan_block}{feature_block}
+🆕 Новые (7 дн.)         <b>{segments['new_users'].user_count}</b>
+⚡️ Суперактивные          <b>{segments['power_users'].user_count}</b>
+🚫 Только бесплатные      <b>{segments['freeloaders'].user_count}</b>
 
-<b>📈 Конверсия Триал → Оплата:</b>
-• Всего триал-пользователей: {conversion_metrics.total_trial_users}
-• Перешли на оплату: {conversion_metrics.converted_to_paid}
-• Конверсия: <b>{conversion_metrics.conversion_rate}%</b>
-• Среднее время до покупки: {conversion_metrics.avg_time_to_conversion_days} дней
+<b>⚠️ Требуют внимания:</b>
+  ⏰ Группа риска         <b>{segments['at_risk'].user_count}</b>
+  📉 Отток                <b>{segments['churned'].user_count}</b>{plan_block}{feature_block}
 
-<i>Выберите раздел для детального анализа:</i>
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  <b>📈 КОНВЕРСИЯ</b>
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+💰 Переходы из триала     <b>{segments['trial_converters'].user_count}</b>
+👥 Всего на триале        <b>{conversion_metrics.total_trial_users}</b>
+✅ Перешли на оплату      <b>{conversion_metrics.converted_to_paid}</b>
+
+{conv_indicator} <b>Конверсия: {conversion_metrics.conversion_rate}%</b>
+⏱ Среднее время: <b>{conversion_metrics.avg_time_to_conversion_days}</b> дн.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+<i>📱 Выберите раздел для детального анализа</i>
 """
 
 

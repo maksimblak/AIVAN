@@ -76,10 +76,14 @@ DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
 
 DOCUMENT_PLANNER_SYSTEM_PROMPT = DOCUMENT_ASSISTANT_SYSTEM_PROMPT
 
-DOCUMENT_PLANNER_USER_TEMPLATE = """
-Запрос юриста:
+USER_TEMPLATE = """
+{request_heading}
 {request}
 
+{mode_instructions}
+""".strip()
+
+PLANNER_MODE_INSTRUCTIONS = """
 Сформируй структуру ответа:
 - Поле document_title — точное наименование документа.
 - Поле need_more_info = true, если требуются ответы юриста; false, если данных достаточно для генерации.
@@ -91,10 +95,7 @@ DOCUMENT_PLANNER_USER_TEMPLATE = """
 
 DOCUMENT_GENERATOR_SYSTEM_PROMPT = DOCUMENT_ASSISTANT_SYSTEM_PROMPT
 
-DOCUMENT_GENERATOR_USER_TEMPLATE = """
-Запрос юриста и вводные данные:
-{request}
-
+GENERATOR_MODE_INSTRUCTIONS = """
 Предполагаемое название документа: {title}
 
 Ответы юриста:
