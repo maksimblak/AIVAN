@@ -1,11 +1,8 @@
-"""
-Базовые классы для обработки документов
-"""
-
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,7 +10,7 @@ from pathlib import Path
 from typing import Any
 import re
 
-from src.documents.storage_backends import ArtifactUploader
+from .storage_backends import ArtifactUploader  # fixed: relative import
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +41,7 @@ class DocumentResult:
         data: dict[str, Any],
         message: str = "Обработка успешно завершена",
         processing_time: float = 0.0,
-    ) -> DocumentResult:
+    ) -> "DocumentResult":
         """Создать успешный результат"""
         return cls(
             success=True,
@@ -57,7 +54,7 @@ class DocumentResult:
     @classmethod
     def error_result(
         cls, message: str, error_code: str = "PROCESSING_ERROR", processing_time: float = 0.0
-    ) -> DocumentResult:
+    ) -> "DocumentResult":
         """Создать результат с ошибкой"""
         return cls(
             success=False,
@@ -80,7 +77,7 @@ class DocumentProcessor(ABC):
     @abstractmethod
     async def process(self, file_path: str | Path, **kwargs) -> DocumentResult:
         """Абстрактный метод для обработки документа"""
-        pass
+        raise NotImplementedError
 
     def validate_file(self, file_path: str | Path) -> tuple[bool, str]:
         """Валидация файла перед обработкой"""
@@ -112,13 +109,20 @@ class DocumentProcessor(ABC):
 
     async def safe_process(self, file_path: str | Path, **kwargs) -> DocumentResult:
         """Безопасная обработка документа с валидацией и обработкой ошибок"""
-        start_time = asyncio.get_event_loop().time()
+        try:
+            loop = asyncio.get_running_loop()
+            _now = loop.time  # monotonic
+        except RuntimeError:
+            loop = None
+            _now = time.monotonic  # fallback if no loop yet
+
+        start_time = _now()
 
         try:
             # Валидация файла
             is_valid, validation_message = self.validate_file(file_path)
             if not is_valid:
-                processing_time = asyncio.get_event_loop().time() - start_time
+                processing_time = _now() - start_time
                 return DocumentResult.error_result(
                     message=validation_message,
                     error_code="VALIDATION_ERROR",
@@ -126,23 +130,23 @@ class DocumentProcessor(ABC):
                 )
 
             # Обработка документа
-            logger.info(f"Начинаю обработку документа {file_path} с помощью {self.name}")
+            logger.info("Начинаю обработку документа %s с помощью %s", file_path, self.name)
             result = await self.process(file_path, **kwargs)
-            result.processing_time = asyncio.get_event_loop().time() - start_time
+            result.processing_time = _now() - start_time
 
-            logger.info(f"Обработка документа завершена за {result.processing_time:.2f}с")
+            logger.info("Обработка документа завершена за %.2fс", result.processing_time)
             return result
 
         except ProcessingError as e:
-            processing_time = asyncio.get_event_loop().time() - start_time
-            logger.error(f"Ошибка обработки документа {file_path}: {e.message}")
+            processing_time = _now() - start_time
+            logger.error("Ошибка обработки документа %s: %s", file_path, e.message)
             return DocumentResult.error_result(
                 message=e.message, error_code=e.error_code, processing_time=processing_time
             )
 
         except Exception as e:
-            processing_time = asyncio.get_event_loop().time() - start_time
-            logger.exception(f"Неожиданная ошибка при обработке документа {file_path}")
+            processing_time = _now() - start_time
+            logger.exception("Неожиданная ошибка при обработке документа %s", file_path)
             return DocumentResult.error_result(
                 message=f"Внутренняя ошибка: {str(e)}",
                 error_code="INTERNAL_ERROR",
@@ -161,7 +165,6 @@ class DocumentInfo:
     upload_time: datetime
     user_id: int
     remote_path: str | None = None
-
 
 
 class DocumentStorage:
