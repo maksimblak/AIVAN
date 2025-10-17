@@ -227,8 +227,15 @@ def _extract_structured_payload(raw: Any) -> Mapping[str, Any] | None:
 
 def _extract_json(text: Any) -> Any:
     """Extract the first JSON structure found in text."""
-    if isinstance(text, (dict, list)):
+    if isinstance(text, Mapping):
         return text
+    if isinstance(text, list):
+        for item in text:
+            if isinstance(item, Mapping):
+                return item
+        if text:
+            return text[0]
+        raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
     if text is None:
         raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
     if not isinstance(text, str):

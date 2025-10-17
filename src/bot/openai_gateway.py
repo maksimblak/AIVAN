@@ -79,8 +79,9 @@ _shared_async_client: AsyncOpenAI | None = None
 def _infer_model_caps(model: str) -> dict[str, bool]:
     lower = model.lower()
     caps: dict[str, bool] = {}
-    if lower.startswith('gpt-5') or (lower.startswith('o') and not lower.startswith('omni')):
-        caps['supports_sampling'] = False
+    if lower.startswith("gpt-5") or (lower.startswith("o") and not lower.startswith("omni")):
+        caps["supports_sampling"] = False
+        caps["supports_response_format"] = False
     return caps
 
 
@@ -147,6 +148,20 @@ def _extract_text_from_content(
     def _store(candidate: Mapping[str, Any] | None) -> None:
         if candidate and structured_sink is not None and not structured_sink:
             structured_sink.append(_normalise_mapping(candidate))
+
+    if hasattr(content, "model_dump"):
+        try:
+            dumped = content.model_dump()
+            if isinstance(dumped, Mapping):
+                _store(dumped)
+            return json.dumps(dumped, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            pass
+    if hasattr(content, "json") and callable(getattr(content, "json")):
+        try:
+            return content.json(exclude_none=True)
+        except Exception:
+            pass
 
     text_value = getattr(content, 'text', None)
     if text_value:
@@ -759,7 +774,7 @@ async def _ask_legal_internal(
     model_caps = MODEL_CAPABILITIES.setdefault(model, {})
     inferred_caps = _infer_model_caps(model)
     for key, value in inferred_caps.items():
-        model_caps.setdefault(key, value)
+        model_caps[key] = value
     include_sampling = model_caps.get("supports_sampling", True)
 
     if not settings.get_bool("DISABLE_WEB", False):
@@ -773,24 +788,41 @@ async def _ask_legal_internal(
         else:
             schema_supported = stored_schema
 
-        def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
+        def build_attempts(
+            include_schema: bool,
+            include_sampling_params: bool,
+            use_response_format: bool,
+        ) -> list[dict[str, Any]]:
             payload_base: dict[str, Any] = {**base_core}
             text_config = dict(base_core.get("text") or {})
+            extra_body = dict(payload_base.get("extra_body") or {})
+
+            if include_schema:
+                if use_response_format:
+                    extra_body["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": LEGAL_RESPONSE_SCHEMA,
+                    }
+                else:
+                    text_config["format"] = {
+                        "type": "json_schema",
+                        "json_schema": LEGAL_RESPONSE_SCHEMA,
+                    }
+
+            if extra_body:
+                payload_base["extra_body"] = extra_body
             if text_config:
                 payload_base["text"] = text_config
-            if include_schema:
-                payload_base["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": LEGAL_RESPONSE_SCHEMA,
-                }
             if include_sampling_params:
                 payload_base |= sampling_payload
+
             with_tools = payload_base
             without_tools = {k: v for k, v in payload_base.items() if k != "tools"}
             boosted = without_tools | {"max_output_tokens": max_out * 2}
             return [with_tools, without_tools, boosted]
 
-        attempts = build_attempts(schema_supported, include_sampling)
+        supports_response_format = model_caps.get("supports_response_format", True)
+        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
 
         last_err = None
         if model not in _VALIDATED_MODELS:
@@ -964,8 +996,16 @@ async def _ask_legal_internal(
                     message = str(type_err)
                     schema_payload_used = (
                         schema_supported
-                        and isinstance(payload.get("text"), Mapping)
-                        and isinstance(payload["text"].get("format"), Mapping)
+                        and (
+                            (
+                                isinstance(payload.get("text"), Mapping)
+                                and isinstance(payload["text"].get("format"), Mapping)
+                            )
+                            or (
+                                isinstance(payload.get("extra_body"), Mapping)
+                                and isinstance(payload["extra_body"].get("response_format"), Mapping)
+                            )
+                        )
                     )
                     if schema_payload_used and any(token in message for token in ("format", "json_schema")):
                         logger.warning(
@@ -973,7 +1013,7 @@ async def _ask_legal_internal(
                         )
                         schema_supported = False
                         model_caps["supports_schema"] = False
-                        attempts = build_attempts(schema_supported, include_sampling)
+                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break
                     if include_sampling and any(token in message for token in ("temperature", "top_p")):
@@ -982,7 +1022,16 @@ async def _ask_legal_internal(
                         )
                         include_sampling = False
                         model_caps["supports_sampling"] = False
-                        attempts = build_attempts(schema_supported, include_sampling)
+                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+                        retry_payload = True
+                        break
+                    if supports_response_format and "response_format" in message:
+                        logger.warning(
+                            "Responses API client rejected response_format parameter; retrying with legacy schema embedding"
+                        )
+                        supports_response_format = False
+                        model_caps["supports_response_format"] = False
+                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break
                     last_err = message
@@ -991,8 +1040,16 @@ async def _ask_legal_internal(
                     message = str(e)
                     schema_payload_used = (
                         schema_supported
-                        and isinstance(payload.get("text"), Mapping)
-                        and isinstance(payload["text"].get("format"), Mapping)
+                        and (
+                            (
+                                isinstance(payload.get("text"), Mapping)
+                                and isinstance(payload["text"].get("format"), Mapping)
+                            )
+                            or (
+                                isinstance(payload.get("extra_body"), Mapping)
+                                and isinstance(payload["extra_body"].get("response_format"), Mapping)
+                            )
+                        )
                     )
                     if schema_payload_used and any(token in message for token in ("json_schema", "format", "structured")):
                         logger.warning(
@@ -1000,7 +1057,7 @@ async def _ask_legal_internal(
                         )
                         schema_supported = False
                         model_caps["supports_schema"] = False
-                        attempts = build_attempts(schema_supported, include_sampling)
+                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break
                     if include_sampling and any(token in message for token in ("temperature", "top_p")):
@@ -1009,7 +1066,16 @@ async def _ask_legal_internal(
                         )
                         include_sampling = False
                         model_caps["supports_sampling"] = False
-                        attempts = build_attempts(schema_supported, include_sampling)
+                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+                        retry_payload = True
+                        break
+                    if supports_response_format and "response_format" in message:
+                        logger.warning(
+                            "Responses API rejected response_format parameter; retrying with legacy schema embedding"
+                        )
+                        supports_response_format = False
+                        model_caps["supports_response_format"] = False
+                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break
                     last_err = message
