@@ -215,7 +215,12 @@ def _deduplicate_consecutive_properties(payload: str) -> str:
             value = value_part.strip()
             value_no_comma = value[:-1].rstrip() if value.endswith(",") else value
 
-            if prev_key == key and prev_value == value_no_comma:
+            if prev_key == key:
+                if prev_value != value_no_comma:
+                    logger.debug(
+                        "Dropping duplicate key with differing value in JSON repair: %s",
+                        key,
+                    )
                 # Skip exact duplicate of the previous property entry
                 continue
 
