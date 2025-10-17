@@ -287,6 +287,51 @@ def _extract_json(text: Any) -> Any:
     raise DocumentDraftingError("Не удалось найти JSON в ответе модели")
 
 
+def _looks_like_document_payload(data: Mapping[str, Any]) -> bool:
+    status_value = str(data.get("status") or "").lower()
+    if status_value in {"ok", "need_more_info", "abort"}:
+        return True
+    candidate_keys = {
+        "document_title",
+        "document_markdown",
+        "questions",
+        "follow_up_questions",
+        "context_notes",
+        "need_more_info",
+        "self_check",
+    }
+    return any(key in data for key in candidate_keys)
+
+
+def _coerce_payload(structured: Any, raw_text: str) -> Mapping[str, Any]:
+    if isinstance(structured, Mapping):
+        mapping = dict(structured)
+        if _looks_like_document_payload(mapping):
+            return mapping
+        for key in ("parsed", "data", "json", "json_schema"):
+            nested = mapping.get(key)
+            if nested:
+                try:
+                    return _coerce_payload(nested, raw_text)
+                except DocumentDraftingError:
+                    continue
+    if isinstance(structured, list):
+        for item in structured:
+            try:
+                return _coerce_payload(item, raw_text)
+            except DocumentDraftingError:
+                continue
+    if raw_text:
+        extracted = _extract_json(raw_text)
+        if isinstance(extracted, Mapping) and _looks_like_document_payload(extracted):
+            return extracted
+    if structured is not None:
+        extracted = _extract_json(structured)
+        if isinstance(extracted, Mapping) and _looks_like_document_payload(extracted):
+            return extracted
+    raise DocumentDraftingError("Не удалось получить структурированный ответ модели")
+
+
 def _format_answers(answers: Iterable[dict[str, str]]) -> str:
     lines = []
     for idx, item in enumerate(answers, 1):
@@ -324,15 +369,11 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
 
+    raw_text = response.get("text", "")
     structured = _extract_structured_payload(response.get("structured"))
     if structured:
         logger.debug("Using structured planner payload (keys: %s)", list(structured.keys()))
-        data = dict(structured)
-    else:
-        raw_text = response.get("text", "")
-        if not raw_text:
-            raise DocumentDraftingError("Пустой ответ модели")
-        data = _extract_json(raw_text)
+    data = _coerce_payload(structured, raw_text)
 
     title = str(data.get("document_title") or "Документ").strip()
     notes = [str(note).strip() for note in data.get("context_notes") or [] if str(note).strip()]
@@ -399,15 +440,11 @@ async def generate_document(
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
 
+    raw_text = response.get("text", "")
     structured = _extract_structured_payload(response.get("structured"))
     if structured:
         logger.debug("Using structured generator payload (keys: %s)", list(structured.keys()))
-        data = dict(structured)
-    else:
-        raw_text = response.get("text", "")
-        if not raw_text:
-            raise DocumentDraftingError("Пустой ответ модели")
-        data = _extract_json(raw_text)
+    data = _coerce_payload(structured, raw_text)
 
     status = str(data.get("status") or "ok").lower()
     doc_title = str(data.get("document_title") or title).strip()
