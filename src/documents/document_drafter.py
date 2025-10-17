@@ -208,11 +208,32 @@ def _extract_structured_payload(raw: Any) -> Mapping[str, Any] | None:
                 or "context_notes" in lower_keys
             ):
                 return dict(candidate)
-            for key in ("parsed", "data", "json_schema"):
-                nested = candidate.get(key)
-                unwrapped = _unwrap(nested)
-                if unwrapped is not None:
-                    return unwrapped
+            nested_keys = (
+                "parsed",
+                "data",
+                "json_schema",
+                "content",
+                "output",
+                "outputs",
+                "message",
+                "messages",
+                "result",
+                "response",
+                "payload",
+                "body",
+                "value",
+            )
+            for key in nested_keys:
+                if key in candidate:
+                    nested = candidate.get(key)
+                    unwrapped = _unwrap(nested)
+                    if unwrapped is not None:
+                        return unwrapped
+            for nested_value in candidate.values():
+                if isinstance(nested_value, (Mapping, list, tuple)):
+                    unwrapped = _unwrap(nested_value)
+                    if unwrapped is not None:
+                        return unwrapped
             return None
 
         if isinstance(candidate, (list, tuple)):
