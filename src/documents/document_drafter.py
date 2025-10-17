@@ -644,7 +644,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
         from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
         from docx.oxml import OxmlElement  # type: ignore
         from docx.oxml.ns import qn  # type: ignore
-        from docx.shared import Cm, Pt  # type: ignore
+        from docx.shared import Cm, Pt, RGBColor  # type: ignore
     except ImportError as exc:  # pragma: no cover
         raise DocumentDraftingError("Не удалось подготовить DOCX без пакета python-docx") from exc
 
@@ -663,7 +663,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
     # ——— шрифты и стили
     def _ensure_font(style_name: str, *, size: int, bold: bool = False,
-                     italic: bool = False, align: int | None = None) -> None:
+                     italic: bool = False, align: int | None = None,
+                     color: RGBColor | None = None) -> None:
         try:
             style = document.styles[style_name]
         except KeyError:
@@ -673,6 +674,8 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
         font.size = Pt(size)
         font.bold = bold
         font.italic = italic
+        if color is not None:
+            font.color.rgb = color
         # для кириллицы
         if style.element.rPr is not None:
             r_fonts = style.element.rPr.rFonts
@@ -698,10 +701,11 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     normal_paragraph.first_line_indent = Cm(0)
     normal_paragraph.line_spacing = 1.5
 
-    _ensure_font("Title", size=16, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
-    _ensure_font("Heading 1", size=14, bold=True)
-    _ensure_font("Heading 2", size=13, bold=True)
-    _ensure_font("Heading 3", size=12, bold=True)
+    black = RGBColor(0, 0, 0)
+    _ensure_font("Title", size=16, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, color=black)
+    _ensure_font("Heading 1", size=14, bold=True, color=black)
+    _ensure_font("Heading 2", size=13, bold=True, color=black)
+    _ensure_font("Heading 3", size=12, bold=True, color=black)
 
     # ——— колонтитул: "Стр. X из Y"
     def _add_field(paragraph, instruction: str) -> None:
