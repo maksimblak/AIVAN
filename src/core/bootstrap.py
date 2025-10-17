@@ -10,6 +10,7 @@ from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing
 from src.core.subscription_plans import get_default_subscription_plans
 from src.core.settings import AppSettings
 from src.core.rag.judicial_rag import JudicialPracticeRAG
+from src.core.garant_api import GarantAPIClient
 
 
 def _discover_welcome_media(settings: AppSettings) -> WelcomeMedia | None:
@@ -110,6 +111,15 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
         logger.warning("Judicial RAG service unavailable: %s", exc)
         rag_service = None
     runtime.set_dependency("judicial_rag", rag_service)
+
+    garant_client = None
+    if settings.garant_api_enabled:
+        try:
+            garant_client = container.get(GarantAPIClient)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Garant API client unavailable: %s", exc)
+            garant_client = None
+    runtime.set_dependency("garant_client", garant_client)
 
     runtime.set_dependency("container", container)
     return runtime, container

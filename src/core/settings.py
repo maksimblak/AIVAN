@@ -83,6 +83,17 @@ class AppSettings(BaseModel):
 
     cache_max_size: int = Field(default=1000, alias="CACHE_MAX_SIZE")
     cache_ttl: int = Field(default=3600, alias="CACHE_TTL")
+
+    garant_api_enabled: bool = Field(default=False, alias="GARANT_API_ENABLED")
+    garant_api_base_url: str = Field(default="https://api.garant.ru", alias="GARANT_API_BASE_URL")
+    garant_api_token: str | None = Field(default=None, alias="GARANT_API_TOKEN")
+    garant_api_timeout: float = Field(default=15.0, alias="GARANT_API_TIMEOUT")
+    garant_api_default_kinds: list[str] = Field(default_factory=lambda: ["003"], alias="GARANT_API_DEFAULT_KINDS")
+    garant_api_result_limit: int = Field(default=3, alias="GARANT_API_RESULT_LIMIT")
+    garant_api_snippet_limit: int = Field(default=2, alias="GARANT_API_SNIPPET_LIMIT")
+    garant_document_base_url: str | None = Field(default="https://d.garant.ru", alias="GARANT_DOCUMENT_BASE_URL")
+    garant_api_verify_ssl: bool = Field(default=True, alias="GARANT_API_VERIFY_SSL")
+    garant_api_use_query_language: bool = Field(default=True, alias="GARANT_API_USE_QUERY_LANGUAGE")
     cache_compression: bool = Field(default=True, alias="CACHE_COMPRESSION")
 
     crypto_asset: str = Field(default="USDT", alias="CRYPTO_ASSET")
@@ -173,6 +184,8 @@ class AppSettings(BaseModel):
         "yookassa_payment_subject",
         "welcome_media_file_id",
         "welcome_media_type",
+        "garant_api_token",
+        "garant_document_base_url",
         mode="before",
     )
     @classmethod
@@ -194,6 +207,19 @@ class AppSettings(BaseModel):
             return None
         return value
 
+    @field_validator("garant_api_default_kinds", mode="before")
+    @classmethod
+    def _parse_garant_kinds(cls, value: Any) -> list[str]:
+        if value in (None, "", []):
+            return []
+        if isinstance(value, str):
+            items = [item.strip() for item in value.split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value]
+        else:
+            items = [str(value).strip()]
+        return [item for item in items if item]
+
     @model_validator(mode="after")
     def _fill_voice_defaults(self) -> "AppSettings":
         if not self.voice_tts_voice_male:
@@ -209,6 +235,23 @@ class AppSettings(BaseModel):
         if backend not in {"auto", "speech", "responses"}:
             backend = "auto"
         self.voice_tts_backend = backend
+
+        self.garant_api_result_limit = max(1, int(self.garant_api_result_limit or 1))
+        self.garant_api_snippet_limit = max(0, int(self.garant_api_snippet_limit or 0))
+        if not self.garant_api_base_url:
+            self.garant_api_enabled = False
+        else:
+            trimmed = self.garant_api_base_url.strip()
+            if trimmed.endswith("/"):
+                trimmed = trimmed.rstrip("/")
+            self.garant_api_base_url = trimmed or "https://api.garant.ru"
+
+        if self.garant_document_base_url:
+            doc_base = self.garant_document_base_url.strip()
+            if doc_base.endswith("/"):
+                doc_base = doc_base.rstrip("/")
+            self.garant_document_base_url = doc_base or None
+
         return self
 
     @classmethod

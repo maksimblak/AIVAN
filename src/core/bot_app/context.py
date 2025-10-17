@@ -87,6 +87,7 @@ __all__ = [
     "health_checker",
     "scaling_components",
     "judicial_rag",
+    "garant_client",
 ]
 
 _runtime: AppRuntime | None = None
@@ -132,6 +133,7 @@ task_manager: BackgroundTaskManager | None = None
 health_checker: HealthChecker | None = None
 scaling_components: dict[str, Any] | None = None
 judicial_rag: Any | None = None
+garant_client: Any | None = None
 
 
 def set_runtime(runtime: AppRuntime) -> None:
@@ -177,7 +179,7 @@ def _sync_runtime_globals() -> None:
     global session_store, crypto_provider, robokassa_provider, yookassa_provider
     global error_handler, document_manager, response_cache, stream_manager
     global metrics_collector, task_manager, health_checker, scaling_components
-    global judicial_rag
+    global judicial_rag, garant_client
 
     WELCOME_MEDIA = drv.welcome_media
     BOT_TOKEN = cfg.telegram_bot_token
@@ -221,3 +223,4 @@ def _sync_runtime_globals() -> None:
     health_checker = _runtime.health_checker
     scaling_components = _runtime.scaling_components
     judicial_rag = _runtime.get_dependency("judicial_rag")
+    garant_client = _runtime.get_dependency("garant_client")

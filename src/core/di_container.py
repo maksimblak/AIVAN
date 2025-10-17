@@ -128,6 +128,7 @@ def create_container(settings: AppSettings) -> DIContainer:
     from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
     from src.core.rag.judicial_rag import JudicialPracticeRAG
     from src.bot.ratelimit import RateLimiter
+    from src.core.garant_api import GarantAPIClient
 
     container.register_factory(
         DatabaseAdvanced,
@@ -202,6 +203,22 @@ def create_container(settings: AppSettings) -> DIContainer:
         JudicialPracticeRAG,
         lambda: JudicialPracticeRAG(settings=settings),
     )
+
+    if settings.garant_api_enabled and settings.garant_api_base_url:
+        container.register_factory(
+            GarantAPIClient,
+            lambda: GarantAPIClient(
+                base_url=settings.garant_api_base_url,
+                token=settings.garant_api_token,
+                timeout=float(settings.garant_api_timeout),
+                default_kinds=settings.garant_api_default_kinds or None,
+                result_limit=int(settings.garant_api_result_limit),
+                snippet_limit=int(settings.garant_api_snippet_limit),
+                document_base_url=settings.garant_document_base_url,
+                use_query_language=bool(settings.garant_api_use_query_language),
+                verify_ssl=bool(settings.garant_api_verify_ssl),
+            ),
+        )
 
     container.register_config("subscription_price_rub", settings.subscription_price_rub)
     container.register_config("subscription_price_xtr", settings.subscription_price_xtr)

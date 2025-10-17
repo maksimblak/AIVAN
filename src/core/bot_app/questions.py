@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -33,6 +33,7 @@ from src.core.bot_app.feedback import (
     handle_pending_feedback,
     send_rating_request,
 )
+from src.core.garant_api import GarantAPIError
 from src.core.validation import InputValidator, ValidationSeverity
 from src.core.excel_export import build_practice_excel
 
@@ -44,7 +45,7 @@ __all__ = [
 ]
 
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
-LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
+LONG_TEXT_HINT_THRESHOLD = 700  # heuristic РїРѕСЂРѕРі РґР»СЏ РїРѕРґСЃРєР°Р·РєРё РїСЂРѕ РґР»РёРЅРЅС‹Рµ С‚РµРєСЃС‚С‹
 
 logger = logging.getLogger("ai-ivan.simple.questions")
 
@@ -69,14 +70,14 @@ class ResponseTimer:
 async def _collect_question_attachments(message: Message) -> list[QuestionAttachment]:
     bot = message.bot
     if bot is None:
-        raise ValueError("Не удалось получить контекст бота для загрузки файла")
+        raise ValueError("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕР»СѓС‡РёС‚СЊ РєРѕРЅС‚РµРєСЃС‚ Р±РѕС‚Р° РґР»СЏ Р·Р°РіСЂСѓР·РєРё С„Р°Р№Р»Р°")
 
     attachments: list[QuestionAttachment] = []
 
     if message.document:
         document = message.document
         if document.file_size and document.file_size > QUESTION_ATTACHMENT_MAX_BYTES:
-            raise ValueError("Файл слишком большой. Максимальный размер вложения — 4 МБ.")
+            raise ValueError("Р¤Р°Р№Р» СЃР»РёС€РєРѕРј Р±РѕР»СЊС€РѕР№. РњР°РєСЃРёРјР°Р»СЊРЅС‹Р№ СЂР°Р·РјРµСЂ РІР»РѕР¶РµРЅРёСЏ вЂ” 4 РњР‘.")
 
         file_info = await bot.get_file(document.file_id)
         file_stream = await bot.download_file(file_info.file_path)
@@ -98,7 +99,7 @@ async def _collect_question_attachments(message: Message) -> list[QuestionAttach
     if message.photo:
         photo = message.photo[-1]
         if photo.file_size and photo.file_size > QUESTION_ATTACHMENT_MAX_BYTES:
-            raise ValueError("Изображение слишком большое. Максимальный размер вложения — 4 МБ.")
+            raise ValueError("РР·РѕР±СЂР°Р¶РµРЅРёРµ СЃР»РёС€РєРѕРј Р±РѕР»СЊС€РѕРµ. РњР°РєСЃРёРјР°Р»СЊРЅС‹Р№ СЂР°Р·РјРµСЂ РІР»РѕР¶РµРЅРёСЏ вЂ” 4 РњР‘.")
 
         file_info = await bot.get_file(photo.file_id)
         file_stream = await bot.download_file(file_info.file_path)
@@ -119,7 +120,7 @@ async def _collect_question_attachments(message: Message) -> list[QuestionAttach
         )
 
     if not attachments:
-        raise ValueError("Не удалось определить вложение. Поддерживаются документы и изображения.")
+        raise ValueError("РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСЂРµРґРµР»РёС‚СЊ РІР»РѕР¶РµРЅРёРµ. РџРѕРґРґРµСЂР¶РёРІР°СЋС‚СЃСЏ РґРѕРєСѓРјРµРЅС‚С‹ Рё РёР·РѕР±СЂР°Р¶РµРЅРёСЏ.")
 
     return attachments
 
@@ -133,7 +134,7 @@ async def _validate_question_or_reply(
     if not validation.is_valid:
         errors = "\n".join(validation.errors or [])
         await message.answer(
-            f"{Emoji.WARNING} <b>Некорректный вопрос</b>\n\n{html_escape(errors)}",
+            f"{Emoji.WARNING} <b>РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ РІРѕРїСЂРѕСЃ</b>\n\n{html_escape(errors)}",
             parse_mode=ParseMode.HTML,
         )
         return None
@@ -141,7 +142,7 @@ async def _validate_question_or_reply(
     if validation.warnings:
         warnings = "\n".join(validation.warnings or [])
         await message.answer(
-            f"{Emoji.INFO} <b>Предупреждение</b>\n\n{html_escape(warnings)}",
+            f"{Emoji.INFO} <b>РџСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ</b>\n\n{html_escape(warnings)}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -158,8 +159,8 @@ async def _rate_limit_guard(user_id: int, message: Message) -> bool:
         return True
 
     await message.answer(
-        f"{Emoji.WARNING} <b>Слишком много запросов</b>\n\n"
-        "Попробуйте повторить вопрос чуть позже.",
+        f"{Emoji.WARNING} <b>РЎР»РёС€РєРѕРј РјРЅРѕРіРѕ Р·Р°РїСЂРѕСЃРѕРІ</b>\n\n"
+        "РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕРІС‚РѕСЂРёС‚СЊ РІРѕРїСЂРѕСЃ С‡СѓС‚СЊ РїРѕР·Р¶Рµ.",
         parse_mode=ParseMode.HTML,
     )
     return False
@@ -211,8 +212,8 @@ async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> Non
             if status.message_id:
                 await _delete_status_message(status.bot, status.chat_id, status.message_id)
         else:
-            await status.fail("Ошибка обработки запроса")
-    except Exception as exc:  # pragma: no cover - только лог
+            await status.fail("РћС€РёР±РєР° РѕР±СЂР°Р±РѕС‚РєРё Р·Р°РїСЂРѕСЃР°")
+    except Exception as exc:  # pragma: no cover - С‚РѕР»СЊРєРѕ Р»РѕРі
         logger.debug("Failed to finalize status indicator: %s", exc)
 
 
@@ -220,8 +221,8 @@ async def process_question_with_attachments(message: Message) -> None:
     caption = (message.caption or "").strip()
     if not caption:
         warning_msg = "\n\n".join([
-            f"{Emoji.WARNING} <b>Добавьте текст вопроса</b>",
-            "Напишите короткое описание ситуации в подписи к файлу и отправьте снова.",
+            f"{Emoji.WARNING} <b>Р”РѕР±Р°РІСЊС‚Рµ С‚РµРєСЃС‚ РІРѕРїСЂРѕСЃР°</b>",
+            "РќР°РїРёС€РёС‚Рµ РєРѕСЂРѕС‚РєРѕРµ РѕРїРёСЃР°РЅРёРµ СЃРёС‚СѓР°С†РёРё РІ РїРѕРґРїРёСЃРё Рє С„Р°Р№Р»Сѓ Рё РѕС‚РїСЂР°РІСЊС‚Рµ СЃРЅРѕРІР°.",
         ])
         await message.answer(warning_msg, parse_mode=ParseMode.HTML)
         return
@@ -230,7 +231,7 @@ async def process_question_with_attachments(message: Message) -> None:
         attachments = await _collect_question_attachments(message)
     except ValueError as exc:
         error_msg = "\n\n".join([
-            f"{Emoji.WARNING} <b>Не удалось обработать вложение</b>",
+            f"{Emoji.WARNING} <b>РќРµ СѓРґР°Р»РѕСЃСЊ РѕР±СЂР°Р±РѕС‚Р°С‚СЊ РІР»РѕР¶РµРЅРёРµ</b>",
             html_escape(str(exc)),
         ])
         await message.answer(error_msg, parse_mode=ParseMode.HTML)
@@ -249,7 +250,7 @@ async def process_question(
     text_override: str | None = None,
     attachments: Sequence[QuestionAttachment] | None = None,
 ) -> str | None:
-    """Главный обработчик юридических вопросов."""
+    """Р“Р»Р°РІРЅС‹Р№ РѕР±СЂР°Р±РѕС‚С‡РёРє СЋСЂРёРґРёС‡РµСЃРєРёС… РІРѕРїСЂРѕСЃРѕРІ."""
     if not message.from_user:
         return None
 
@@ -272,7 +273,7 @@ async def process_question(
         else:
             logger.warning("Validation error in process_question: %s", exc)
         await message.answer(
-            f"{Emoji.WARNING} <b>Ошибка идентификатора пользователя</b>\n\nПопробуйте перезапустить диалог.",
+            f"{Emoji.WARNING} <b>РћС€РёР±РєР° РёРґРµРЅС‚РёС„РёРєР°С‚РѕСЂР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ</b>\n\nРџРѕРїСЂРѕР±СѓР№С‚Рµ РїРµСЂРµР·Р°РїСѓСЃС‚РёС‚СЊ РґРёР°Р»РѕРі.",
             parse_mode=ParseMode.HTML,
         )
         return None
@@ -312,6 +313,7 @@ async def process_question(
     practice_mode_active = bool(getattr(user_session, "practice_search_mode", False))
     system_prompt_override: str | None = None
     rag_context = ""
+    garant_context = ""
 
     if practice_mode_active:
         system_prompt_override = JUDICIAL_PRACTICE_SEARCH_PROMPT
@@ -321,19 +323,31 @@ async def process_question(
                 rag_context, _ = await rag_service.build_context(question_text)
             except Exception as rag_exc:  # noqa: BLE001
                 logger.warning("Failed to build judicial practice context: %s", rag_exc)
+        garant_client = getattr(simple_context, "garant_client", None)
+        if getattr(garant_client, "enabled", False):
+            try:
+                garant_results = await garant_client.search_with_snippets(question_text)
+                garant_context = garant_client.format_results(garant_results)
+            except GarantAPIError as garant_exc:
+                logger.warning("Garant API search failed: %s", garant_exc)
+            except Exception as garant_exc:  # noqa: BLE001
+                logger.error("Unexpected Garant API failure: %s", garant_exc, exc_info=True)
         setattr(user_session, "practice_search_mode", False)
 
     request_blocks = [question_text]
 
     if rag_context:
-        request_blocks.append("[Контекст судебной практики]\n" + rag_context)
+        request_blocks.append("[РљРѕРЅС‚РµРєСЃС‚ СЃСѓРґРµР±РЅРѕР№ РїСЂР°РєС‚РёРєРё]\n" + rag_context)
+
+    if garant_context:
+        request_blocks.append(garant_context)
 
     if attachments_list:
         attachment_lines = []
         for idx, item in enumerate(attachments_list, start=1):
             size_kb = max(1, item.size // 1024)
             attachment_lines.append(f"{idx}. {item.filename} ({item.mime_type}, {size_kb} KB)")
-        request_blocks.append("[Вложения]\n" + "\n".join(attachment_lines))
+        request_blocks.append("[Р’Р»РѕР¶РµРЅРёСЏ]\n" + "\n".join(attachment_lines))
 
     request_text = "\n\n".join(request_blocks)
 
@@ -373,16 +387,16 @@ async def process_question(
                         except Exception:
                             pass
                     await message.answer(
-                        f"{Emoji.WARNING} <b>Лимит запросов исчерпан</b>\n\n"
-                        f"Тариф: <b>{plan_name}</b>\n"
-                        "Продлите подписку или обновите тариф, чтобы продолжить работу.",
+                        f"{Emoji.WARNING} <b>Р›РёРјРёС‚ Р·Р°РїСЂРѕСЃРѕРІ РёСЃС‡РµСЂРїР°РЅ</b>\n\n"
+                        f"РўР°СЂРёС„: <b>{plan_name}</b>\n"
+                        "РџСЂРѕРґР»РёС‚Рµ РїРѕРґРїРёСЃРєСѓ РёР»Рё РѕР±РЅРѕРІРёС‚Рµ С‚Р°СЂРёС„, С‡С‚РѕР±С‹ РїСЂРѕРґРѕР»Р¶РёС‚СЊ СЂР°Р±РѕС‚Сѓ.",
                         parse_mode=ParseMode.HTML,
                     )
                     return None
 
                 await message.answer(
-                    f"{Emoji.WARNING} <b>Квота запросов исчерпана</b>\n\n"
-                    "Оформите подписку командой /buy, чтобы продолжить.",
+                    f"{Emoji.WARNING} <b>РљРІРѕС‚Р° Р·Р°РїСЂРѕСЃРѕРІ РёСЃС‡РµСЂРїР°РЅР°</b>\n\n"
+                    "РћС„РѕСЂРјРёС‚Рµ РїРѕРґРїРёСЃРєСѓ РєРѕРјР°РЅРґРѕР№ /buy, С‡С‚РѕР±С‹ РїСЂРѕРґРѕР»Р¶РёС‚СЊ.",
                     parse_mode=ParseMode.HTML,
                 )
                 return None
@@ -499,7 +513,7 @@ async def process_question(
                 )
                 await message.answer_document(
                     FSInputFile(str(practice_excel_path)),
-                    caption="📊 Отчёт по судебной практике (XLSX)",
+                    caption="рџ“Љ РћС‚С‡С‘С‚ РїРѕ СЃСѓРґРµР±РЅРѕР№ РїСЂР°РєС‚РёРєРµ (XLSX)",
                     parse_mode=ParseMode.HTML,
                 )
             except Exception as excel_error:  # noqa: BLE001
@@ -509,7 +523,7 @@ async def process_question(
                     if "practice_excel_path" in locals() and practice_excel_path:
                         practice_excel_path.unlink(missing_ok=True)
 
-        # Показываем контекстную подсказку о возможностях бота
+        # РџРѕРєР°Р·С‹РІР°РµРј РєРѕРЅС‚РµРєСЃС‚РЅСѓСЋ РїРѕРґСЃРєР°Р·РєСѓ Рѕ РІРѕР·РјРѕР¶РЅРѕСЃС‚СЏС… Р±РѕС‚Р°
         try:
             from src.core.bot_app.hints import get_contextual_hint
 
@@ -586,14 +600,14 @@ async def process_question(
             try:
                 custom_exc = await error_handler.handle_exception(exc, error_context)
                 user_message = getattr(
-                    custom_exc, "user_message", "Произошла системная ошибка. Попробуйте позже."
+                    custom_exc, "user_message", "РџСЂРѕРёР·РѕС€Р»Р° СЃРёСЃС‚РµРјРЅР°СЏ РѕС€РёР±РєР°. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
                 )
             except Exception:
                 logger.exception("Error handler failed for user %s", user_id)
-                user_message = "Произошла системная ошибка. Попробуйте позже."
+                user_message = "РџСЂРѕРёР·РѕС€Р»Р° СЃРёСЃС‚РµРјРЅР°СЏ РѕС€РёР±РєР°. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
         else:
             logger.exception("Error processing question for user %s (no error handler)", user_id)
-            user_message = "Произошла ошибка. Попробуйте позже."
+            user_message = "РџСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР°. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
 
         if db is not None and hasattr(db, "record_request"):
             with suppress(Exception):
@@ -616,12 +630,12 @@ async def process_question(
 
         with suppress(Exception):
             await message.answer(
-                "❌ <b>Ошибка обработки запроса</b>\n\n"
+                "вќЊ <b>РћС€РёР±РєР° РѕР±СЂР°Р±РѕС‚РєРё Р·Р°РїСЂРѕСЃР°</b>\n\n"
                 f"{user_message}\n\n"
-                "💡 <b>Рекомендации:</b>\n"
-                "• Переформулируйте вопрос\n"
-                "• Попробуйте через несколько минут\n"
-                "• Обратитесь в поддержку, если проблема повторяется",
+                "рџ’Ў <b>Р РµРєРѕРјРµРЅРґР°С†РёРё:</b>\n"
+                "вЂў РџРµСЂРµС„РѕСЂРјСѓР»РёСЂСѓР№С‚Рµ РІРѕРїСЂРѕСЃ\n"
+                "вЂў РџРѕРїСЂРѕР±СѓР№С‚Рµ С‡РµСЂРµР· РЅРµСЃРєРѕР»СЊРєРѕ РјРёРЅСѓС‚\n"
+                "вЂў РћР±СЂР°С‚РёС‚РµСЃСЊ РІ РїРѕРґРґРµСЂР¶РєСѓ, РµСЃР»Рё РїСЂРѕР±Р»РµРјР° РїРѕРІС‚РѕСЂСЏРµС‚СЃСЏ",
                 parse_mode=ParseMode.HTML,
             )
         raise
