@@ -81,7 +81,6 @@ def _infer_model_caps(model: str) -> dict[str, bool]:
     caps: dict[str, bool] = {}
     if lower.startswith("gpt-5") or (lower.startswith("o") and not lower.startswith("omni")):
         caps["supports_sampling"] = False
-        caps["supports_response_format"] = False
     return caps
 
 
