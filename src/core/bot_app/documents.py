@@ -59,8 +59,10 @@ settings = simple_context.settings
 GENERIC_INTERNAL_ERROR_HTML = "<i>Произошла внутренняя ошибка. Попробуйте позже.</i>"
 GENERIC_INTERNAL_ERROR_TEXT = "Произошла внутренняя ошибка. Попробуйте позже."
 
-_NUMBERED_ANSWER_RE = re.compile(r"^\s*(\d+)[\).:-]\s*(.*)")
-_BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022]\s*(.*)")
+_NUMBERED_ANSWER_RE = re.compile(
+    r"^\s*(\d+)(?:[\).:-]|\s+-|\s+)\s*(.*)"
+)
+_BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022\*\u2014\u2013]\s*(.*)")
 _HEADING_PATTERN_RE = re.compile(
     r"^\s*(?![-\u2022])(?!\d+[\).:-])([A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u0451\u0030-\u0039][^:]{0,80}):\s*(.*)$"
 )

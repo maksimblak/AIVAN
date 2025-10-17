@@ -492,7 +492,7 @@ class _TelegramHTMLFormatter(HTMLParser):
         "del": "s",
         "strike": "s",
     }
-    _BULLET_SYMBOL = "в–« "
+    _BULLET_SYMBOL = "• "
     _INDENT_UNIT = "&nbsp;&nbsp;"
 
     def __init__(self) -> None:
