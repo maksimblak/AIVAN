@@ -194,6 +194,42 @@ def _escape_unescaped_newlines(payload: str) -> str:
     return repaired
 
 
+def _deduplicate_consecutive_properties(payload: str) -> str:
+    """Remove consecutive duplicate object properties that often appear due to streaming glitches."""
+
+    lines = payload.splitlines()
+    if not lines:
+        return payload
+
+    result: list[str] = []
+    prev_key: str | None = None
+    prev_value: str | None = None
+
+    for line in lines:
+        stripped = line.strip()
+        normalized_line = stripped.lstrip(",")
+
+        if normalized_line.startswith('"') and ":" in normalized_line:
+            key_part, value_part = normalized_line.split(":", 1)
+            key = key_part.strip().strip('"').strip()
+            value = value_part.strip()
+            value_no_comma = value[:-1].rstrip() if value.endswith(",") else value
+
+            if prev_key == key and prev_value == value_no_comma:
+                # Skip exact duplicate of the previous property entry
+                continue
+
+            prev_key = key
+            prev_value = value_no_comma
+        else:
+            prev_key = None
+            prev_value = None
+
+        result.append(line)
+
+    return "\n".join(result)
+
+
 def _extract_structured_payload(raw: Any) -> Mapping[str, Any] | None:
     """Attempt to locate the actual JSON payload within structured response metadata."""
 
@@ -286,6 +322,13 @@ def _extract_json(text: Any) -> Any:
             repaired = _escape_unescaped_newlines(normalized)
             if repaired != normalized:
                 attempts.append(repaired)
+
+            extra_attempts: list[str] = []
+            for attempt in attempts:
+                deduped = _deduplicate_consecutive_properties(attempt)
+                if deduped != attempt:
+                    extra_attempts.append(deduped)
+            attempts.extend(extra_attempts)
 
             for attempt in attempts:
                 with suppress(json.JSONDecodeError, ValueError):
