@@ -148,9 +148,17 @@ def _strip_code_fences(payload: str) -> str:
     return stripped.strip()
 
 
-def _escape_unescaped_newlines(payload: str) -> str:
-    """Escape literal newlines that appear inside JSON strings."""
-    if "\n" not in payload and "\r" not in payload:
+def _sanitize_json_string(payload: str) -> str:
+    """
+    Escape literal newlines and stray double quotes that appear inside JSON strings.
+
+    This function walks the payload character-by-character, keeping track of whether
+    we are inside a JSON string literal. When inside a string it converts raw CR/LF
+    characters to their escaped versions and protects accidental quote characters
+    (e.g. "Мой арбитр") that the model may emit without escaping.
+    """
+
+    if ("\n" not in payload and "\r" not in payload and '"' not in payload):
         return payload
 
     result: list[str] = []
@@ -171,8 +179,32 @@ def _escape_unescaped_newlines(payload: str) -> str:
                     result.append(char)
                     escaped = True
                 elif char == '"':
-                    result.append(char)
-                    in_string = False
+                    # Determine whether this quote should terminate the string.
+                    lookahead = index + 1
+                    while lookahead < length and payload[lookahead] in {" ", "\t"}:
+                        lookahead += 1
+                    next_char = payload[lookahead] if lookahead < length else ""
+
+                    if next_char in {"\r", "\n"}:
+                        while lookahead < length and payload[lookahead] in {" ", "\t", "\r", "\n"}:
+                            lookahead += 1
+                        next_char = payload[lookahead] if lookahead < length else ""
+
+                    if next_char == ",":
+                        lookahead += 1
+                        while lookahead < length and payload[lookahead] in {" ", "\t", "\r", "\n"}:
+                            lookahead += 1
+                        after_comma = payload[lookahead] if lookahead < length else ""
+                        if after_comma in {'"', "}", "]"}:
+                            result.append(char)
+                            in_string = False
+                        else:
+                            result.append('\\"')
+                    elif next_char in {"", "}", "]", ":"}:
+                        result.append(char)
+                        in_string = False
+                    else:
+                        result.append('\\"')
                 elif char == "\r":
                     result.append("\\r")
                     if index + 1 < length and payload[index + 1] == "\n":
@@ -190,8 +222,8 @@ def _escape_unescaped_newlines(payload: str) -> str:
 
         index += 1
 
-    repaired = "".join(result)
-    return repaired
+    sanitized = "".join(result)
+    return sanitized
 
 
 def _deduplicate_consecutive_properties(payload: str) -> str:
@@ -322,20 +354,21 @@ def _extract_json(text: Any) -> Any:
                 raise json.JSONDecodeError("Empty JSON candidate", source, idx) from primary_err
 
             normalized = _TRAILING_COMMA_RE.sub(r"\1", stripped_candidate)
-            attempts = [normalized]
 
-            repaired = _escape_unescaped_newlines(normalized)
-            if repaired != normalized:
-                attempts.append(repaired)
+            candidates: list[str] = [normalized]
 
-            extra_attempts: list[str] = []
-            for attempt in attempts:
-                deduped = _deduplicate_consecutive_properties(attempt)
-                if deduped != attempt:
-                    extra_attempts.append(deduped)
-            attempts.extend(extra_attempts)
+            deduped = _deduplicate_consecutive_properties(normalized)
+            if deduped != normalized:
+                candidates.append(deduped)
 
-            for attempt in attempts:
+            sanitized_variants: list[str] = []
+            for candidate in candidates:
+                sanitized = _sanitize_json_string(candidate)
+                if sanitized != candidate:
+                    sanitized_variants.append(sanitized)
+            candidates.extend(sanitized_variants)
+
+            for attempt in candidates:
                 with suppress(json.JSONDecodeError, ValueError):
                     obj, _ = _JSON_DECODER.raw_decode(attempt)
                     return obj
