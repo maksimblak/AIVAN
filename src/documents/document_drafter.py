@@ -77,6 +77,7 @@ DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
 - Всегда возвращай валидный JSON и не добавляй текст вне JSON. Не используй кодовые блоки (```), псевдографику, backslashes для визуального форматирования.
 - Соблюдай юридическую точность, используй профессиональные стандарты и не выдумывай данные.
 - Если информации недостаточно, запроси уточнения через follow_up_questions или вопросы.
+- Внутри JSON все переводы строк кодируй как \\n, не вставляй сырой перенос строки.
 
 Режим «Планирование» (запрос содержит инструкции вроде «Сформируй структуру ответа», «Поле document_title…»):
 1. Если тип документа понятен — найди подходящий образец и сформулируй точное название документа. Если тип неочевиден, предложи уточняющие вопросы.
@@ -267,6 +268,58 @@ def _deduplicate_consecutive_properties(payload: str) -> str:
     return "\n".join(result)
 
 
+def _repair_json_structure(payload: str) -> str | None:
+    """
+    Attempt to repair truncated JSON payloads by closing unfinished strings and
+    balancing braces/brackets. This is a best-effort heuristic that only applies
+    when the model streamed a response but stopped before emitting the closing
+    tokens.
+    """
+
+    if not payload:
+        return None
+
+    result: list[str] = []
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+
+    for char in payload:
+        result.append(char)
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            escaped = False
+            continue
+
+        if char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                # Broken structure – abandon repair attempt.
+                return None
+            stack.pop()
+
+    if in_string:
+        result.append('"')
+        in_string = False
+
+    while stack:
+        result.append(stack.pop())
+
+    repaired = "".join(result)
+    return repaired if repaired != payload else None
+
+
 def _extract_structured_payload(raw: Any) -> Mapping[str, Any] | None:
     """Attempt to locate the actual JSON payload within structured response metadata."""
 
@@ -367,6 +420,14 @@ def _extract_json(text: Any) -> Any:
                 if sanitized != candidate:
                     sanitized_variants.append(sanitized)
             candidates.extend(sanitized_variants)
+
+            for candidate in list(candidates):
+                repaired = _repair_json_structure(candidate)
+                if repaired and repaired not in candidates:
+                    candidates.append(repaired)
+                    repaired_sanitized = _sanitize_json_string(repaired)
+                    if repaired_sanitized != repaired and repaired_sanitized not in candidates:
+                        candidates.append(repaired_sanitized)
 
             for attempt in candidates:
                 with suppress(json.JSONDecodeError, ValueError):
