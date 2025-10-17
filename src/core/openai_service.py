@@ -83,11 +83,14 @@ class OpenAIService:
         self.total_requests += 1
 
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
+        cache_params = {"schema": "legal_json_v2"}
 
         if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
-                    system_prompt=system_prompt, user_text=user_text
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    model_params=cache_params,
                 )
                 if cached:
                     self.cached_requests += 1
@@ -104,7 +107,10 @@ class OpenAIService:
             if use_cache and response.get("ok") and response.get("text"):
                 try:
                     await self.cache.cache_response(
-                        system_prompt=system_prompt, user_text=user_text, response=response
+                        system_prompt=system_prompt,
+                        user_text=user_text,
+                        response=response,
+                        model_params=cache_params,
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Cache set failed: %s", e)
@@ -143,10 +149,13 @@ class OpenAIService:
 
         # кэш (и псевдострим из кэша)
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
+        cache_params = {"schema": "legal_json_v2"}
         if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
-                    system_prompt=system_prompt, user_text=user_text
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    model_params=cache_params,
                 )
                 if cached and cached.get("ok") and cached.get("text"):
                     self.cached_requests += 1
@@ -209,7 +218,12 @@ class OpenAIService:
                     # кэшируем
                     if self.cache and self.enable_cache and not attachments and text:
                         try:
-                            await self.cache.cache_response(system_prompt, user_text, resp)
+                            await self.cache.cache_response(
+                                system_prompt,
+                                user_text,
+                                resp,
+                                model_params=cache_params,
+                            )
                         except Exception as e:  # noqa: BLE001
                             logger.warning("Cache set failed (stream/gen): %s", e)
                     return resp
@@ -231,7 +245,12 @@ class OpenAIService:
 
                 if self.cache and self.enable_cache and not attachments and formatted_text:
                     try:
-                        await self.cache.cache_response(system_prompt, user_text, result)  # type: ignore[arg-type]
+                        await self.cache.cache_response(
+                            system_prompt,
+                            user_text,
+                            result,  # type: ignore[arg-type]
+                            model_params=cache_params,
+                        )
                     except Exception as e:  # noqa: BLE001
                         logger.warning("Cache set failed (stream/callback): %s", e)
 
@@ -260,9 +279,14 @@ class OpenAIService:
                 result["text"] = formatted_text
 
             # кэшируем обычным способом (если еще не закэшировано)
-            if self.cache and self.enable_cache and not attachments and result.get("ok") and result.get("text"): 
+            if self.cache and self.enable_cache and not attachments and result.get("ok") and result.get("text"):
                 try:
-                    await self.cache.cache_response(system_prompt, user_text, result)
+                    await self.cache.cache_response(
+                        system_prompt,
+                        user_text,
+                        result,
+                        model_params=cache_params,
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Cache set failed (fallback): %s", e)
 

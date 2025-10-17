@@ -776,10 +776,13 @@ async def _ask_legal_internal(
         def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
             payload_base: dict[str, Any] = {**base_core}
             text_config = dict(base_core.get("text") or {})
-            if include_schema:
-                text_config["format"] = {"type": "json_schema", "json_schema": LEGAL_RESPONSE_SCHEMA}
             if text_config:
                 payload_base["text"] = text_config
+            if include_schema:
+                payload_base["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": LEGAL_RESPONSE_SCHEMA,
+                }
             if include_sampling_params:
                 payload_base |= sampling_payload
             with_tools = payload_base
