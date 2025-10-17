@@ -106,9 +106,9 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
 
     parts: list[str] = []
     if summary:
-        parts.append(f"<b>РљСЂР°С‚РєРѕ:</b> {html.escape(summary)}")
+        parts.append(f"<b>Кратко:</b> {html.escape(summary)}")
     if analysis:
-        parts.append(f"<b>РђРЅР°Р»РёР·:</b> {html.escape(analysis)}")
+        parts.append(f"<b>Анализ:</b> {html.escape(analysis)}")
 
     basis_lines: list[str] = []
     for item in legal_basis:
@@ -117,21 +117,21 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
         reference = str(item.get('reference') or '').strip()
         explanation = str(item.get('explanation') or '').strip()
         if reference and explanation:
-            basis_lines.append(f"вЂў {html.escape(reference)} вЂ” {html.escape(explanation)}")
+            basis_lines.append(f"• {html.escape(reference)} — {html.escape(explanation)}")
         elif reference:
-            basis_lines.append(f"вЂў {html.escape(reference)}")
+            basis_lines.append(f"• {html.escape(reference)}")
     if basis_lines:
         basis_block = '\n'.join(basis_lines)
-        parts.append(f"<b>РџСЂР°РІРѕРІРѕРµ РѕСЃРЅРѕРІР°РЅРёРµ:</b>\n{basis_block}")
+        parts.append(f"<b>Правовое основание:</b>\n{basis_block}")
 
     risk_lines: list[str] = []
     for risk in risks:
         risk_text = str(risk or '').strip()
         if risk_text:
-            risk_lines.append(f"вЂў {html.escape(risk_text)}")
+            risk_lines.append(f"• {html.escape(risk_text)}")
     if risk_lines:
         risk_block = '\n'.join(risk_lines)
-        parts.append(f"<b>Р РёСЃРєРё:</b>\n{risk_block}")
+        parts.append(f"<b>Риски:</b>\n{risk_block}")
 
     if disclaimer:
         parts.append(f"<i>{html.escape(disclaimer)}</i>")
@@ -1084,4 +1084,3 @@ async def _ask_legal_internal(
             break
 
         return {"ok": False, "error": last_err or "unknown_error", "structured": structured_payload}
-
