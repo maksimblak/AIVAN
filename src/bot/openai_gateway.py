@@ -75,6 +75,14 @@ _VALIDATED_MODELS: set[str] = set()
 _client_lock = asyncio.Lock()
 _shared_async_client: AsyncOpenAI | None = None
 
+_NOISE_RESPONSE_TYPES = {
+    "reasoning",
+    "websearch_call",
+    "tool_call",
+    "tool_call_delta",
+    "message_delta",
+}
+
 
 def _infer_model_caps(model: str) -> dict[str, bool]:
     lower = model.lower()
@@ -140,18 +148,65 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
     return combined
 
 
+def _is_noise_mapping(candidate: Mapping[str, Any] | None) -> bool:
+    if not isinstance(candidate, Mapping):
+        return False
+    event_type = str(candidate.get("type") or "").lower()
+    return event_type in _NOISE_RESPONSE_TYPES
+
+
+def _clean_response_text(raw: str) -> str:
+    if not raw:
+        return ""
+
+    # Remove JSON lines that describe reasoning/tool events.
+    kept: list[str] = []
+    for chunk in raw.splitlines():
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parsed = None
+        if chunk.startswith("{") and chunk.endswith("}"):
+            try:
+                parsed = json.loads(chunk)
+            except json.JSONDecodeError:
+                parsed = None
+        if isinstance(parsed, Mapping) and _is_noise_mapping(parsed):
+            continue
+        kept.append(chunk)
+
+    if kept:
+        return "\n".join(kept).strip()
+
+    # If everything was filtered out line-by-line, double-check the whole payload.
+    try:
+        parsed_all = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw.strip()
+    if isinstance(parsed_all, Mapping) and _is_noise_mapping(parsed_all):
+        return ""
+    return raw.strip()
+
+
 def _extract_text_from_content(
     content: Any,
     structured_sink: list[Mapping[str, Any]] | None = None,
 ) -> str | None:
     def _store(candidate: Mapping[str, Any] | None) -> None:
-        if candidate and structured_sink is not None and not structured_sink:
+        if (
+            candidate
+            and structured_sink is not None
+            and not structured_sink
+            and not _is_noise_mapping(candidate)
+        ):
             structured_sink.append(_normalise_mapping(candidate))
 
     if hasattr(content, "model_dump"):
         try:
             dumped = content.model_dump()
             if isinstance(dumped, Mapping):
+                if _is_noise_mapping(dumped):
+                    return None
                 _store(dumped)
             return json.dumps(dumped, ensure_ascii=False, separators=(",", ":"))
         except Exception:
@@ -166,6 +221,8 @@ def _extract_text_from_content(
     if text_value:
         return text_value
     if isinstance(content, dict):
+        if _is_noise_mapping(content):
+            return None
         dict_text = content.get('text')
         if dict_text:
             return str(dict_text)
@@ -176,6 +233,8 @@ def _extract_text_from_content(
             candidate = content.get(key)
         if candidate is not None:
             if isinstance(candidate, Mapping):
+                if _is_noise_mapping(candidate):
+                    continue
                 _store(candidate)
                 formatted = _format_structured_legal_response(candidate)
                 if formatted:
@@ -193,6 +252,8 @@ def _extract_text_from_content(
         for key in ('parsed', 'data'):
             candidate = json_schema.get(key)
             if isinstance(candidate, Mapping):
+                if _is_noise_mapping(candidate):
+                    continue
                 _store(candidate)
                 formatted = _format_structured_legal_response(candidate)
                 if formatted:
@@ -912,7 +973,7 @@ async def _ask_legal_internal(
 
                             final_raw = (text or accumulated_text or "").strip()
                             logger.debug("OpenAI raw response (stream): %s", final_raw)
-                            formatted_final = final_raw
+                            formatted_final = _clean_response_text(final_raw)
                             if callback and formatted_final:
                                 try:
                                     cb_result = callback(formatted_final, True)
@@ -954,9 +1015,14 @@ async def _ask_legal_internal(
                     if text and text.strip():
                         raw = text.strip()
                         logger.debug("OpenAI raw response: %s", raw)
+                        cleaned = _clean_response_text(raw)
+                        if not cleaned:
+                            logger.warning("OpenAI response text contained only auxiliary events; trying next payload option")
+                            last_err = "empty_response"
+                            continue
                         return {
                             "ok": True,
-                            "text": raw,
+                            "text": cleaned,
                             "usage": getattr(resp, "usage", None),
                             "structured": structured_payload,
                         }
@@ -980,9 +1046,14 @@ async def _ask_legal_internal(
                     if chunks:
                         joined = "\n\n".join(chunks).strip()
                         logger.debug("OpenAI raw response (joined): %s", joined)
+                        cleaned_joined = _clean_response_text(joined)
+                        if not cleaned_joined:
+                            logger.warning("OpenAI response chunks contained only auxiliary events; trying next payload option")
+                            last_err = "empty_response"
+                            continue
                         return {
                             "ok": True,
-                            "text": joined,
+                            "text": cleaned_joined,
                             "usage": getattr(resp, "usage", None),
                             "structured": structured_payload,
                         }
