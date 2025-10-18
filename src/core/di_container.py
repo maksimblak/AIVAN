@@ -217,6 +217,9 @@ def create_container(settings: AppSettings) -> DIContainer:
                 document_base_url=settings.garant_document_base_url,
                 use_query_language=bool(settings.garant_api_use_query_language),
                 verify_ssl=bool(settings.garant_api_verify_ssl),
+                sutyazhnik_enabled=bool(settings.garant_api_sutyazhnik_enabled),
+                sutyazhnik_kinds=settings.garant_api_sutyazhnik_kinds or None,
+                sutyazhnik_count=int(settings.garant_api_sutyazhnik_count),
             ),
         )
 

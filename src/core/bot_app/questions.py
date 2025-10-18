@@ -5,7 +5,8 @@ import logging
 import time
 from contextlib import suppress
 from html import escape as html_escape
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
+from types import SimpleNamespace
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
@@ -314,6 +315,7 @@ async def process_question(
     system_prompt_override: str | None = None
     rag_context = ""
     garant_context = ""
+    garant_sutyazhnik_context = ""
 
     if practice_mode_active:
         system_prompt_override = JUDICIAL_PRACTICE_SEARCH_PROMPT
@@ -332,6 +334,14 @@ async def process_question(
                 logger.warning("Garant API search failed: %s", garant_exc)
             except Exception as garant_exc:  # noqa: BLE001
                 logger.error("Unexpected Garant API failure: %s", garant_exc, exc_info=True)
+            if getattr(garant_client, "sutyazhnik_enabled", False):
+                try:
+                    sutyazhnik_results = await garant_client.sutyazhnik_search(question_text)
+                    garant_sutyazhnik_context = garant_client.format_sutyazhnik_results(sutyazhnik_results)
+                except GarantAPIError as garant_exc:
+                    logger.warning("Garant Sutyazhnik search failed: %s", garant_exc)
+                except Exception as garant_exc:  # noqa: BLE001
+                    logger.error("Unexpected Garant Sutyazhnik failure: %s", garant_exc, exc_info=True)
         setattr(user_session, "practice_search_mode", False)
 
     request_blocks = [question_text]
@@ -341,6 +351,8 @@ async def process_question(
 
     if garant_context:
         request_blocks.append(garant_context)
+    if garant_sutyazhnik_context:
+        request_blocks.append(garant_sutyazhnik_context)
 
     if attachments_list:
         attachment_lines = []

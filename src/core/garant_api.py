@@ -60,6 +60,24 @@ class GarantSearchResult:
     snippets: list[GarantSnippet] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class GarantReference:
+    topic: int | None
+    name: str
+    url: str | None = None
+
+    def absolute_url(self, document_base_url: str | None) -> str | None:
+        doc = GarantDocument(topic=self.topic or 0, name=self.name, url=self.url)
+        return doc.absolute_url(document_base_url)
+
+
+@dataclass(slots=True)
+class GarantSutyazhnikResult:
+    kind: str
+    norms: list[GarantReference] = field(default_factory=list)
+    courts: list[GarantReference] = field(default_factory=list)
+
+
 class GarantAPIClient:
     """Thin async wrapper around the Garant public API."""
 
@@ -75,6 +93,9 @@ class GarantAPIClient:
         document_base_url: str | None = None,
         use_query_language: bool = True,
         verify_ssl: bool = True,
+        sutyazhnik_enabled: bool = True,
+        sutyazhnik_kinds: Sequence[str] | None = None,
+        sutyazhnik_count: int = 5,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token.strip() if token else None
@@ -83,6 +104,9 @@ class GarantAPIClient:
         self._snippet_limit = max(0, snippet_limit)
         self._document_base_url = document_base_url
         self._use_query_language = use_query_language
+        self._sutyazhnik_enabled = sutyazhnik_enabled
+        self._sutyazhnik_kinds = [kind for kind in (sutyazhnik_kinds or []) if kind]
+        self._sutyazhnik_count = max(1, sutyazhnik_count)
         self._timeout = httpx.Timeout(timeout, connect=timeout, read=timeout)
         headers = {"Accept": "application/json"}
         if self._token:
@@ -101,6 +125,10 @@ class GarantAPIClient:
     @property
     def document_base_url(self) -> str | None:
         return self._document_base_url
+
+    @property
+    def sutyazhnik_enabled(self) -> bool:
+        return self._sutyazhnik_enabled and self.enabled
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -230,6 +258,55 @@ class GarantAPIClient:
     def format_results(self, results: Sequence[GarantSearchResult]) -> str:
         return format_search_results(results, document_base_url=self._document_base_url)
 
+    async def sutyazhnik_search(
+        self,
+        text: str,
+        *,
+        kinds: Sequence[str] | None = None,
+        count: int | None = None,
+    ) -> list[GarantSutyazhnikResult]:
+        if not self.sutyazhnik_enabled:
+            return []
+        query = (text or "").strip()
+        if not query:
+            return []
+
+        payload: dict[str, Any] = {
+            "text": query,
+            "count": max(1, min(count or self._sutyazhnik_count, 1000)),
+            "kind": list(kinds or self._sutyazhnik_kinds) or ["301", "302", "303"],
+        }
+
+        try:
+            response = await self._client.post("/v1/sutyazhnik-search", json=payload)
+            response.raise_for_status()
+            data = response.json()
+        except httpx.TimeoutException as exc:  # noqa: PERF203
+            raise GarantAPIError(f"Garant sutyazhnik request timed out: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise GarantAPIError(
+                f"Garant sutyazhnik failed with HTTP {exc.response.status_code}: {exc.response.text}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise GarantAPIError(f"Garant sutyazhnik request failed: {exc}") from exc
+        except ValueError as exc:
+            raise GarantAPIError(f"Invalid JSON from Garant sutyazhnik: {exc}") from exc
+
+        documents_raw = data.get("documents") if isinstance(data, dict) else None
+        results: list[GarantSutyazhnikResult] = []
+        if isinstance(documents_raw, Iterable):
+            for item in documents_raw:
+                parsed = self._parse_sutyazhnik_result(item)
+                if parsed:
+                    results.append(parsed)
+        return results
+
+    def format_sutyazhnik_results(
+        self,
+        results: Sequence[GarantSutyazhnikResult],
+    ) -> str:
+        return format_sutyazhnik_results(results, document_base_url=self._document_base_url)
+
     def _parse_document(self, item: Any) -> GarantDocument | None:
         if not isinstance(item, dict):
             return None
@@ -276,6 +353,45 @@ class GarantAPIClient:
 
         return GarantSnippet(entry=entry, relevance=relevance, ancestors=ancestors)
 
+    def _parse_reference(self, item: Any) -> GarantReference | None:
+        if not isinstance(item, dict):
+            return None
+        name = str(item.get("name") or "").strip()
+        if not name:
+            return None
+        topic_raw = item.get("topic")
+        try:
+            topic = int(topic_raw) if topic_raw is not None else None
+        except (TypeError, ValueError):
+            topic = None
+        url = item.get("url")
+        return GarantReference(topic=topic, name=name, url=url)
+
+    def _parse_sutyazhnik_result(self, item: Any) -> GarantSutyazhnikResult | None:
+        if not isinstance(item, dict):
+            return None
+        kind = str(item.get("kind") or "").strip()
+        norms_raw = item.get("norms") or []
+        courts_raw = item.get("courts") or []
+
+        norms: list[GarantReference] = []
+        if isinstance(norms_raw, Iterable):
+            for norm in norms_raw:
+                parsed = self._parse_reference(norm)
+                if parsed:
+                    norms.append(parsed)
+
+        courts: list[GarantReference] = []
+        if isinstance(courts_raw, Iterable):
+            for court in courts_raw:
+                parsed = self._parse_reference(court)
+                if parsed:
+                    courts.append(parsed)
+
+        if not kind and not norms and not courts:
+            return None
+        return GarantSutyazhnikResult(kind=kind, norms=norms, courts=courts)
+
 
 def format_search_results(
     results: Sequence[GarantSearchResult],
@@ -311,6 +427,47 @@ def format_search_results(
                 if path:
                     parts.append(path)
                 lines.append("      - " + " | ".join(parts))
+        lines.append("")
+
+    if lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
+
+
+def format_sutyazhnik_results(
+    results: Sequence[GarantSutyazhnikResult],
+    *,
+    document_base_url: str | None = None,
+) -> str:
+    if not results:
+        return ""
+
+    kind_titles = {
+        "301": "Суды общей юрисдикции",
+        "302": "Арбитражные суды",
+        "303": "Суды по уголовным делам",
+    }
+
+    lines: list[str] = ["[ГАРАНТ Сутяжник] Анализ текста и релевантная практика:"]
+
+    for idx, item in enumerate(results, start=1):
+        kind_label = kind_titles.get(item.kind, item.kind or "Неизвестный тип")
+        lines.append(f"{idx}. {kind_label}")
+
+        if item.norms:
+            lines.append("    Нормативные акты:")
+            for ref in item.norms:
+                url = ref.absolute_url(document_base_url)
+                suffix = f" — {url}" if url else ""
+                lines.append(f"      • {ref.name}{suffix}")
+
+        if item.courts:
+            lines.append("    Судебная практика:")
+            for ref in item.courts:
+                url = ref.absolute_url(document_base_url)
+                suffix = f" — {url}" if url else ""
+                lines.append(f"      • {ref.name}{suffix}")
+
         lines.append("")
 
     if lines[-1] == "":
