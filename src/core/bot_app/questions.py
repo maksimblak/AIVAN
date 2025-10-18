@@ -68,6 +68,170 @@ class ResponseTimer:
         return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
+GARANT_KIND_LABELS = {
+    "301": "Суды общей юрисдикции",
+    "302": "Арбитражные суды",
+    "303": "Суды по уголовным делам",
+}
+
+
+def _prepare_garant_excel_fragments(
+    search_results: Sequence[Any] | None,
+    sutyazhnik_results: Sequence[Any] | None,
+    *,
+    document_base_url: str | None,
+    max_items: int = 10,
+) -> list[Any]:
+    if not max_items or max_items <= 0:
+        return []
+
+    fragments: list[Any] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    def _add_fragment(
+        key: tuple[Any, ...],
+        title: str,
+        *,
+        excerpt: str,
+        court: str | None = None,
+        url: str | None = None,
+        metadata_extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        if len(fragments) >= max_items or key in seen:
+            return
+        seen.add(key)
+        metadata: dict[str, Any] = {
+            "title": title,
+            "name": title,
+            "court": court or "",
+            "url": url or "",
+            "link": url or "",
+        }
+        if metadata_extra:
+            metadata.update(metadata_extra)
+        match = SimpleNamespace(metadata=metadata, score=None)
+        fragments.append(SimpleNamespace(match=match, header=title, excerpt=excerpt))
+
+    search_results = list(search_results or [])
+    sutyazhnik_results = list(sutyazhnik_results or [])
+
+    # 1) Приоритет — судебные решения из Сутяжника.
+    for priority_kind in ("301", "302", "303"):
+        kind_label = GARANT_KIND_LABELS.get(priority_kind, priority_kind or "Суды")
+        for item in sutyazhnik_results:
+            kind_value = str(getattr(item, "kind", "") or "")
+            if kind_value != priority_kind:
+                continue
+            for ref in getattr(item, "courts", []) or []:
+                title = str(getattr(ref, "name", "") or "").strip()
+                if not title:
+                    continue
+                url = (
+                    ref.absolute_url(document_base_url)
+                    if hasattr(ref, "absolute_url")
+                    else getattr(ref, "url", None)
+                )
+                topic = getattr(ref, "topic", None)
+                key = ("sutyazhnik_court", kind_value, topic, url, title)
+                metadata_extra = {
+                    "source": "sutyazhnik",
+                    "kind": kind_value,
+                    "topic": topic,
+                }
+                excerpt = f"{kind_label}: {title}"
+                _add_fragment(
+                    key,
+                    title=title,
+                    excerpt=excerpt,
+                    court=kind_label,
+                    url=url,
+                    metadata_extra=metadata_extra,
+                )
+                if len(fragments) >= max_items:
+                    return fragments
+
+    # 2) Дополняем нормативными актами, если решения ещё не набрали лимит.
+    for item in sutyazhnik_results:
+        kind_value = str(getattr(item, "kind", "") or "")
+        kind_label = GARANT_KIND_LABELS.get(kind_value, kind_value or "Нормативные акты")
+        for ref in getattr(item, "norms", []) or []:
+            title = str(getattr(ref, "name", "") or "").strip()
+            if not title:
+                continue
+            url = (
+                ref.absolute_url(document_base_url)
+                if hasattr(ref, "absolute_url")
+                else getattr(ref, "url", None)
+            )
+            topic = getattr(ref, "topic", None)
+            key = ("sutyazhnik_norm", kind_value, topic, url, title)
+            metadata_extra = {
+                "source": "sutyazhnik_norm",
+                "kind": kind_value,
+                "topic": topic,
+            }
+            excerpt = f"Нормативный акт ({kind_label})"
+            _add_fragment(
+                key,
+                title=title,
+                excerpt=excerpt,
+                court=kind_label,
+                url=url,
+                metadata_extra=metadata_extra,
+            )
+            if len(fragments) >= max_items:
+                return fragments
+
+    # 3) Документы из обычного поиска ГАРАНТа.
+    for result in search_results:
+        document = getattr(result, "document", None)
+        if not document:
+            continue
+        title = str(getattr(document, "name", "") or "").strip()
+        if not title:
+            continue
+        url = (
+            document.absolute_url(document_base_url)
+            if hasattr(document, "absolute_url")
+            else getattr(document, "url", None)
+        )
+        topic = getattr(document, "topic", None)
+        snippets = list(getattr(result, "snippets", []) or [])
+        if snippets:
+            snippet = snippets[0]
+            path = snippet.formatted_path() if hasattr(snippet, "formatted_path") else ""
+            entry = getattr(snippet, "entry", None)
+            excerpt_parts: list[str] = []
+            if entry is not None:
+                excerpt_parts.append(f"Entry {entry}")
+            if path:
+                excerpt_parts.append(path)
+            excerpt = " — ".join(excerpt_parts) if excerpt_parts else "Документ из поиска ГАРАНТ"
+            metadata_extra = {
+                "source": "search",
+                "topic": topic,
+                "entry": entry,
+            }
+        else:
+            excerpt = "Документ из поиска ГАРАНТ"
+            metadata_extra = {
+                "source": "search",
+                "topic": topic,
+            }
+        key = ("search", topic, url, title)
+        _add_fragment(
+            key,
+            title=title,
+            excerpt=excerpt,
+            url=url,
+            metadata_extra=metadata_extra,
+        )
+        if len(fragments) >= max_items:
+            break
+
+    return fragments
+
+
 async def _collect_question_attachments(message: Message) -> list[QuestionAttachment]:
     bot = message.bot
     if bot is None:
@@ -312,6 +476,10 @@ async def process_question(
     question_text = cleaned
 
     practice_mode_active = bool(getattr(user_session, "practice_search_mode", False))
+    practice_mode_used = practice_mode_active
+    practice_excel_fragments: list[Any] = []
+    garant_search_results: list[Any] = []
+    garant_sutyazhnik_results: list[Any] = []
     system_prompt_override: str | None = None
     rag_context = ""
     garant_context = ""
@@ -328,20 +496,26 @@ async def process_question(
         garant_client = getattr(simple_context, "garant_client", None)
         if getattr(garant_client, "enabled", False):
             try:
-                garant_results = await garant_client.search_with_snippets(question_text)
-                garant_context = garant_client.format_results(garant_results)
+                garant_search_results = await garant_client.search_with_snippets(question_text)
+                garant_context = garant_client.format_results(garant_search_results)
             except GarantAPIError as garant_exc:
                 logger.warning("Garant API search failed: %s", garant_exc)
             except Exception as garant_exc:  # noqa: BLE001
                 logger.error("Unexpected Garant API failure: %s", garant_exc, exc_info=True)
             if getattr(garant_client, "sutyazhnik_enabled", False):
                 try:
-                    sutyazhnik_results = await garant_client.sutyazhnik_search(question_text)
-                    garant_sutyazhnik_context = garant_client.format_sutyazhnik_results(sutyazhnik_results)
+                    garant_sutyazhnik_results = await garant_client.sutyazhnik_search(question_text)
+                    garant_sutyazhnik_context = garant_client.format_sutyazhnik_results(garant_sutyazhnik_results)
                 except GarantAPIError as garant_exc:
                     logger.warning("Garant Sutyazhnik search failed: %s", garant_exc)
                 except Exception as garant_exc:  # noqa: BLE001
                     logger.error("Unexpected Garant Sutyazhnik failure: %s", garant_exc, exc_info=True)
+            practice_excel_fragments = _prepare_garant_excel_fragments(
+                garant_search_results,
+                garant_sutyazhnik_results,
+                document_base_url=getattr(garant_client, "document_base_url", None),
+                max_items=10,
+            )
         setattr(user_session, "practice_search_mode", False)
 
     request_blocks = [question_text]
@@ -460,6 +634,37 @@ async def process_question(
             raise
         else:
             ok_flag = True
+            if practice_mode_used and practice_excel_fragments:
+                summary_payload = result.get("practice_summary")
+                if not isinstance(summary_payload, dict):
+                    summary_payload = {} if summary_payload is None else {"summary_html": str(summary_payload)}
+                existing_fragments = list(summary_payload.get("fragments") or [])
+                combined_fragments = existing_fragments + practice_excel_fragments
+
+                deduped_fragments: list[Any] = []
+                seen_fragment_keys: set[tuple[Any, ...]] = set()
+                for fragment in combined_fragments:
+                    metadata: Mapping[str, Any] | dict[str, Any] = {}
+                    match = getattr(fragment, "match", None)
+                    if match is not None:
+                        metadata = getattr(match, "metadata", {}) or {}
+                    if not isinstance(metadata, Mapping):
+                        metadata = {}
+                    key = (
+                        metadata.get("title"),
+                        metadata.get("url"),
+                        metadata.get("topic"),
+                    )
+                    if key in seen_fragment_keys:
+                        continue
+                    seen_fragment_keys.add(key)
+                    deduped_fragments.append(fragment)
+                    if len(deduped_fragments) >= 10:
+                        break
+
+                summary_payload["fragments"] = deduped_fragments
+                summary_payload.setdefault("summary_html", result.get("text") or "")
+                result["practice_summary"] = summary_payload
 
         timer.stop()
 
