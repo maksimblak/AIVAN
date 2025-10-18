@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import json
 import logging
@@ -11,10 +10,32 @@ from .utils import FileFormatHandler, TextProcessor
 
 logger = logging.getLogger(__name__)
 
-_JSON_RE = re.compile(r"\{[\s\S]*\}")
+# Маркап — убираем, если модель всё же вставит HTML в значения
+_TAG_RE = re.compile(r"<[^>]+>")
 
 MAX_INPUT_CHARS = 15_000
 
+# Ключи, по которым мы определяем «наш» JSON среди служебных
+EXPECTED_TOP_KEYS = {
+    "summary",
+    "parties",
+    "demands",
+    "legal_basis",
+    "evidence",
+    "strengths",
+    "risks",
+    "missing_elements",
+    "recommendations",
+    "procedural_notes",
+    "confidence",
+    "overall_assessment",
+    "risk_highlights",
+    "strategy",
+    "case_law",
+    "improvement_steps",
+}
+
+# Сузили required до ядра — меньше 400/обрывов. Остальное добьём ретраем.
 LAWSUIT_RESPONSE_SCHEMA: dict[str, Any] = {
     "name": "lawsuit_analysis",
     "strict": True,
@@ -36,6 +57,8 @@ LAWSUIT_RESPONSE_SCHEMA: dict[str, Any] = {
             "demands": {"type": "array", "items": {"type": "string"}},
             "legal_basis": {"type": "array", "items": {"type": "string"}},
             "evidence": {"type": "array", "items": {"type": "string"}},
+
+            # ниже — НЕ обязательные поля (пусть модель их заполняет, но валидатор не валится)
             "strengths": {"type": "array", "items": {"type": "string"}},
             "risks": {"type": "array", "items": {"type": "string"}},
             "missing_elements": {"type": "array", "items": {"type": "string"}},
@@ -69,28 +92,15 @@ LAWSUIT_RESPONSE_SCHEMA: dict[str, Any] = {
             },
             "improvement_steps": {"type": "array", "items": {"type": "string"}},
         },
-        "required": [
-            "summary",
-            "parties",
-            "demands",
-            "legal_basis",
-            "evidence",
-            "strengths",
-            "risks",
-            "missing_elements",
-            "recommendations",
-            "procedural_notes",
-            "confidence",
-            "overall_assessment",
-            "risk_highlights",
-            "strategy",
-            "case_law",
-            "improvement_steps",
-        ],
+        "required": ["summary", "parties", "demands", "legal_basis", "evidence"],
     },
 }
 
-LAWSUIT_ANALYSIS_SYSTEM_PROMPT = """
+# Просим модель: только JSON, без HTML/цитат и коротко
+LAWSUIT_ANALYSIS_SYSTEM_PROMPT = (
+    "Отвечай ТОЛЬКО одним JSON по схеме. Значения БЕЗ HTML/разметки/цитат. "
+    "Каждый список — максимум 5 кратких пунктов. Не цитируй исходный документ, делай выжимку.\n\n"
+    + """
 <pre> Ты — ИИ-Иван, юридический ИИ-ассистент. Твоя цель — помогать юристам, снимая с них рутинные задачи и помогая принимать взвешенные решения на основе судебной практики и законодательства. Твоя основная специализация — анализ и проверка исковых заявлений и других процессуальных документов Твоя цель — определить сильные и слабые стороны иска, оценить его перспективу в суде и предложить конкретные пути для усиления позиции. Проверка процессуальных документов проходит по двум критериям Первый критерий “Стратегический” - какой шанс на положительный исход данного дела, и как улучшить свою правовую позицию в заявлении Второй критерий “процессуальный” - проверка на соответствие всем процессуальным нормам и отсутствии ошибок Основные правила твоей работы: 1. Тон общения - Отвечай в дружелюбном, понятном и уважительном тоне, с акцентом на помощь, но при этом сохраняй юридическую формальность 2. Используй структурированные ответы - Разбивай текст на блоки: абзацы, подзаголовки, списки. Ставь много пробелов, чтобы не было больших сплошных блоков текста. - Используй нумерованные и маркированные списки для удобства восприятия. - Используй HTML разметку с ПОДДЕРЖИВАЕМЫМИ TELEGRAM ТЕГАМИ: <b>жирный</b> <i>курсив</i> <u>подчёркнутый</u> <s>зачёркнутый</s> <code>моноширинный</code> <pre>блок кода</pre> <blockquote>цитата</blockquote> <a href="URL">ссылка</a> <tg-spoiler>спойлер</tg-spoiler>
 
 Правила применения:
@@ -323,8 +333,9 @@ https://pravo.ru
   "improvement_steps": ["конкретные действия перед подачей"]
 }
 
-Если каких-то данных нет — оставь поле пустым или список/строку пустой. Никакого текста вне JSON.
+Строго верни JSON по структуре из схемы (без текста вне JSON).
 """.strip()
+)
 
 LAWSUIT_ANALYSIS_USER_PROMPT = """
 Ниже текст искового заявления. Проанализируй его по схеме из системной инструкции.
@@ -335,189 +346,162 @@ LAWSUIT_ANALYSIS_USER_PROMPT = """
 {document_excerpt}
 """.strip()
 
+# ---------------- JSON извлечение ----------------
+
+def _strip_markup(s: Any) -> str:
+    s = "" if s is None else str(s)
+    return _TAG_RE.sub("", s).strip()
 
 def _repair_truncated_json(payload: str) -> str | None:
-    """Попробовать закрыть незавершённые строки/скобки в усечённом JSON."""
-
     if not payload:
         return None
-
-    result: list[str] = []
+    res: list[str] = []
     stack: list[str] = []
     in_string = False
-    escaped = False
-
-    for char in payload:
-        result.append(char)
-
+    esc = False
+    for ch in payload:
+        res.append(ch)
         if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == "\"":
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
                 in_string = False
             continue
-
-        if char == "\"":
+        if ch == '"':
             in_string = True
-            escaped = False
+            esc = False
             continue
-
-        if char in "{[":
-            stack.append("}" if char == "{" else "]")
-        elif char in "}]":
-            if not stack or stack[-1] != char:
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "]}":
+            if not stack or stack[-1] != ch:
                 return None
             stack.pop()
-
     if in_string:
-        result.append("\"")
-
+        res.append('"')
     while stack:
-        result.append(stack.pop())
+        res.append(stack.pop())
+    fixed = "".join(res)
+    return fixed if fixed != payload else None
 
-    repaired = "".join(result)
-    return repaired if repaired != payload else None
+def _iter_json_blocks(text: str) -> Iterable[str]:
+    s = text or ""
+    n = len(s)
+    i = 0
+    while i < n:
+        if s[i] == "{":
+            depth = 0
+            j = i
+            in_str = False
+            esc = False
+            while j < n:
+                ch = s[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            yield s[i : j + 1]
+                            i = j
+                            break
+                j += 1
+        i += 1
 
+def _score_payload(obj: Mapping[str, Any]) -> int:
+    score = 0
+    for k in EXPECTED_TOP_KEYS:
+        if k in obj:
+            score += 2
+    if isinstance(obj.get("parties"), Mapping):
+        score += 1
+    if isinstance(obj.get("strategy"), Mapping):
+        score += 1
+    if isinstance(obj.get("case_law"), (list, tuple)):
+        score += 1
+    return score
 
-def _extract_first_json(payload: str) -> tuple[dict[str, Any], bool]:
-    """Попытаться выделить первый JSON-объект из ответа модели."""
-
+def _extract_best_json(payload: str) -> tuple[dict[str, Any], bool]:
+    """Просканировать все JSON-блоки и взять наиболее «похожий на целевой»."""
     decoder = json.JSONDecoder(strict=False)
+    best: dict[str, Any] | None = None
+    best_score = -1
+    repaired_used = False
 
-    def _decode(text: str) -> dict[str, Any]:
-        obj, _ = decoder.raw_decode(text)
-        if not isinstance(obj, dict):
-            raise json.JSONDecodeError("JSON root is not an object", text, 0)
-        return obj
-
-    def _attempt_decode(text: str, *, mark_repaired: bool = False) -> tuple[dict[str, Any], bool] | None:
-        if not text:
-            return None
+    for block in _iter_json_blocks(payload.strip()):
         try:
-            return _decode(text), mark_repaired
+            obj, _ = decoder.raw_decode(block)
+            cand = obj if isinstance(obj, dict) else None
+            used = False
         except json.JSONDecodeError:
-            return None
-
-    stripped = payload.strip()
-    candidate = _attempt_decode(stripped)
-    if candidate:
-        return candidate
-
-    match = _JSON_RE.search(stripped)
-    if match:
-        block = match.group(0).strip()
-        candidate = _attempt_decode(block)
-        if candidate:
-            return candidate
-        repaired_block = _repair_truncated_json(block)
-        if repaired_block:
-            candidate = _attempt_decode(repaired_block, mark_repaired=True)
-            if candidate:
-                return candidate
-
-    start = stripped.find("{")
-    if start != -1:
-        depth = 0
-        in_string = False
-        escape = False
-        for idx in range(start, len(stripped)):
-            ch = stripped[idx]
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == "\"":
-                    in_string = False
+            fixed = _repair_truncated_json(block)
+            if not fixed:
                 continue
-            if ch == "\"":
-                in_string = True
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    block = stripped[start : idx + 1]
-                    candidate = _attempt_decode(block)
-                    if candidate:
-                        return candidate
-                    repaired_block = _repair_truncated_json(block)
-                    if repaired_block:
-                        candidate = _attempt_decode(repaired_block, mark_repaired=True)
-                        if candidate:
-                            return candidate
-                    break
-        if depth > 0:
-            block = stripped[start:] + ("}" * depth)
-            candidate = _attempt_decode(block)
-            if candidate:
-                return candidate
-            repaired_block = _repair_truncated_json(block)
-            if repaired_block:
-                candidate = _attempt_decode(repaired_block, mark_repaired=True)
-                if candidate:
-                    return candidate
+            try:
+                obj, _ = decoder.raw_decode(fixed)
+                cand = obj if isinstance(obj, dict) else None
+                used = cand is not None
+            except json.JSONDecodeError:
+                cand = None
+                used = False
 
-    repaired_full = _repair_truncated_json(stripped)
-    if repaired_full:
-        candidate = _attempt_decode(repaired_full, mark_repaired=True)
-        if candidate:
-            return candidate
+        if not cand:
+            continue
+        score = _score_payload(cand)
+        if score > best_score:
+            best, best_score, repaired_used = cand, score, used
 
-    raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR")
+    if not best:
+        raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR")
+    return best, repaired_used
 
+# ---------------- Нормализация ----------------
 
 def _clean_list(items: Any) -> list[str]:
     cleaned: list[str] = []
     if isinstance(items, (list, tuple)):
         for item in items:
-            text = str(item or "").strip()
+            text = _strip_markup(item)
             if text:
                 cleaned.append(text)
     elif isinstance(items, str):
-        text = items.strip()
+        text = _strip_markup(items)
         if text:
             cleaned.append(text)
     return cleaned
 
-
 def _normalize_case_law(items: Any) -> list[dict[str, str]]:
-    """Привести блок с судебной практикой к списку словарей с ожидаемыми ключами."""
     normalized: list[dict[str, str]] = []
-
     if isinstance(items, Mapping):
         iterable: Iterable[Any] = [items]
     elif isinstance(items, Iterable) and not isinstance(items, (str, bytes)):
         iterable = items
     else:
         return normalized
-
     for entry in iterable:
         if not isinstance(entry, Mapping):
             continue
-        court = str(entry.get("court") or "").strip()
-        year = str(entry.get("year") or "").strip()
-        link = str(entry.get("link") or "").strip()
-        summary = str(entry.get("summary") or "").strip()
+        court = _strip_markup(entry.get("court") or "")
+        year = _strip_markup(entry.get("year") or "")
+        link = _strip_markup(entry.get("link") or "")
+        summary = _strip_markup(entry.get("summary") or "")
         if not any((court, year, link, summary)):
             continue
-        normalized.append(
-            {
-                "court": court,
-                "year": year,
-                "link": link,
-                "summary": summary,
-            }
-        )
-
+        normalized.append({"court": court, "year": year, "link": link, "summary": summary})
     return normalized
 
-
 def _analysis_has_content(analysis: Mapping[str, Any]) -> bool:
-    """Проверить, что в анализе есть осмысленные данные."""
     for value in analysis.values():
         if isinstance(value, str):
             if value.strip():
@@ -535,7 +519,6 @@ def _analysis_has_content(analysis: Mapping[str, Any]) -> bool:
                         return True
     return False
 
-
 def _is_empty_block(value: Any) -> bool:
     if value is None:
         return True
@@ -546,7 +529,6 @@ def _is_empty_block(value: Any) -> bool:
     if isinstance(value, (list, tuple, set)):
         return all(_is_empty_block(v) for v in value)
     return False
-
 
 _REQUIRED_SECTIONS = [
     "summary",
@@ -561,7 +543,6 @@ _REQUIRED_SECTIONS = [
     "risk_highlights",
     "improvement_steps",
 ]
-
 
 def _detect_missing_sections(analysis: Mapping[str, Any]) -> list[str]:
     missing: list[str] = []
@@ -582,28 +563,34 @@ def _detect_missing_sections(analysis: Mapping[str, Any]) -> list[str]:
 
     return sorted(set(missing))
 
-
 def _build_followup_instruction(missing_sections: list[str], was_truncated: bool) -> str:
-    lines = [
+    parts = [
         "Предыдущий ответ был обрезан и/или не содержит все обязательные поля.",
-        "Повтори ПОЛНЫЙ JSON строго по заданной структуре из системной инструкции.",
+        "Повтори ПОЛНЫЙ JSON строго по заданной структуре.",
+        "КРИТИЧНО: никаких HTML-тегов, цитат, форматирования — только чистый текст.",
+        "Каждый список — максимум 5 лаконичных пунктов. Без повторов и воды.",
     ]
     if missing_sections:
-        lines.append(f"Обязательно заполни разделы: {', '.join(sorted(missing_sections))}.")
+        parts.append("Обязательно заполни: " + ", ".join(sorted(missing_sections)) + ".")
     if was_truncated:
-        lines.append("Следи за тем, чтобы ответ уместился. При необходимости используй краткие формulations, но не пропускай поля.")
-    lines.append("Верни только один валидный JSON-объект без пояснений и сопроводительного текста.")
-    return "\n".join(lines)
-
+        parts.append("Пиши короче, но не пропускай поля.")
+    parts.append("Верни один валидный JSON-объект, без пояснений.")
+    return "\n".join(parts)
 
 def _build_fallback_markdown(raw_text: str) -> str:
-    """Сформировать простой Markdown на основе сырого ответа модели."""
+    """Fallback без печати сырого JSON (если он таки сырой JSON)."""
     cleaned = TextProcessor.clean_text(raw_text)
     if not cleaned:
         return ""
-    lines = ["# Анализ искового заявления", "", "## Ответ модели", cleaned.strip(), ""]
+    looks_like_json = cleaned.lstrip().startswith("{") and cleaned.rstrip().endswith("}")
+    lines = ["# Анализ искового заявления", ""]
+    if not looks_like_json:
+        lines += ["## Ответ модели", cleaned.strip(), ""]
+    else:
+        lines += ["## Ответ модели", "(сырой JSON опущен)", ""]
     return "\n".join(lines).strip()
 
+# ---------------- Основной процессор ----------------
 
 class LawsuitAnalyzer(DocumentProcessor):
     """Анализирует исковые заявления: требования, доказательства, риски и рекомендации."""
@@ -665,10 +652,11 @@ class LawsuitAnalyzer(DocumentProcessor):
         follow_up_used = False
         analysis_candidate: dict[str, Any] | None = None
 
+        # Основной заход + один follow-up (компактный)
         for attempt in range(1, 3):
-            prompt_body = user_prompt
-            if extra_instruction:
-                prompt_body = f"{user_prompt}\n\n=== ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ ===\n{extra_instruction.strip()}"
+            prompt_body = user_prompt if not extra_instruction else (
+                f"{user_prompt}\n\n=== ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ ===\n{extra_instruction.strip()}"
+            )
 
             response = await self.openai_service.ask_legal(
                 system_prompt=LAWSUIT_ANALYSIS_SYSTEM_PROMPT,
@@ -676,7 +664,9 @@ class LawsuitAnalyzer(DocumentProcessor):
                 force_refresh=(attempt > 1),
                 use_schema=True,
                 response_schema=LAWSUIT_RESPONSE_SCHEMA,
-                enable_web=False,
+                enable_web=False,            # web-tools жёстко отключены
+                temperature=0.3,
+                max_output_tokens=3800,
             )
             if not response.get("ok"):
                 raise ProcessingError(response.get("error") or "Не удалось получить ответ от модели", "OPENAI_ERROR")
@@ -684,20 +674,22 @@ class LawsuitAnalyzer(DocumentProcessor):
             structured_payload = response.get("structured")
             raw_text = (response.get("text") or "").strip()
             payload_repaired = False
+
             if isinstance(structured_payload, Mapping) and structured_payload:
                 payload = dict(structured_payload)
             else:
                 if not raw_text:
                     raise ProcessingError("Пустой ответ модели", "OPENAI_EMPTY")
-                payload, payload_repaired = _extract_first_json(raw_text)
+                payload, payload_repaired = _extract_best_json(raw_text)
 
             strategy_payload = payload.get("strategy") or {}
 
+            # Санитайз значений от HTML
             analysis_candidate = {
-                "summary": str(payload.get("summary") or "").strip(),
+                "summary": _strip_markup(payload.get("summary") or ""),
                 "parties": {
-                    "plaintiff": str((payload.get("parties") or {}).get("plaintiff") or "").strip(),
-                    "defendant": str((payload.get("parties") or {}).get("defendant") or "").strip(),
+                    "plaintiff": _strip_markup((payload.get("parties") or {}).get("plaintiff") or ""),
+                    "defendant": _strip_markup((payload.get("parties") or {}).get("defendant") or ""),
                     "other": _clean_list((payload.get("parties") or {}).get("other")),
                 },
                 "demands": _clean_list(payload.get("demands")),
@@ -708,11 +700,11 @@ class LawsuitAnalyzer(DocumentProcessor):
                 "missing_elements": _clean_list(payload.get("missing_elements")),
                 "recommendations": _clean_list(payload.get("recommendations")),
                 "procedural_notes": _clean_list(payload.get("procedural_notes")),
-                "confidence": str(payload.get("confidence") or "").strip(),
-                "overall_assessment": str(payload.get("overall_assessment") or "").strip(),
+                "confidence": _strip_markup(payload.get("confidence") or ""),
+                "overall_assessment": _strip_markup(payload.get("overall_assessment") or ""),
                 "risk_highlights": _clean_list(payload.get("risk_highlights")),
                 "strategy": {
-                    "success_probability": str(strategy_payload.get("success_probability") or "").strip(),
+                    "success_probability": _strip_markup(strategy_payload.get("success_probability") or ""),
                     "actions": _clean_list(strategy_payload.get("actions")),
                 },
                 "case_law": _normalize_case_law(payload.get("case_law")),
@@ -722,8 +714,11 @@ class LawsuitAnalyzer(DocumentProcessor):
                 analysis_candidate["structured_payload_repaired"] = True
 
             missing_sections = _detect_missing_sections(analysis_candidate)
-            if (payload_repaired or missing_sections) and attempt < 2:
-                extra_instruction = _build_followup_instruction(missing_sections, payload_repaired)
+            finish_reason = response.get("finish_reason") or ""
+            if attempt < 2 and (payload_repaired or missing_sections or finish_reason == "length"):
+                extra_instruction = _build_followup_instruction(
+                    missing_sections, payload_repaired or finish_reason == "length"
+                )
                 follow_up_used = True
                 continue
 
@@ -737,14 +732,11 @@ class LawsuitAnalyzer(DocumentProcessor):
         if not _analysis_has_content(analysis):
             fallback_text = raw_text.strip()
             if not fallback_text:
-                raise ProcessingError(
-                    "Модель вернула пустой ответ, повторите запрос позднее.",
-                    "EMPTY_ANALYSIS",
-                )
+                raise ProcessingError("Модель вернула пустой ответ, повторите запрос позднее.", "EMPTY_ANALYSIS")
             cleaned_fallback = TextProcessor.clean_text(fallback_text)
             summary_fallback = cleaned_fallback[:600]
             analysis["summary"] = summary_fallback
-            analysis["fallback_raw_text"] = cleaned_fallback
+            analysis["fallback_raw_text"] = "(скрыт)"
             fallback_markdown = _build_fallback_markdown(fallback_text)
             fallback_used = True
 
@@ -760,10 +752,7 @@ class LawsuitAnalyzer(DocumentProcessor):
         else:
             await _notify("analysis_ready", 85.0)
 
-        if fallback_used and fallback_markdown:
-            markdown_report = fallback_markdown
-        else:
-            markdown_report = self._build_markdown_report(analysis)
+        markdown_report = fallback_markdown if (fallback_used and fallback_markdown) else self._build_markdown_report(analysis)
 
         await _notify("completed", 100.0)
 
@@ -791,14 +780,11 @@ class LawsuitAnalyzer(DocumentProcessor):
 
         parties = analysis.get("parties") or {}
         party_lines = []
-        plaintiff = parties.get("plaintiff")
-        defendant = parties.get("defendant")
-        if plaintiff:
-            party_lines.append(f"- Истец: {plaintiff.strip()}")
-        if defendant:
-            party_lines.append(f"- Ответчик: {defendant.strip()}")
-        others = parties.get("other") or []
-        for item in others:
+        if parties.get("plaintiff"):
+            party_lines.append(f"- Истец: {parties['plaintiff'].strip()}")
+        if parties.get("defendant"):
+            party_lines.append(f"- Ответчик: {parties['defendant'].strip()}")
+        for item in parties.get("other") or []:
             party_lines.append(f"- Участник: {item.strip()}")
         if party_lines:
             lines.extend(["## Стороны", *party_lines, ""])
@@ -846,24 +832,19 @@ class LawsuitAnalyzer(DocumentProcessor):
                 summary_text = str(entry.get("summary") or "").strip()
                 link = str(entry.get("link") or "").strip()
 
-                parts: list[str] = []
+                parts_list: list[str] = []
                 if court and year:
-                    parts.append(f"{court} ({year})")
+                    parts_list.append(f"{court} ({year})")
                 elif court:
-                    parts.append(court)
+                    parts_list.append(court)
                 elif year:
-                    parts.append(year)
-
+                    parts_list.append(year)
                 if summary_text:
-                    parts.append(summary_text)
+                    parts_list.append(summary_text)
 
-                line = " — ".join(parts) if parts else ""
+                line = " — ".join(parts_list) if parts_list else ""
                 if link:
-                    if line:
-                        line = f"{line} [{link}]"
-                    else:
-                        line = link
-
+                    line = f"{line} [{link}]" if line else link
                 if line:
                     lines.append(f"- {line}")
             lines.append("")
@@ -873,9 +854,5 @@ class LawsuitAnalyzer(DocumentProcessor):
         confidence = analysis.get("confidence")
         if confidence:
             lines.extend(["", f"_Уровень уверенности анализа: {confidence}_"])
-
-        fallback_raw = str(analysis.get("fallback_raw_text") or "").strip()
-        if fallback_raw:
-            lines.extend(["", "## Ответ модели (fallback)", fallback_raw, ""])
 
         return "\n".join(lines).strip()
