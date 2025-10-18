@@ -103,6 +103,47 @@ def _resolve_type_icon(label: str) -> str:
     return _TYPE_ICON_MAP.get(normalized, "•")
 
 
+def _is_blank_field(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, Mapping):
+        return all(_is_blank_field(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return all(_is_blank_field(v) for v in value)
+    return False
+
+
+def _try_parse_lawsuit_json(raw: str) -> dict[str, Any] | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+
+    def _attempt(text: str) -> dict[str, Any] | None:
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    direct = _attempt(raw)
+    if direct:
+        return direct
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return _attempt(raw[start : end + 1])
+
+    for line in raw.splitlines():
+        candidate = _attempt(line)
+        if candidate:
+            return candidate
+
+    return None
+
+
 class DocumentManager:
     """Facade that wires document processors, storage and formatting."""
 
@@ -1223,6 +1264,55 @@ class DocumentManager:
 
     @staticmethod
     def _build_lawsuit_markdown(analysis: Dict[str, Any]) -> str:
+        analysis = dict(analysis or {})
+
+        fallback_raw = str(analysis.get("fallback_raw_text") or "").strip()
+        parsed_from_fallback = _try_parse_lawsuit_json(fallback_raw) if fallback_raw else None
+        if parsed_from_fallback:
+            parsed_from_fallback = dict(parsed_from_fallback)
+
+            for key in ("summary", "overall_assessment", "confidence"):
+                if _is_blank_field(analysis.get(key)) and not _is_blank_field(parsed_from_fallback.get(key)):
+                    analysis[key] = parsed_from_fallback.get(key)
+
+            for key in (
+                "demands",
+                "legal_basis",
+                "evidence",
+                "strengths",
+                "risks",
+                "missing_elements",
+                "recommendations",
+                "procedural_notes",
+                "risk_highlights",
+                "case_law",
+                "improvement_steps",
+            ):
+                if _is_blank_field(analysis.get(key)) and not _is_blank_field(parsed_from_fallback.get(key)):
+                    analysis[key] = parsed_from_fallback.get(key)
+
+            parties = dict(analysis.get("parties") or {})
+            fallback_parties = parsed_from_fallback.get("parties") or {}
+            for part_key in ("plaintiff", "defendant", "other"):
+                if _is_blank_field(parties.get(part_key)) and not _is_blank_field(fallback_parties.get(part_key)):
+                    parties[part_key] = fallback_parties.get(part_key)
+            analysis["parties"] = parties
+
+            strategy = dict(analysis.get("strategy") or {})
+            fallback_strategy = parsed_from_fallback.get("strategy") or {}
+            if _is_blank_field(strategy.get("success_probability")) and not _is_blank_field(
+                fallback_strategy.get("success_probability")
+            ):
+                strategy["success_probability"] = fallback_strategy.get("success_probability")
+            if _is_blank_field(strategy.get("actions")) and not _is_blank_field(fallback_strategy.get("actions")):
+                strategy["actions"] = fallback_strategy.get("actions")
+            analysis["strategy"] = strategy
+
+            meta_notes = [str(note or "").strip() for note in (analysis.get("meta_notes") or []) if str(note or "").strip()]
+            meta_notes.append("Использован текст модели для восстановления структурированного отчёта.")
+            analysis["meta_notes"] = meta_notes
+            analysis["fallback_raw_text"] = ""
+
         lines = ["# Анализ искового заявления", ""]
 
         summary = str(analysis.get("summary") or "").strip()
