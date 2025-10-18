@@ -161,10 +161,6 @@ class ProgressStatus:
 
     def duration_text(self, percent: int) -> str:
         elapsed = self._elapsed_seconds()
-        if self.display_total_seconds is not None:
-            # Показываем фактически прошедшее время, ограничивая заявленным лимитом,
-            # чтобы таймер рос линейно и не прыгал из-за скачков процента.
-            return self._format_duration(min(elapsed, int(self.display_total_seconds)))
         return self._format_duration(elapsed)
 
     # ---------- ВНУТРЕННЕЕ ----------
