@@ -36,14 +36,14 @@ DOCUMENT_OPERATION_LABELS: Mapping[str, str] = {
     "document_draft": "✨ Создание юридического документа",
 }
 FEATURE_LABELS: Mapping[str, str] = {
-    "legal_question": "Обращения к ИИ ассистенту",
-    "document_processing": "Работа с документами",
-    "judicial_practice": "Судебная практика",
-    "document_draft": "Черновики документов",
-    "voice_message": "Голосовые ответы",
-    "ocr_processing": "Распознавание текста",
-    "document_chat": "Чаты по документам",
-    "document_work": "Работа с документами",
+    "legal_question": "🤖 Обращения к ИИ ассистенту",
+    "document_processing": "📄 Работа с документами",
+    "judicial_practice": "⚖️ Судебная практика",
+    "document_draft": "📝 Черновики документов",
+    "voice_message": "🎤 Голосовые ответы",
+    "ocr_processing": "🔍 Распознавание текста",
+    "document_chat": "💬 Чаты по документам",
+    "document_work": "📄 Работа с документами",
     **DOCUMENT_OPERATION_LABELS,
 }
 
@@ -103,6 +103,12 @@ def build_progress_bar(used: int, total: int) -> str:
     remaining_pct = max(0, min(100, int(round((remaining / total) * 100)))) if total else 0
 
     return f"{bar_markup} {used}/{total} · осталось <b>{remaining}</b> ({remaining_pct}%)"
+
+
+def build_mini_bar(percentage: float, length: int = 8) -> str:
+    """Создаёт компактный визуальный индикатор для процентов."""
+    filled = min(length, max(0, int(round(percentage / 100 * length))))
+    return f"<code>{'█' * filled}{'░' * (length - filled)}</code>"
 
 
 def progress_line(label: str, used: int, total: int) -> str:
@@ -270,6 +276,7 @@ __all__ = [
     "DAY_NAMES",
     "normalize_stats_period",
     "build_progress_bar",
+    "build_mini_bar",
     "progress_line",
     "translate_payment_status",
     "translate_plan_name",
@@ -454,20 +461,23 @@ async def generate_user_stats_response(
 
     lines.extend(["", divider, "", "📋 <b>Типы запросов</b>", ""])
     sorted_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)
+
+    if not sorted_types:
+        lines.append("  <i>Нет данных за выбранный период</i>")
+
     for req_type, count in sorted_types:
         share_pct = (count / period_requests * 100) if period_requests else 0.0
         label = FEATURE_LABELS.get(req_type, req_type)
-        lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
+        lines.append(f"  {label} — <b>{count}</b> ({share_pct:.0f}%)")
 
     if document_breakdown:
-        lines.append("")
         sorted_document_types = sorted(
             document_breakdown.items(), key=lambda item: item[1], reverse=True
         )
         for req_type, count in sorted_document_types:
             share_pct = (count / period_requests * 100) if period_requests else 0.0
             label = DOCUMENT_OPERATION_LABELS.get(req_type, FEATURE_LABELS.get(req_type, req_type))
-            lines.append(_format_stat_row(f"    ◦ {label}", f"{count} ({share_pct:.0f}%)"))
+            lines.append(f"      ↳ {label} — <b>{count}</b> ({share_pct:.0f}%)")
 
     if last_transaction:
         lines.extend(["", divider, "", "💳 <b>Последний платёж</b>", ""])
