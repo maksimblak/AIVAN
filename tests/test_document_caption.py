@@ -307,6 +307,6 @@ def test_finalize_draft_truncates_caption_and_preserves_html(monkeypatch):
     assert len(caption) <= module._CAPTION_MAX_LENGTH
     assert "А" * 250 not in caption  # ensure long tail truncated
     assert "…" in caption
-    assert "Анализ успешно произведён!" in caption
+    assert "Документ успешно создан" in caption
     assert "<b>Проверено</b>" in caption
     assert doc_call["parse_mode"] == module.ParseMode.HTML
