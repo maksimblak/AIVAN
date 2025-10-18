@@ -508,6 +508,23 @@ async def handle_referral_program_callback(callback: CallbackQuery) -> None:
 
         referral_link, share_code = _build_referral_link(referral_code)
 
+        if not referral_link and share_code and callback.bot:
+            fallback_username = _resolve_bot_username()
+            if not fallback_username:
+                try:
+                    bot_info = await callback.bot.get_me()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not resolve bot username dynamically: %s", exc)
+                else:
+                    fallback_username = (bot_info.username or "").strip()
+                    if fallback_username.startswith("@"):
+                        fallback_username = fallback_username[1:]
+                    if fallback_username:
+                        ctx.BOT_USERNAME = fallback_username
+                        resolved_link, _ = _build_referral_link(referral_code)
+                        if resolved_link:
+                            referral_link = resolved_link
+
         try:
             referrals = await db.get_user_referrals(user_id)
         except Exception as exc:
@@ -641,6 +658,23 @@ async def handle_copy_referral_callback(callback: CallbackQuery) -> None:
                 await callback.answer(f"📋 Ссылка скопирована!\n{referral_link}", show_alert=True)
                 return
             if share_code:
+                if callback.bot:
+                    fallback_username = _resolve_bot_username()
+                    if not fallback_username:
+                        try:
+                            bot_info = await callback.bot.get_me()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("Could not resolve bot username dynamically: %s", exc)
+                        else:
+                            fallback_username = (bot_info.username or "").strip()
+                            if fallback_username.startswith("@"):
+                                fallback_username = fallback_username[1:]
+                            if fallback_username:
+                                ctx.BOT_USERNAME = fallback_username
+                                referral_link, _ = _build_referral_link(referral_code)
+                if referral_link:
+                    await callback.answer(f"📋 Ссылка скопирована!\n{referral_link}", show_alert=True)
+                    return
                 await callback.answer(f"📋 Код скопирован!\nref_{share_code}", show_alert=True)
                 return
 

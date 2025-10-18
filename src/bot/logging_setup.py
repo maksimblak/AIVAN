@@ -24,6 +24,14 @@ def setup_logging(settings: AppSettings) -> None:
 
     handler = logging.StreamHandler(sys.stdout)
 
+    # Reduce noise from verbose third-party libraries that flood DEBUG logs.
+    quiet_loggers: dict[str, int] = {
+        "aiosqlite": logging.INFO,
+        "sqlite3": logging.INFO,
+    }
+    for logger_name, min_level in quiet_loggers.items():
+        logging.getLogger(logger_name).setLevel(max(level, min_level))
+
     if log_json:
 
         class JsonFormatter(logging.Formatter):
