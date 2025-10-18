@@ -1,28 +1,65 @@
 from __future__ import annotations
 
+"""
+OpenAI gateway module (исправленный и упрощённый):
+
+— response_format (json_schema) ставится В КОРЕНЬ payload, без extra_body/text.format
+— корректно фильтруются «шумные» события (web_search_call / web_result и т.п.)
+— единая реализация non-stream/stream через Responses API
+— поддержка вложений (изображения inline + текстовые метаданные для остальных)
+— аккуратное форматирование HTML под Telegram
+— общие таймауты/лимиты/прокси берутся из AppSettings, есть общий Async клиент
+
+Экспорт:
+    ask_legal(...)
+    ask_legal_stream(...)
+    format_legal_response_text(...)
+    get_async_openai_client(), shared_openai_client(), close_async_openai_client()
+"""
+
 import asyncio
 import base64
+import html
 import inspect
 import json
 import logging
-from contextlib import asynccontextmanager
-from src.core.app_context import get_settings
-from src.core.settings import AppSettings
-
-import html
-from html.parser import HTMLParser
 import re
+from contextlib import asynccontextmanager
+from html.parser import HTMLParser
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 import httpx
 from openai import AsyncOpenAI
+
+from src.core.app_context import get_settings
 from src.core.attachments import QuestionAttachment
+from src.core.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------------------
+# Helpers: attachments → user message content
+# --------------------------------------------------------------------------------------
 
-def _build_user_message_content(user_text: str, attachments: Sequence[QuestionAttachment] | None) -> Any:
+def _get_env_non_negative_int(name: str, default: int) -> int:
+    settings = _settings()
+    raw = settings.get_str(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+        if value < 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
+        return default
+
+
+def _build_user_message_content(
+    user_text: str, attachments: Sequence[QuestionAttachment] | None
+) -> Any:
     if not attachments:
         return user_text
 
@@ -56,9 +93,7 @@ def _build_user_message_content(user_text: str, attachments: Sequence[QuestionAt
                 encoded = base64.b64encode(data_bytes).decode("ascii")
                 chunk = f"{details}Base64 contents:\n{encoded}"
             elif inline_limit and size_bytes > inline_limit:
-                chunk = (
-                    f"{details}Contents omitted: size exceeds inline limit of {inline_limit} bytes."
-                )
+                chunk = f"{details}Contents omitted: size exceeds inline limit of {inline_limit} bytes."
             else:
                 chunk = f"{details}Contents omitted: inline attachments are disabled."
             content.append({"type": "text", "text": chunk})
@@ -68,6 +103,9 @@ def _build_user_message_content(user_text: str, attachments: Sequence[QuestionAt
     return content
 
 
+# --------------------------------------------------------------------------------------
+# Globals & model caps
+# --------------------------------------------------------------------------------------
 
 MODEL_CAPABILITIES: dict[str, dict[str, bool]] = {}
 _VALIDATED_MODELS: set[str] = set()
@@ -75,21 +113,24 @@ _VALIDATED_MODELS: set[str] = set()
 _client_lock = asyncio.Lock()
 _shared_async_client: AsyncOpenAI | None = None
 
+# типы «служебного шума», который не должен попадать в финальный текст
 _NOISE_RESPONSE_TYPES = {
     "reasoning",
-    "websearch_call",
+    "web_search_call",  # важно: с подчёркиванием
+    "web_result",
     "tool_call",
     "tool_call_delta",
     "message_delta",
 }
 
+# колбэк для стрима: (delta, is_final)
+StreamCallback = Callable[[str, bool], Awaitable[None] | None]
+
 
 def _truncate_for_log(text: str, limit: int = 600) -> str:
     if not text:
         return ""
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}… [truncated]"
+    return text if len(text) <= limit else f"{text[:limit]}… [truncated]"
 
 
 def _collect_finish_reasons(output: Any) -> list[str]:
@@ -103,17 +144,17 @@ def _collect_finish_reasons(output: Any) -> list[str]:
         if hasattr(item, "finish_reason"):
             reason = getattr(item, "finish_reason", None)
             if reason:
-                reason_str = str(reason)
-                if reason_str not in seen:
-                    seen.add(reason_str)
-                    reasons.append(reason_str)
+                r = str(reason)
+                if r not in seen:
+                    seen.add(r)
+                    reasons.append(r)
         if isinstance(item, Mapping):
             reason = item.get("finish_reason")
             if reason:
-                reason_str = str(reason)
-                if reason_str not in seen:
-                    seen.add(reason_str)
-                    reasons.append(reason_str)
+                r = str(reason)
+                if r not in seen:
+                    seen.add(r)
+                    reasons.append(r)
             stack.extend(item.values())
         elif isinstance(item, (list, tuple, set)):
             stack.extend(item)
@@ -123,30 +164,43 @@ def _collect_finish_reasons(output: Any) -> list[str]:
 def _infer_model_caps(model: str) -> dict[str, bool]:
     lower = model.lower()
     caps: dict[str, bool] = {}
+    # для «семейств» без sampling параметров
     if lower.startswith("gpt-5") or (lower.startswith("o") and not lower.startswith("omni")):
         caps["supports_sampling"] = False
     return caps
 
 
+def _settings() -> AppSettings:
+    return get_settings()
+
+
+# --------------------------------------------------------------------------------------
+# Structured → simple text (для LEGAL_RESPONSE_SCHEMA; остаётся как fallback)
+# --------------------------------------------------------------------------------------
 
 def _normalise_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
-    """Deep-convert Mapping instances into plain dict/list structures."""
     def _convert(value: Any) -> Any:
         if isinstance(value, Mapping):
             return {str(k): _convert(v) for k, v in value.items()}
         if isinstance(value, list):
             return [_convert(item) for item in value]
         return value
-
     return {str(key): _convert(val) for key, val in data.items()}
 
 
+def _is_noise_mapping(candidate: Mapping[str, Any] | None) -> bool:
+    if not isinstance(candidate, Mapping):
+        return False
+    event_type = str(candidate.get("type") or "").lower()
+    return event_type in _NOISE_RESPONSE_TYPES
+
+
 def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
-    summary = str(data.get('summary') or '').strip()
-    analysis = str(data.get('analysis') or '').strip()
-    disclaimer = str(data.get('disclaimer') or '').strip()
-    legal_basis = data.get('legal_basis') or []
-    risks = data.get('risks') or []
+    summary = str(data.get("summary") or "").strip()
+    analysis = str(data.get("analysis") or "").strip()
+    disclaimer = str(data.get("disclaimer") or "").strip()
+    legal_basis = data.get("legal_basis") or []
+    risks = data.get("risks") or []
 
     parts: list[str] = []
     if summary:
@@ -158,47 +212,36 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
     for item in legal_basis:
         if not isinstance(item, Mapping):
             continue
-        reference = str(item.get('reference') or '').strip()
-        explanation = str(item.get('explanation') or '').strip()
+        reference = str(item.get("reference") or "").strip()
+        explanation = str(item.get("explanation") or "").strip()
         if reference and explanation:
             basis_lines.append(f"• {html.escape(reference)} — {html.escape(explanation)}")
         elif reference:
             basis_lines.append(f"• {html.escape(reference)}")
     if basis_lines:
-        basis_block = '\n'.join(basis_lines)
-        parts.append(f"<b>Правовое основание:</b>\n{basis_block}")
+        parts.append(f"<b>Правовое основание:</b>\n" + "\n".join(basis_lines))
 
     risk_lines: list[str] = []
-    for risk in risks:
-        risk_text = str(risk or '').strip()
-        if risk_text:
-            risk_lines.append(f"• {html.escape(risk_text)}")
+    for r in risks:
+        rtxt = str(r or "").strip()
+        if rtxt:
+            risk_lines.append(f"• {html.escape(rtxt)}")
     if risk_lines:
-        risk_block = '\n'.join(risk_lines)
-        parts.append(f"<b>Риски:</b>\n{risk_block}")
+        parts.append(f"<b>Риски:</b>\n" + "\n".join(risk_lines))
 
     if disclaimer:
         parts.append(f"<i>{html.escape(disclaimer)}</i>")
 
-    combined = '\n\n'.join(part for part in parts if part).strip()
-    return combined
-
-
-def _is_noise_mapping(candidate: Mapping[str, Any] | None) -> bool:
-    if not isinstance(candidate, Mapping):
-        return False
-    event_type = str(candidate.get("type") or "").lower()
-    return event_type in _NOISE_RESPONSE_TYPES
+    return "\n\n".join(p for p in parts if p).strip()
 
 
 def _clean_response_text(raw: str) -> str:
     if not raw:
         return ""
 
-    # Remove JSON lines that describe reasoning/tool events.
     kept: list[str] = []
-    for chunk in raw.splitlines():
-        chunk = chunk.strip()
+    for line in raw.splitlines():
+        chunk = line.strip()
         if not chunk:
             continue
         parsed = None
@@ -214,7 +257,6 @@ def _clean_response_text(raw: str) -> str:
     if kept:
         return "\n".join(kept).strip()
 
-    # If everything was filtered out line-by-line, double-check the whole payload.
     try:
         parsed_all = json.loads(raw)
     except json.JSONDecodeError:
@@ -229,12 +271,7 @@ def _extract_text_from_content(
     structured_sink: list[Mapping[str, Any]] | None = None,
 ) -> str | None:
     def _store(candidate: Mapping[str, Any] | None) -> None:
-        if (
-            candidate
-            and structured_sink is not None
-            and not structured_sink
-            and not _is_noise_mapping(candidate)
-        ):
+        if candidate and structured_sink is not None and not structured_sink and not _is_noise_mapping(candidate):
             structured_sink.append(_normalise_mapping(candidate))
 
     if hasattr(content, "model_dump"):
@@ -247,23 +284,25 @@ def _extract_text_from_content(
             return json.dumps(dumped, ensure_ascii=False, separators=(",", ":"))
         except Exception:
             pass
+
     if hasattr(content, "json") and callable(getattr(content, "json")):
         try:
             return content.json(exclude_none=True)
         except Exception:
             pass
 
-    text_value = getattr(content, 'text', None)
+    text_value = getattr(content, "text", None)
     if text_value:
         return text_value
+
     if isinstance(content, dict):
         if _is_noise_mapping(content):
             return None
-        dict_text = content.get('text')
+        dict_text = content.get("text")
         if dict_text:
             return str(dict_text)
 
-    for key in ('parsed', 'data', 'json'):
+    for key in ("parsed", "data", "json"):
         candidate = getattr(content, key, None)
         if candidate is None and isinstance(content, dict):
             candidate = content.get(key)
@@ -276,16 +315,16 @@ def _extract_text_from_content(
                 if formatted:
                     return formatted
             try:
-                return json.dumps(candidate, ensure_ascii=False, separators=(',', ':'))
+                return json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
             except Exception:
                 return str(candidate)
 
-    json_schema = getattr(content, 'json_schema', None)
+    json_schema = getattr(content, "json_schema", None)
     if json_schema is None and isinstance(content, dict):
-        json_schema = content.get('json_schema')
+        json_schema = content.get("json_schema")
     if isinstance(json_schema, Mapping):
         _store(json_schema)
-        for key in ('parsed', 'data'):
+        for key in ("parsed", "data"):
             candidate = json_schema.get(key)
             if isinstance(candidate, Mapping):
                 if _is_noise_mapping(candidate):
@@ -300,305 +339,10 @@ def _extract_text_from_content(
 
     return None
 
-StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
-def _settings() -> AppSettings:
-    return get_settings()
-
-
-__all__ = [
-    "ask_legal",
-    "ask_legal_stream",
-    "format_legal_response_text",
-    "get_async_openai_client",
-    "shared_openai_client",
-    "close_async_openai_client",
-]
-
-
-def _get_env_float(name: str, default: float) -> float:
-    settings = _settings()
-    raw = settings.get_str(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw)
-        if value <= 0:
-            raise ValueError
-        return value
-    except ValueError:
-        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
-        return default
-
-
-def _get_env_int(name: str, default: int) -> int:
-    settings = _settings()
-    raw = settings.get_str(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw)
-        if value <= 0:
-            raise ValueError
-        return value
-    except ValueError:
-        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
-        return default
-
-
-
-
-def _get_env_non_negative_int(name: str, default: int) -> int:
-    settings = _settings()
-    raw = settings.get_str(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw)
-        if value < 0:
-            raise ValueError
-        return value
-    except ValueError:
-        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
-        return default
-
-
-def _resolve_proxy_url() -> str | None:
-    settings = _settings()
-    proxy = settings.get_str("OPENAI_HTTP_PROXY") or settings.get_str("OPENAI_PROXY")
-    if not proxy:
-        return None
-    proxy = proxy.strip()
-    if not proxy:
-        return None
-    if '://' not in proxy:
-        proxy = f"http://{proxy}"
-
-    user = settings.get_str("OPENAI_PROXY_USER")
-    password = settings.get_str("OPENAI_PROXY_PASSWORD") or settings.get_str("OPENAI_PROXY_PASS")
-    if user and password and '@' not in proxy:
-        parsed = urlparse(proxy)
-        netloc = parsed.netloc or parsed.path
-        netloc = netloc.lstrip('@')
-        credentials = f"{quote(user.strip(), safe='')}:{quote(password.strip(), safe='')}"
-        proxy = parsed._replace(netloc=f"{credentials}@{netloc}").geturl()
-    return proxy
-
-
-def _build_http_client() -> httpx.AsyncClient:
-    timeout_total = _get_env_float("OPENAI_HTTP_TIMEOUT", 600.0)
-    connect_timeout = _get_env_float("OPENAI_HTTP_CONNECT_TIMEOUT", min(timeout_total, 15.0))
-    read_timeout = _get_env_float("OPENAI_HTTP_READ_TIMEOUT", timeout_total)
-    write_timeout = _get_env_float("OPENAI_HTTP_WRITE_TIMEOUT", timeout_total)
-    pool_timeout = _get_env_float("OPENAI_HTTP_POOL_TIMEOUT", min(connect_timeout, 10.0))
-
-    timeout = httpx.Timeout(
-        timeout_total,
-        connect=connect_timeout,
-        read=read_timeout,
-        write=write_timeout,
-        pool=pool_timeout,
-    )
-
-    limits = httpx.Limits(
-        max_connections=_get_env_int("OPENAI_HTTP_MAX_CONNECTIONS", 20),
-        max_keepalive_connections=_get_env_int("OPENAI_HTTP_MAX_KEEPALIVE", 10),
-    )
-
-    proxy = _resolve_proxy_url()
-    client_kwargs: dict[str, Any] = {
-        'timeout': timeout,
-        'limits': limits,
-    }
-    if proxy:
-        client_kwargs['proxies'] = proxy
-
-    verify = _settings().get_str("OPENAI_CA_BUNDLE")
-    if verify:
-        client_kwargs['verify'] = verify
-
-    return httpx.AsyncClient(**client_kwargs)
-
-
-async def _create_async_client() -> AsyncOpenAI:
-    settings = _settings()
-    api_key = (
-        settings.openai_api_key
-        or settings.get_str("OPENAI_KEY")
-        or settings.get_str("AZURE_OPENAI_KEY")
-        or ""
-    ).strip()
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY environment variable is required")
-
-    base_url = (
-        settings.get_str("OPENAI_BASE_URL")
-        or settings.get_str("OPENAI_API_BASE")
-        or settings.get_str("AZURE_OPENAI_ENDPOINT")
-    )
-    organization = (
-        settings.get_str("OPENAI_ORGANIZATION")
-        or settings.get_str("OPENAI_ORG_ID")
-    )
-    project = settings.get_str("OPENAI_PROJECT")
-
-    http_client = _build_http_client()
-    max_retries = _get_env_non_negative_int("OPENAI_MAX_RETRIES", 1)
-    client_kwargs: dict[str, Any] = {
-        'api_key': api_key,
-        'http_client': http_client,
-        'max_retries': max_retries,
-    }
-    if base_url:
-        client_kwargs['base_url'] = base_url.rstrip('/')
-    if organization:
-        client_kwargs['organization'] = organization
-    if project:
-        client_kwargs['project'] = project
-
-    try:
-        return AsyncOpenAI(**client_kwargs)
-    except Exception:
-        await http_client.aclose()
-        raise
-
-
-async def get_async_openai_client() -> AsyncOpenAI:
-    """Return a shared AsyncOpenAI client instance."""
-    global _shared_async_client
-
-    client = _shared_async_client
-    if client is not None:
-        return client
-
-    async with _client_lock:
-        client = _shared_async_client
-        if client is None:
-            client = await _create_async_client()
-            _shared_async_client = client
-        return client
-
-
-@asynccontextmanager
-async def shared_openai_client() -> AsyncIterator[AsyncOpenAI]:
-    """Async context manager yielding the shared AsyncOpenAI client."""
-    client = await get_async_openai_client()
-    try:
-        yield client
-    finally:
-        # The shared client is retained for reuse; shutdown occurs separately.
-        pass
-
-
-async def close_async_openai_client() -> None:
-    """Close the shared AsyncOpenAI client if it was created."""
-    global _shared_async_client
-
-    client_to_close: AsyncOpenAI | None = None
-    async with _client_lock:
-        client_to_close = _shared_async_client
-        _shared_async_client = None
-
-    if client_to_close is None:
-        return
-
-    try:
-        await client_to_close.close()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to close OpenAI client: %s", exc)
-
-
-
-async def ask_legal(
-    system_prompt: str,
-    user_text: str,
-    *,
-    attachments: Sequence[QuestionAttachment] | None = None,
-    use_schema: bool = True,
-    response_schema: Mapping[str, Any] | None = None,
-    enable_web: bool | None = None,
-) -> dict[str, Any]:
-    """Public wrapper used by OpenAIService for non-streaming replies."""
-    return await _ask_legal_internal(
-        system_prompt,
-        user_text,
-        stream=False,
-        attachments=attachments,
-        use_schema=use_schema,
-        response_schema=response_schema,
-        enable_web=enable_web,
-    )
-
-
-async def ask_legal_stream(
-    system_prompt: str,
-    user_text: str,
-    callback: StreamCallback | None = None,
-    *,
-    attachments: Sequence[QuestionAttachment] | None = None,
-    use_schema: bool = True,
-    response_schema: Mapping[str, Any] | None = None,
-    enable_web: bool | None = None,
-) -> dict[str, Any]:
-    """Public wrapper that enables streaming responses through a callback."""
-    return await _ask_legal_internal(
-        system_prompt,
-        user_text,
-        stream=True,
-        callback=callback,
-        attachments=attachments,
-        use_schema=use_schema,
-        response_schema=response_schema,
-        enable_web=enable_web,
-    )
-
-
-LEGAL_RESPONSE_SCHEMA = {
-    "name": "legal_response",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "Short summary for the user",
-            },
-            "legal_basis": {
-                "type": "array",
-                "description": "List of cited legal sources with references",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "reference": {
-                            "type": "string",
-                            "description": "For example: Civil Code, Article 432",
-                        },
-                        "explanation": {
-                            "type": "string",
-                            "description": "Why the norm is applicable",
-                        },
-                    },
-                    "required": ["reference"],
-                    "additionalProperties": False,
-                },
-            },
-            "analysis": {
-                "type": "string",
-                "description": "Key reasoning and conclusions",
-            },
-            "risks": {
-                "type": "array",
-                "description": "Potential risks or alternative interpretations",
-                "items": {"type": "string"},
-            },
-            "disclaimer": {
-                "type": "string",
-                "description": "Disclaimer that the answer is informational",
-            },
-        },
-        "required": ["summary", "legal_basis", "analysis", "disclaimer"],
-        "additionalProperties": False,
-    },
-}
+# --------------------------------------------------------------------------------------
+# Telegram HTML formatter
+# --------------------------------------------------------------------------------------
 
 class _TelegramHTMLFormatter(HTMLParser):
     """Convert model output into Telegram-compatible HTML."""
@@ -788,8 +532,7 @@ class _TelegramHTMLFormatter(HTMLParser):
         if self.in_summary:
             self.summary_buffer.append(data)
             return
-        escaped = html.escape(data)
-        escaped = escaped.replace("\r\n", "\n").replace("\r", "\n")
+        escaped = html.escape(data).replace("\r\n", "\n").replace("\r", "\n")
         if self.in_pre:
             self.parts.append(escaped)
         else:
@@ -807,9 +550,7 @@ class _TelegramHTMLFormatter(HTMLParser):
         return result.strip()
 
     def _ensure_breaks(self, amount: int) -> None:
-        if amount <= 0:
-            return
-        if not self.parts:
+        if amount <= 0 or not self.parts:
             return
         existing = 0
         for part in reversed(self.parts):
@@ -848,21 +589,287 @@ class _TelegramHTMLFormatter(HTMLParser):
 
 def format_legal_response_text(raw: str) -> str:
     """Convert raw response text to Telegram-compatible HTML."""
-    raw_text = (raw or '').strip()
+    raw_text = (raw or "").strip()
     if not raw_text:
-        return ''
+        return ""
     formatter = _TelegramHTMLFormatter()
     formatter.feed(raw_text)
     formatter.close()
     return formatter.get_text()
 
 
+# --------------------------------------------------------------------------------------
+# OpenAI Async client (shared)
+# --------------------------------------------------------------------------------------
+
+def _get_env_float(name: str, default: float) -> float:
+    settings = _settings()
+    raw = settings.get_str(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
+        return default
+
+
+def _get_env_int(name: str, default: int) -> int:
+    settings = _settings()
+    raw = settings.get_str(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid %s value '%s'; falling back to %s", name, raw, default)
+        return default
+
+
+def _resolve_proxy_url() -> str | None:
+    settings = _settings()
+    proxy = settings.get_str("OPENAI_HTTP_PROXY") or settings.get_str("OPENAI_PROXY")
+    if not proxy:
+        return None
+    proxy = proxy.strip()
+    if not proxy:
+        return None
+    if "://" not in proxy:
+        proxy = f"http://{proxy}"
+
+    user = settings.get_str("OPENAI_PROXY_USER")
+    password = settings.get_str("OPENAI_PROXY_PASSWORD") or settings.get_str("OPENAI_PROXY_PASS")
+    if user and password and "@" not in proxy:
+        parsed = urlparse(proxy)
+        netloc = parsed.netloc or parsed.path
+        netloc = netloc.lstrip("@")
+        credentials = f"{quote(user.strip(), safe='')}:{quote(password.strip(), safe='')}"
+        proxy = parsed._replace(netloc=f"{credentials}@{netloc}").geturl()
+    return proxy
+
+
+def _build_http_client() -> httpx.AsyncClient:
+    timeout_total = _get_env_float("OPENAI_HTTP_TIMEOUT", 600.0)
+    connect_timeout = _get_env_float("OPENAI_HTTP_CONNECT_TIMEOUT", min(timeout_total, 15.0))
+    read_timeout = _get_env_float("OPENAI_HTTP_READ_TIMEOUT", timeout_total)
+    write_timeout = _get_env_float("OPENAI_HTTP_WRITE_TIMEOUT", timeout_total)
+    pool_timeout = _get_env_float("OPENAI_HTTP_POOL_TIMEOUT", min(connect_timeout, 10.0))
+
+    timeout = httpx.Timeout(
+        timeout_total,
+        connect=connect_timeout,
+        read=read_timeout,
+        write=write_timeout,
+        pool=pool_timeout,
+    )
+
+    limits = httpx.Limits(
+        max_connections=_get_env_int("OPENAI_HTTP_MAX_CONNECTIONS", 20),
+        max_keepalive_connections=_get_env_int("OPENAI_HTTP_MAX_KEEPALIVE", 10),
+    )
+
+    proxy = _resolve_proxy_url()
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "limits": limits}
+    if proxy:
+        client_kwargs["proxies"] = proxy
+
+    verify = _settings().get_str("OPENAI_CA_BUNDLE")
+    if verify:
+        client_kwargs["verify"] = verify
+
+    return httpx.AsyncClient(**client_kwargs)
+
+
+async def _create_async_client() -> AsyncOpenAI:
+    settings = _settings()
+    api_key = (
+        settings.openai_api_key
+        or settings.get_str("OPENAI_KEY")
+        or settings.get_str("AZURE_OPENAI_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY environment variable is required")
+
+    base_url = (
+        settings.get_str("OPENAI_BASE_URL")
+        or settings.get_str("OPENAI_API_BASE")
+        or settings.get_str("AZURE_OPENAI_ENDPOINT")
+    )
+    organization = settings.get_str("OPENAI_ORGANIZATION") or settings.get_str("OPENAI_ORG_ID")
+    project = settings.get_str("OPENAI_PROJECT")
+
+    http_client = _build_http_client()
+    max_retries = _get_env_non_negative_int("OPENAI_MAX_RETRIES", 1)
+    client_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "http_client": http_client,
+        "max_retries": max_retries,
+    }
+    if base_url:
+        client_kwargs["base_url"] = base_url.rstrip("/")
+    if organization:
+        client_kwargs["organization"] = organization
+    if project:
+        client_kwargs["project"] = project
+
+    try:
+        return AsyncOpenAI(**client_kwargs)
+    except Exception:
+        await http_client.aclose()
+        raise
+
+
+async def get_async_openai_client() -> AsyncOpenAI:
+    """Return a shared AsyncOpenAI client instance."""
+    global _shared_async_client
+
+    client = _shared_async_client
+    if client is not None:
+        return client
+
+    async with _client_lock:
+        client = _shared_async_client
+        if client is None:
+            client = await _create_async_client()
+            _shared_async_client = client
+        return client
+
+
+@asynccontextmanager
+async def shared_openai_client() -> AsyncIterator[AsyncOpenAI]:
+    """Async context manager yielding the shared AsyncOpenAI client."""
+    client = await get_async_openai_client()
+    try:
+        yield client
+    finally:
+        pass  # общий клиент закрываем отдельно
+
+
+async def close_async_openai_client() -> None:
+    """Close the shared AsyncOpenAI client if it was created."""
+    global _shared_async_client
+
+    client_to_close: AsyncOpenAI | None = None
+    async with _client_lock:
+        client_to_close = _shared_async_client
+        _shared_async_client = None
+
+    if client_to_close is None:
+        return
+
+    try:
+        await client_to_close.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to close OpenAI client: %s", exc)
+
+
+# --------------------------------------------------------------------------------------
+# Public API (non-stream / stream)
+# --------------------------------------------------------------------------------------
+
+LEGAL_RESPONSE_SCHEMA = {
+    "name": "legal_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": "Short summary for the user"},
+            "legal_basis": {
+                "type": "array",
+                "description": "List of cited legal sources with references",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "reference": {"type": "string", "description": "E.g. Civil Code, Art. 432"},
+                        "explanation": {"type": "string", "description": "Why applicable"},
+                    },
+                    "required": ["reference"],
+                    "additionalProperties": False,
+                },
+            },
+            "analysis": {"type": "string", "description": "Key reasoning and conclusions"},
+            "risks": {"type": "array", "items": {"type": "string"}},
+            "disclaimer": {"type": "string"},
+        },
+        "required": ["summary", "legal_basis", "analysis", "disclaimer"],
+        "additionalProperties": False,
+    },
+}
+
+
+async def ask_legal(
+    system_prompt: str,
+    user_text: str,
+    *,
+    attachments: Sequence[QuestionAttachment] | None = None,
+    use_schema: bool = True,
+    response_schema: Mapping[str, Any] | None = None,
+    enable_web: bool | None = None,
+) -> dict[str, Any]:
+    """Public wrapper used by OpenAIService for non-streaming replies."""
+    return await _ask_legal_internal(
+        system_prompt,
+        user_text,
+        stream=False,
+        attachments=attachments,
+        use_schema=use_schema,
+        response_schema=response_schema,
+        enable_web=enable_web,
+    )
+
+
+async def ask_legal_stream(
+    system_prompt: str,
+    user_text: str,
+    callback: StreamCallback | None = None,
+    *,
+    attachments: Sequence[QuestionAttachment] | None = None,
+    use_schema: bool = True,
+    response_schema: Mapping[str, Any] | None = None,
+    enable_web: bool | None = None,
+) -> dict[str, Any]:
+    """Public wrapper that enables streaming responses through a callback."""
+    return await _ask_legal_internal(
+        system_prompt,
+        user_text,
+        stream=True,
+        callback=callback,
+        attachments=attachments,
+        use_schema=use_schema,
+        response_schema=response_schema,
+        enable_web=enable_web,
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Core invocation (Responses API)
+# --------------------------------------------------------------------------------------
+
+def _settings_dict() -> dict[str, Any]:
+    s = _settings()
+    return {
+        "model": (s.get_str("OPENAI_MODEL") or "gpt-5").strip(),
+        "max_output_tokens": s.get_int("MAX_OUTPUT_TOKENS", 4096),
+        "verbosity": (s.get_str("OPENAI_VERBOSITY") or "medium").lower(),
+        "effort": (s.get_str("OPENAI_REASONING_EFFORT") or "medium").lower(),
+        "temperature": s.get_float("OPENAI_TEMPERATURE", 0.15),
+        "top_p": s.get_float("OPENAI_TOP_P", 0.3),
+        "disable_web": s.get_bool("DISABLE_WEB", False),
+        "skip_model_check": s.get_bool("OPENAI_SKIP_MODEL_CHECK", False),
+    }
+
 
 async def _ask_legal_internal(
     system_prompt: str,
     user_text: str,
     stream: bool = False,
-    callback=None,
+    callback: StreamCallback | None = None,
     attachments: Sequence[QuestionAttachment] | None = None,
     *,
     use_schema: bool = True,
@@ -870,13 +877,13 @@ async def _ask_legal_internal(
     enable_web: bool | None = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
-    settings = _settings()
-    model = (settings.get_str("OPENAI_MODEL") or "gpt-5").strip()
-    max_out = settings.get_int("MAX_OUTPUT_TOKENS", 4096)
-    verb = (settings.get_str("OPENAI_VERBOSITY") or "medium").lower()
-    effort = (settings.get_str("OPENAI_REASONING_EFFORT") or "medium").lower()
-    temperature = settings.get_float("OPENAI_TEMPERATURE", 0.15)
-    top_p = settings.get_float("OPENAI_TOP_P", 0.3)
+    cfg = _settings_dict()
+    model = cfg["model"]
+    max_out = cfg["max_output_tokens"]
+    verb = cfg["verbosity"]
+    effort = cfg["effort"]
+    temperature = cfg["temperature"]
+    top_p = cfg["top_p"]
 
     user_message = _build_user_message_content(user_text, attachments)
 
@@ -892,92 +899,58 @@ async def _ask_legal_internal(
     }
     sampling_payload = {"temperature": temperature, "top_p": top_p}
 
-    model_caps = MODEL_CAPABILITIES.setdefault(model, {})
-    inferred_caps = _infer_model_caps(model)
-    for key, value in inferred_caps.items():
-        model_caps[key] = value
-    include_sampling = model_caps.get("supports_sampling", True)
+    # model caps
+    caps = MODEL_CAPABILITIES.setdefault(model, {})
+    caps.update(_infer_model_caps(model))
+    include_sampling = caps.get("supports_sampling", True)
 
-    web_allowed_global = not settings.get_bool("DISABLE_WEB", False)
-    if enable_web is None:
-        web_enabled = web_allowed_global
-    else:
-        web_enabled = bool(enable_web) and web_allowed_global
+    # tools/web flag
+    web_allowed_global = not cfg["disable_web"]
+    web_enabled = (bool(enable_web) if enable_web is not None else web_allowed_global) and web_allowed_global
     if web_enabled:
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
-    schema_payload = response_schema if response_schema is not None else LEGAL_RESPONSE_SCHEMA
-    schema_requested = use_schema and schema_payload is not None
+    # schema
+    schema_payload = response_schema or LEGAL_RESPONSE_SCHEMA
+    schema_requested = bool(use_schema and schema_payload)
+    schema_supported = True if schema_requested else False
 
     async with shared_openai_client() as oai:
-        if schema_requested:
-            stored_schema = model_caps.get("supports_schema")
-            if stored_schema is None:
-                schema_supported = True
-                model_caps["supports_schema"] = schema_supported
-            else:
-                schema_supported = stored_schema
-        else:
-            schema_supported = False
-
-        def build_attempts(
-            include_schema: bool,
-            include_sampling_params: bool,
-            use_response_format: bool,
-        ) -> list[dict[str, Any]]:
-            payload_base: dict[str, Any] = {**base_core}
-            text_config = dict(base_core.get("text") or {})
-            extra_body = dict(payload_base.get("extra_body") or {})
-
-            if include_schema and schema_payload:
-                if use_response_format:
-                    extra_body["response_format"] = {
-                        "type": "json_schema",
-                        "json_schema": schema_payload,
-                    }
-                else:
-                    text_config["format"] = {
-                        "type": "json_schema",
-                        "json_schema": schema_payload,
-                    }
-
-            if extra_body:
-                payload_base["extra_body"] = extra_body
-            if text_config:
-                payload_base["text"] = text_config
-            if include_sampling_params:
-                payload_base |= sampling_payload
-
-            with_tools = payload_base
-            without_tools = {k: v for k, v in payload_base.items() if k != "tools"}
-            boosted = without_tools | {"max_output_tokens": max_out * 2}
-            return [with_tools, without_tools, boosted]
-
-        supports_response_format = (
-            model_caps.get("supports_response_format", True) if schema_supported else False
-        )
-        attempts = build_attempts(
-            include_schema=schema_supported,
-            include_sampling_params=include_sampling,
-            use_response_format=supports_response_format,
-        )
-
-        last_err = None
-        if model not in _VALIDATED_MODELS:
-            if not settings.get_bool("OPENAI_SKIP_MODEL_CHECK", False):
-                for i in range(2):
-                    try:
-                        await oai.models.retrieve(model)
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = str(e)
-                        if i == 1:
-                            return {"ok": False, "error": last_err}
-                        await asyncio.sleep(0.6)
+        # лёгкая валидация модели (1–2 попытки)
+        if model not in _VALIDATED_MODELS and not cfg["skip_model_check"]:
+            last_err = None
+            for i in range(2):
+                try:
+                    await oai.models.retrieve(model)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = str(e)
+                    if i == 1:
+                        return {"ok": False, "error": last_err}
+                    await asyncio.sleep(0.6)
             _VALIDATED_MODELS.add(model)
 
+        def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
+            payload_base: dict[str, Any] = {**base_core}
+            # response_format — В КОРНЕ payload
+            if include_schema and schema_payload:
+                payload_base["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": schema_payload,
+                }
+            if include_sampling_params:
+                payload_base |= sampling_payload
+            # варианты: (с tools), (без tools), «boosted» на всякий случай
+            with_tools = payload_base
+            without_tools = {k: v for k, v in payload_base.items() if k != "tools" and k != "tool_choice"}
+            boosted = without_tools | {"max_output_tokens": max_out * 2}
+            return [with_tools, without_tools, boosted] if "tools" in payload_base else [without_tools, boosted]
+
+        attempts = build_attempts(schema_supported, include_sampling)
+
         structured_payload: dict[str, Any] | None = None
+        last_err: str | None = None
 
         while True:
             retry_payload = False
@@ -998,7 +971,6 @@ async def _ask_legal_internal(
                                         piece = delta.get("text") or ""
                                     if not piece:
                                         piece = getattr(event, "output_text", "") or ""
-
                                     if piece:
                                         accumulated_text += piece
                                         try:
@@ -1008,24 +980,19 @@ async def _ask_legal_internal(
                                         except Exception as cb_err:
                                             logger.warning("Callback error during streaming: %s", cb_err)
 
-                                if etype == "response.completed":
-                                    continue
-
                             final = await s.get_final_response()
                             usage_info = getattr(final, "usage", None)
                             text = getattr(final, "output_text", None)
                             items = getattr(final, "output", []) or []
                             structured_collector: list[Mapping[str, Any]] = []
+
+                            # собрать текст, если нет output_text
                             if not text:
                                 chunks: list[str] = []
                                 for it in items:
-                                    contents = []
-                                    if hasattr(it, "content") and getattr(it, "content"):
-                                        contents = getattr(it, "content")
-                                    elif isinstance(it, dict):
-                                        contents = it.get("content") or []
+                                    contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
                                     before = len(chunks)
-                                    for c in contents:
+                                    for c in contents or []:
                                         extracted = _extract_text_from_content(c, structured_collector)
                                         if extracted:
                                             chunks.append(extracted)
@@ -1035,32 +1002,24 @@ async def _ask_legal_internal(
                                             chunks.append(extracted_item)
                                 text = "\n\n".join(chunks) if chunks else ""
                             else:
+                                # всё равно выгребем возможные json куски для structured
                                 for it in items:
-                                    contents = []
-                                    if hasattr(it, "content") and getattr(it, "content"):
-                                        contents = getattr(it, "content")
-                                    elif isinstance(it, dict):
-                                        contents = it.get("content") or []
+                                    contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
                                     if contents:
                                         for c in contents:
                                             _extract_text_from_content(c, structured_collector)
                                     else:
                                         _extract_text_from_content(it, structured_collector)
+
                             if not structured_payload and structured_collector:
                                 structured_payload = structured_collector[0]
 
                             final_raw = (text or accumulated_text or "").strip()
                             finish_reasons = _collect_finish_reasons(items)
                             if logger.isEnabledFor(logging.DEBUG):
-                                logger.debug(
-                                    "OpenAI finish_reason=%s usage=%s",
-                                    finish_reasons or "n/a",
-                                    usage_info,
-                                )
-                                logger.debug(
-                                    "OpenAI raw response (stream): %s",
-                                    _truncate_for_log(final_raw),
-                                )
+                                logger.debug("OpenAI finish_reason=%s usage=%s", finish_reasons or "n/a", usage_info)
+                                logger.debug("OpenAI raw response (stream): %s", _truncate_for_log(final_raw))
+
                             formatted_final = _clean_response_text(final_raw)
                             if callback and formatted_final:
                                 try:
@@ -1082,56 +1041,44 @@ async def _ask_legal_internal(
                             last_err = "empty_response"
                             continue
 
+                    # non-stream
                     resp = await oai.responses.create(**payload)
                     text = getattr(resp, "output_text", None)
                     items = getattr(resp, "output", []) or []
+                    usage_info = getattr(resp, "usage", None)
                     structured_collector: list[Mapping[str, Any]] = []
+
                     if items:
                         for it in items:
-                            contents = []
-                            if hasattr(it, "content") and getattr(it, "content"):
-                                contents = getattr(it, "content")
-                            elif isinstance(it, dict):
-                                contents = it.get("content") or []
+                            contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
                             if contents:
                                 for c in contents:
                                     _extract_text_from_content(c, structured_collector)
                             else:
                                 _extract_text_from_content(it, structured_collector)
+
                     if not structured_payload and structured_collector:
                         structured_payload = structured_collector[0]
+
                     if text and text.strip():
                         raw = text.strip()
                         finish_reasons = _collect_finish_reasons(items)
-                        usage_info = getattr(resp, "usage", None)
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(
-                                "OpenAI finish_reason=%s usage=%s",
-                                finish_reasons or "n/a",
-                                usage_info,
-                            )
+                            logger.debug("OpenAI finish_reason=%s usage=%s", finish_reasons or "n/a", usage_info)
                             logger.debug("OpenAI raw response: %s", _truncate_for_log(raw))
                         cleaned = _clean_response_text(raw)
                         if not cleaned:
-                            logger.warning("OpenAI response text contained only auxiliary events; trying next payload option")
+                            logger.warning("Response contained only auxiliary events; trying next payload")
                             last_err = "empty_response"
                             continue
-                        return {
-                            "ok": True,
-                            "text": cleaned,
-                            "usage": usage_info,
-                            "structured": structured_payload,
-                        }
+                        return {"ok": True, "text": cleaned, "usage": usage_info, "structured": structured_payload}
 
+                    # join chunks if no output_text
                     chunks: list[str] = []
                     for it in items:
-                        contents = []
-                        if hasattr(it, "content") and getattr(it, "content"):
-                            contents = getattr(it, "content")
-                        elif isinstance(it, dict):
-                            contents = it.get("content") or []
+                        contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
                         before = len(chunks)
-                        for c in contents:
+                        for c in contents or []:
                             extracted = _extract_text_from_content(c, structured_collector)
                             if extracted:
                                 chunks.append(extracted)
@@ -1139,122 +1086,56 @@ async def _ask_legal_internal(
                             extracted_item = _extract_text_from_content(it, structured_collector)
                             if extracted_item:
                                 chunks.append(extracted_item)
+
                     if chunks:
                         joined = "\n\n".join(chunks).strip()
                         finish_reasons = _collect_finish_reasons(items)
-                        usage_info = getattr(resp, "usage", None)
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(
-                                "OpenAI finish_reason=%s usage=%s",
-                                finish_reasons or "n/a",
-                                usage_info,
-                            )
+                            logger.debug("OpenAI finish_reason=%s usage=%s", finish_reasons or "n/a", usage_info)
                             logger.debug("OpenAI raw response (joined): %s", _truncate_for_log(joined))
                         cleaned_joined = _clean_response_text(joined)
                         if not cleaned_joined:
-                            logger.warning("OpenAI response chunks contained only auxiliary events; trying next payload option")
+                            logger.warning("Joined chunks were auxiliary only; trying next payload")
                             last_err = "empty_response"
                             continue
-                        return {
-                            "ok": True,
-                            "text": cleaned_joined,
-                            "usage": usage_info,
-                            "structured": structured_payload,
-                        }
+                        return {"ok": True, "text": cleaned_joined, "usage": usage_info, "structured": structured_payload}
 
-                    logger.warning("OpenAI response contained no text output; trying next payload option")
+                    logger.warning("OpenAI response contained no text; trying next payload option")
                     last_err = "empty_response"
                     continue
 
                 except TypeError as type_err:
+                    # проблемы совместимости SDK → убираем схему/семплинг и пробуем снова
                     message = str(type_err)
-                    schema_payload_used = (
-                        schema_requested
-                        and schema_supported
-                        and (
-                            (
-                                isinstance(payload.get("text"), Mapping)
-                                and isinstance(payload["text"].get("format"), Mapping)
-                            )
-                            or (
-                                isinstance(payload.get("extra_body"), Mapping)
-                                and isinstance(payload["extra_body"].get("response_format"), Mapping)
-                            )
-                        )
-                    )
-                    if schema_payload_used and any(token in message for token in ("format", "json_schema")):
-                        logger.warning(
-                            "Responses API rejected structured output format; retrying without schema enforcement"
-                        )
+                    if schema_supported and ("json_schema" in message or "response_format" in message or "format" in message):
+                        logger.warning("Responses API rejected structured output; retrying WITHOUT schema")
                         schema_supported = False
-                        if schema_requested:
-                            model_caps["supports_schema"] = False
-                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+                        attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
-                    if include_sampling and any(token in message for token in ("temperature", "top_p")):
-                        logger.warning(
-                            "Responses API rejected sampling parameters; retrying with defaults"
-                        )
+                    if include_sampling and ("temperature" in message or "top_p" in message):
+                        logger.warning("Responses API rejected sampling params; retrying with defaults")
                         include_sampling = False
-                        model_caps["supports_sampling"] = False
-                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
-                        retry_payload = True
-                        break
-                    if supports_response_format and "response_format" in message:
-                        logger.warning(
-                            "Responses API client rejected response_format parameter; retrying with legacy schema embedding"
-                        )
-                        supports_response_format = False
-                        if schema_requested:
-                            model_caps["supports_response_format"] = False
-                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+                        caps["supports_sampling"] = False
+                        attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
                     last_err = message
                     break
+
                 except Exception as e:
                     message = str(e)
-                    schema_payload_used = (
-                        schema_requested
-                        and schema_supported
-                        and (
-                            (
-                                isinstance(payload.get("text"), Mapping)
-                                and isinstance(payload["text"].get("format"), Mapping)
-                            )
-                            or (
-                                isinstance(payload.get("extra_body"), Mapping)
-                                and isinstance(payload["extra_body"].get("response_format"), Mapping)
-                            )
-                        )
-                    )
-                    if schema_payload_used and any(token in message for token in ("json_schema", "format", "structured")):
-                        logger.warning(
-                            "OpenAI API error while using structured output; retrying without schema enforcement"
-                        )
+                    if schema_supported and ("json_schema" in message or "response_format" in message or "format" in message or "structured" in message):
+                        logger.warning("OpenAI API error on structured output; retrying WITHOUT schema")
                         schema_supported = False
-                        if schema_requested:
-                            model_caps["supports_schema"] = False
-                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+                        attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
-                    if include_sampling and any(token in message for token in ("temperature", "top_p")):
-                        logger.warning(
-                            "Responses API rejected sampling parameters; retrying with defaults"
-                        )
+                    if include_sampling and ("temperature" in message or "top_p" in message):
+                        logger.warning("OpenAI API rejected sampling params; retrying with defaults")
                         include_sampling = False
-                        model_caps["supports_sampling"] = False
-                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
-                        retry_payload = True
-                        break
-                    if supports_response_format and "response_format" in message:
-                        logger.warning(
-                            "Responses API rejected response_format parameter; retrying with legacy schema embedding"
-                        )
-                        supports_response_format = False
-                        model_caps["supports_response_format"] = False
-                        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+                        caps["supports_sampling"] = False
+                        attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
                     last_err = message
@@ -1264,3 +1145,13 @@ async def _ask_legal_internal(
             break
 
         return {"ok": False, "error": last_err or "unknown_error", "structured": structured_payload}
+
+
+__all__ = [
+    "ask_legal",
+    "ask_legal_stream",
+    "format_legal_response_text",
+    "get_async_openai_client",
+    "shared_openai_client",
+    "close_async_openai_client",
+]
