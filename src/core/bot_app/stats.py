@@ -36,7 +36,7 @@ DOCUMENT_OPERATION_LABELS: Mapping[str, str] = {
     "document_draft": "✨ Создание юридического документа",
 }
 FEATURE_LABELS: Mapping[str, str] = {
-    "legal_question": "Юридические вопросы",
+    "legal_question": "Обращения к ИИ ассистенту",
     "document_processing": "Работа с документами",
     "judicial_practice": "Судебная практика",
     "document_draft": "Черновики документов",
@@ -453,24 +453,21 @@ async def generate_user_stats_response(
         lines.append(_format_stat_row("  🕐 Активный час", "нет данных"))
 
     lines.extend(["", divider, "", "📋 <b>Типы запросов</b>", ""])
-    if type_stats:
-        top_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)[:5]
-        for req_type, count in top_types:
-            share_pct = (count / period_requests * 100) if period_requests else 0.0
-            label = FEATURE_LABELS.get(req_type, req_type)
-            lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
-    else:
-        lines.append(_format_stat_row("  • Типы", "нет данных"))
+    sorted_types = sorted(type_stats.items(), key=lambda item: item[1], reverse=True)
+    for req_type, count in sorted_types:
+        share_pct = (count / period_requests * 100) if period_requests else 0.0
+        label = FEATURE_LABELS.get(req_type, req_type)
+        lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
 
     if document_breakdown:
-        lines.extend(["", divider, "", "🗂️ <b>Работа с документами</b>", ""])
+        lines.append("")
         sorted_document_types = sorted(
             document_breakdown.items(), key=lambda item: item[1], reverse=True
         )
         for req_type, count in sorted_document_types:
             share_pct = (count / period_requests * 100) if period_requests else 0.0
             label = DOCUMENT_OPERATION_LABELS.get(req_type, FEATURE_LABELS.get(req_type, req_type))
-            lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
+            lines.append(_format_stat_row(f"    ◦ {label}", f"{count} ({share_pct:.0f}%)"))
 
     if last_transaction:
         lines.extend(["", divider, "", "💳 <b>Последний платёж</b>", ""])
