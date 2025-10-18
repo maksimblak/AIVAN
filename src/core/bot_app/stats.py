@@ -36,7 +36,7 @@ DOCUMENT_OPERATION_LABELS: Mapping[str, str] = {
     "document_draft": "✨ Создание юридического документа",
 }
 FEATURE_LABELS: Mapping[str, str] = {
-    "legal_question": "🤖 Обращения к ИИ ассистенту",
+    "legal_question": "🤖 Обращения к ИИвану",
     "document_processing": "📄 Работа с документами",
     "judicial_practice": "⚖️ Судебная практика",
     "document_draft": "📝 Черновики документов",
@@ -468,7 +468,7 @@ async def generate_user_stats_response(
     for req_type, count in sorted_types:
         share_pct = (count / period_requests * 100) if period_requests else 0.0
         label = FEATURE_LABELS.get(req_type, req_type)
-        lines.append(f"  {label} — <b>{count}</b> ({share_pct:.0f}%)")
+        lines.append(f"  • <b>{label}</b> — {count} ({share_pct:.0f}%)")
 
     if document_breakdown:
         sorted_document_types = sorted(
@@ -477,7 +477,7 @@ async def generate_user_stats_response(
         for req_type, count in sorted_document_types:
             share_pct = (count / period_requests * 100) if period_requests else 0.0
             label = DOCUMENT_OPERATION_LABELS.get(req_type, FEATURE_LABELS.get(req_type, req_type))
-            lines.append(f"      ↳ {label} — <b>{count}</b> ({share_pct:.0f}%)")
+            lines.append(f"    ↳ <b>{label}</b> — {count} ({share_pct:.0f}%)")
 
     if last_transaction:
         lines.extend(["", divider, "", "💳 <b>Последний платёж</b>", ""])
