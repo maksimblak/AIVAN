@@ -378,12 +378,10 @@ async def generate_user_stats_response(
             "📈 <b>Активность</b>",
             "",
             _format_stat_row("  📝 Запросов", _format_trend_value(period_requests, previous_requests)),
-            _format_stat_row("  ✅ Успех", f"{success_rate:.1f}% ({period_successful}/{period_requests or 1})"),
             _format_stat_row(
-                "  ⏱️ Среднее время",
+                "  ⏱️ Среднее время ответа",
                 _format_response_time(avg_response_time_ms),
             ),
-            _format_stat_row("  🔢 Токенов", _format_number(period_tokens)),
             "",
         ]
     )
