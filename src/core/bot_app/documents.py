@@ -1412,13 +1412,13 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
                 if details_candidate:
                     parts = [part.strip() for part in details_candidate.split(";") if part.strip()]
                     if len(parts) > 1:
-                        details = "<br>".join(f"— {html_escape(part)}" for part in parts)
+                        details = "\n".join(f"— {html_escape(part)}" for part in parts)
                     else:
                         details = html_escape(details_candidate)
             if heading is None and details is None:
                 blocks.append(f"• {html_escape(text)}")
             elif heading and details:
-                blocks.append(f"• <b>{heading}</b><br>{details}")
+                blocks.append(f"• <b>{heading}</b>\n{details}")
             elif heading:
                 blocks.append(f"• <b>{heading}</b>")
             elif details:
