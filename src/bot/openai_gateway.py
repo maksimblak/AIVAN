@@ -478,9 +478,18 @@ async def ask_legal(
     user_text: str,
     *,
     attachments: Sequence[QuestionAttachment] | None = None,
+    use_schema: bool = True,
+    response_schema: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Public wrapper used by OpenAIService for non-streaming replies."""
-    return await _ask_legal_internal(system_prompt, user_text, stream=False, attachments=attachments)
+    return await _ask_legal_internal(
+        system_prompt,
+        user_text,
+        stream=False,
+        attachments=attachments,
+        use_schema=use_schema,
+        response_schema=response_schema,
+    )
 
 
 async def ask_legal_stream(
@@ -489,10 +498,18 @@ async def ask_legal_stream(
     callback: StreamCallback | None = None,
     *,
     attachments: Sequence[QuestionAttachment] | None = None,
+    use_schema: bool = True,
+    response_schema: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Public wrapper that enables streaming responses through a callback."""
     return await _ask_legal_internal(
-        system_prompt, user_text, stream=True, callback=callback, attachments=attachments
+        system_prompt,
+        user_text,
+        stream=True,
+        callback=callback,
+        attachments=attachments,
+        use_schema=use_schema,
+        response_schema=response_schema,
     )
 
 
@@ -807,6 +824,9 @@ async def _ask_legal_internal(
     stream: bool = False,
     callback=None,
     attachments: Sequence[QuestionAttachment] | None = None,
+    *,
+    use_schema: bool = True,
+    response_schema: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
     settings = _settings()
@@ -840,13 +860,19 @@ async def _ask_legal_internal(
     if not settings.get_bool("DISABLE_WEB", False):
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
+    schema_payload = response_schema if response_schema is not None else LEGAL_RESPONSE_SCHEMA
+    schema_requested = use_schema and schema_payload is not None
+
     async with shared_openai_client() as oai:
-        stored_schema = model_caps.get("supports_schema")
-        if stored_schema is None:
-            schema_supported = True
-            model_caps["supports_schema"] = schema_supported
+        if schema_requested:
+            stored_schema = model_caps.get("supports_schema")
+            if stored_schema is None:
+                schema_supported = True
+                model_caps["supports_schema"] = schema_supported
+            else:
+                schema_supported = stored_schema
         else:
-            schema_supported = stored_schema
+            schema_supported = False
 
         def build_attempts(
             include_schema: bool,
@@ -857,16 +883,16 @@ async def _ask_legal_internal(
             text_config = dict(base_core.get("text") or {})
             extra_body = dict(payload_base.get("extra_body") or {})
 
-            if include_schema:
+            if include_schema and schema_payload:
                 if use_response_format:
                     extra_body["response_format"] = {
                         "type": "json_schema",
-                        "json_schema": LEGAL_RESPONSE_SCHEMA,
+                        "json_schema": schema_payload,
                     }
                 else:
                     text_config["format"] = {
                         "type": "json_schema",
-                        "json_schema": LEGAL_RESPONSE_SCHEMA,
+                        "json_schema": schema_payload,
                     }
 
             if extra_body:
@@ -881,8 +907,14 @@ async def _ask_legal_internal(
             boosted = without_tools | {"max_output_tokens": max_out * 2}
             return [with_tools, without_tools, boosted]
 
-        supports_response_format = model_caps.get("supports_response_format", True)
-        attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
+        supports_response_format = (
+            model_caps.get("supports_response_format", True) if schema_supported else False
+        )
+        attempts = build_attempts(
+            include_schema=schema_supported,
+            include_sampling_params=include_sampling,
+            use_response_format=supports_response_format,
+        )
 
         last_err = None
         if model not in _VALIDATED_MODELS:
@@ -1065,7 +1097,8 @@ async def _ask_legal_internal(
                 except TypeError as type_err:
                     message = str(type_err)
                     schema_payload_used = (
-                        schema_supported
+                        schema_requested
+                        and schema_supported
                         and (
                             (
                                 isinstance(payload.get("text"), Mapping)
@@ -1082,7 +1115,8 @@ async def _ask_legal_internal(
                             "Responses API rejected structured output format; retrying without schema enforcement"
                         )
                         schema_supported = False
-                        model_caps["supports_schema"] = False
+                        if schema_requested:
+                            model_caps["supports_schema"] = False
                         attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break
@@ -1100,7 +1134,8 @@ async def _ask_legal_internal(
                             "Responses API client rejected response_format parameter; retrying with legacy schema embedding"
                         )
                         supports_response_format = False
-                        model_caps["supports_response_format"] = False
+                        if schema_requested:
+                            model_caps["supports_response_format"] = False
                         attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break
@@ -1109,7 +1144,8 @@ async def _ask_legal_internal(
                 except Exception as e:
                     message = str(e)
                     schema_payload_used = (
-                        schema_supported
+                        schema_requested
+                        and schema_supported
                         and (
                             (
                                 isinstance(payload.get("text"), Mapping)
@@ -1126,7 +1162,8 @@ async def _ask_legal_internal(
                             "OpenAI API error while using structured output; retrying without schema enforcement"
                         )
                         schema_supported = False
-                        model_caps["supports_schema"] = False
+                        if schema_requested:
+                            model_caps["supports_schema"] = False
                         attempts = build_attempts(schema_supported, include_sampling, supports_response_format)
                         retry_payload = True
                         break

@@ -394,7 +394,7 @@ class RiskAnalyzer(DocumentProcessor):
                 prompt += f"\n\nУчитывай также пользовательские критерии:\n{criteria_text}\n"
 
             if len(text) <= 12000:
-                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text)
+                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text, use_schema=False)
                 return self._parse_ai_json_payload(resp, method="single", chunks=1)
 
             chunks = TextProcessor.split_into_chunks(
@@ -408,7 +408,7 @@ class RiskAnalyzer(DocumentProcessor):
             summaries: List[str] = []
             for i, (chunk_text, chunk_start, chunk_end) in enumerate(chunks, 1):
                 part = f"(Часть {i}/{len(chunks)}; смещение {chunk_start})\n\n{chunk_text}"
-                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=part)
+                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=part, use_schema=False)
                 payload = self._parse_ai_json_payload(
                     resp,
                     method="chunk",

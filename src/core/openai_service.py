@@ -78,12 +78,13 @@ class OpenAIService:
         *,
         attachments: Sequence[QuestionAttachment] | None = None,
         force_refresh: bool = False,
+        use_schema: bool = True,
     ) -> dict[str, Any]:
         """Запрос к OpenAI с кэшированием и обработкой ошибок."""
         self.total_requests += 1
 
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
-        cache_params = {"schema": "legal_json_v2"}
+        cache_params = {"schema": "legal_json_v2" if use_schema else "raw_json_v1"}
 
         if use_cache:
             try:
@@ -101,7 +102,12 @@ class OpenAIService:
 
         # сеть
         try:
-            response = await oai_ask_legal(system_prompt, user_text, attachments=attachments)
+            response = await oai_ask_legal(
+                system_prompt,
+                user_text,
+                attachments=attachments,
+                use_schema=use_schema,
+            )
 
             # кэшируем только успешный и непустой ответ
             if use_cache and response.get("ok") and response.get("text"):
@@ -149,7 +155,7 @@ class OpenAIService:
 
         # кэш (и псевдострим из кэша)
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
-        cache_params = {"schema": "legal_json_v2"}
+        cache_params = {"schema": "legal_json_v2" if use_schema else "raw_json_v1"}
         if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
@@ -193,6 +199,7 @@ class OpenAIService:
                     user_text,
                     on_delta,
                     attachments=attachments,
+                    use_schema=use_schema,
                 )  # type: ignore[misc]
             except TypeError:
                 if attachments:
@@ -202,6 +209,7 @@ class OpenAIService:
                     system_prompt,
                     user_text,
                     attachments=attachments,
+                    use_schema=use_schema,
                 )
 
             try:
@@ -261,7 +269,12 @@ class OpenAIService:
 
         # фолбэк: обычный запрос + псевдострим кусками
         try:
-            result = await oai_ask_legal(system_prompt, user_text, attachments=attachments)
+            result = await oai_ask_legal(
+                system_prompt,
+                user_text,
+                attachments=attachments,
+                use_schema=use_schema,
+            )
             original_text = str(result.get("text", "") or "")
             formatted_text = format_legal_response_text(original_text)
 

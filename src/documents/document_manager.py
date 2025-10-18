@@ -1099,6 +1099,12 @@ class DocumentManager:
             lines.append("")
             lines.append("<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>")
 
+        meta_notes = [html_escape(str(note or "").strip()) for note in (analysis.get("meta_notes") or []) if str(note or "").strip()]
+        if meta_notes:
+            lines.append("")
+            for note in meta_notes:
+                lines.append(f"<i>{note}</i>")
+
         lines.append("")
         lines.append("<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>")
 
@@ -1269,6 +1275,10 @@ class DocumentManager:
                     "_Ответ модели был усечён; структура восстановлена автоматически — перепроверьте содержание._",
                 ]
             )
+
+        meta_notes = [str(note or "").strip() for note in (analysis.get("meta_notes") or []) if str(note or "").strip()]
+        if meta_notes:
+            lines.extend(["", "## Примечания", *meta_notes])
 
         fallback_raw = str(analysis.get("fallback_raw_text") or "").strip()
         if fallback_raw:
