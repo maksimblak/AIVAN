@@ -986,14 +986,117 @@ class DocumentManager:
             "📎 <b>Формат:</b> DOCX",
         ]
 
+        def _append_paragraph_block(title: str, text: str) -> None:
+            cleaned = text.strip()
+            if not cleaned:
+                return
+            lines.append("")
+            lines.append(f"<b>{title}</b>")
+            for paragraph in re.split(r"\n{2,}", cleaned):
+                paragraph = paragraph.strip()
+                if paragraph:
+                    lines.append(html_escape(paragraph))
+
+        def _append_list_block(title: str, items: list[str], *, icon: str = "•", limit: int | None = None) -> None:
+            cleaned_items = [str(item or "").strip() for item in items if str(item or "").strip()]
+            if not cleaned_items:
+                return
+            overflow = 0
+            if limit is not None and len(cleaned_items) > limit:
+                overflow = len(cleaned_items) - limit
+                cleaned_items = cleaned_items[:limit]
+            lines.append("")
+            lines.append(f"<b>{title}</b>")
+            for entry in cleaned_items:
+                lines.append(f"{icon} {html_escape(entry)}")
+            if overflow:
+                lines.append(f"… ещё {overflow} пункт(ов)")
+
         summary = str(analysis.get("summary") or "").strip()
         if summary:
-            summary_clean = re.sub(r"\s+", " ", summary)
-            if len(summary_clean) > 280:
-                summary_clean = summary_clean[:277].rstrip() + "..."
-            lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(summary_clean)}"])
+            _append_paragraph_block("📝 Кратко:", summary)
 
-        lines.extend(["", "<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>"])
+        parties = analysis.get("parties") or {}
+        party_items: list[str] = []
+        if parties.get("plaintiff"):
+            party_items.append(f"Истец: {parties['plaintiff']}")
+        if parties.get("defendant"):
+            party_items.append(f"Ответчик: {parties['defendant']}")
+        for item in parties.get("other") or []:
+            text = str(item or "").strip()
+            if text:
+                party_items.append(f"Участник: {text}")
+        if party_items:
+            _append_list_block("👥 Стороны", party_items)
+
+        for section_key in (
+            "demands",
+            "legal_basis",
+            "evidence",
+            "strengths",
+            "risks",
+            "missing_elements",
+            "recommendations",
+            "procedural_notes",
+        ):
+            icon, title = _LAWSUIT_SECTION_META[section_key]
+            section_items = analysis.get(section_key) or []
+            _append_list_block(f"{icon} {title}", section_items, limit=8)
+
+        overall_assessment = str(analysis.get("overall_assessment") or "").strip()
+        if overall_assessment:
+            _append_paragraph_block("📊 Общая оценка", overall_assessment)
+
+        risk_highlights = analysis.get("risk_highlights") or []
+        _append_list_block("🚨 Риски и ошибки", risk_highlights, limit=6)
+
+        strategy = analysis.get("strategy") or {}
+        strategy_lines: list[str] = []
+        if strategy.get("success_probability"):
+            strategy_lines.append(f"Вероятность успеха: {strategy['success_probability']}")
+        strategy_lines.extend(strategy.get("actions") or [])
+        if strategy_lines:
+            _append_list_block("🧭 Судебная стратегия", strategy_lines, limit=6)
+
+        case_law_items = analysis.get("case_law") or []
+        formatted_cases: list[str] = []
+        for entry in case_law_items:
+            if not isinstance(entry, Mapping):
+                continue
+            court = str(entry.get("court") or "").strip()
+            year = str(entry.get("year") or "").strip()
+            summary_text = str(entry.get("summary") or "").strip()
+            link = str(entry.get("link") or "").strip()
+            parts: list[str] = []
+            if court and year:
+                parts.append(html_escape(f"{court} ({year})"))
+            elif court:
+                parts.append(html_escape(court))
+            elif year:
+                parts.append(html_escape(year))
+            if summary_text:
+                parts.append(html_escape(summary_text))
+            if link:
+                parts.append(f"Ссылка: {html_escape(link)}")
+            combined = " — ".join(parts)
+            if combined:
+                formatted_cases.append(combined)
+        _append_list_block("📖 Судебная практика", formatted_cases, limit=6)
+
+        improvement_steps = analysis.get("improvement_steps") or []
+        _append_list_block("🔧 Рекомендации по улучшению", improvement_steps, limit=6)
+
+        confidence = str(analysis.get("confidence") or "").strip()
+        if confidence:
+            lines.append("")
+            lines.append(f"<i>Уверенность анализа: {html_escape(confidence)}</i>")
+
+        if data.get("fallback_used"):
+            lines.append("")
+            lines.append("<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>")
+
+        lines.append("")
+        lines.append("<i>💡 Проверьте содержимое и при необходимости внесите правки.</i>")
 
         if data.get("truncated"):
             lines.extend(["", "<i>⚠️ Анализ выполнен по усечённому тексту документа.</i>"])
@@ -1013,14 +1116,10 @@ class DocumentManager:
             lines.append("")
             lines.append(f"<i>🔐 Обезличено фрагментов: {total_masked}</i>")
         for note in notes:
-            if not note:
-                continue
-            lines.append("")
-            lines.append(f"<i>{html_escape(str(note))}</i>")
-
-        if data.get("fallback_used"):
-            lines.append("")
-            lines.append("<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>")
+            note_text = str(note or "").strip()
+            if note_text:
+                lines.append("")
+                lines.append(f"<i>{html_escape(note_text)}</i>")
 
         return "\n".join(lines).strip()
 
