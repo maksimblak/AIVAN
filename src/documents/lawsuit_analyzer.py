@@ -578,16 +578,39 @@ def _build_followup_instruction(missing_sections: list[str], was_truncated: bool
     return "\n".join(parts)
 
 def _build_fallback_markdown(raw_text: str) -> str:
-    """Fallback без печати сырого JSON (если он таки сырой JSON)."""
+    """
+    Сформировать простой Markdown на основе сырого ответа модели.
+    Если это JSON — вытащим хотя бы summary/parties, чтобы не было пустоты.
+    """
     cleaned = TextProcessor.clean_text(raw_text)
     if not cleaned:
         return ""
+
     looks_like_json = cleaned.lstrip().startswith("{") and cleaned.rstrip().endswith("}")
-    lines = ["# Анализ искового заявления", ""]
-    if not looks_like_json:
-        lines += ["## Ответ модели", cleaned.strip(), ""]
-    else:
-        lines += ["## Ответ модели", "(сырой JSON опущен)", ""]
+    if looks_like_json:
+        try:
+            payload, _ = _extract_best_json(cleaned)
+            summary = str(payload.get("summary") or "").strip()
+            parties = payload.get("parties") or {}
+            p_pl = str(parties.get("plaintiff") or "").strip()
+            p_df = str(parties.get("defendant") or "").strip()
+            lines = ["# Анализ искового заявления", ""]
+            lines.append("## Резюме")
+            lines.append(summary or "(резюме не указано)")
+            lines.append("")
+            if p_pl or p_df:
+                lines.append("## Стороны")
+                if p_pl:
+                    lines.append(f"- Истец: {p_pl}")
+                if p_df:
+                    lines.append(f"- Ответчик: {p_df}")
+                lines.append("")
+            lines.append("*(остальные поля не распознаны — показана краткая выжимка из JSON)*")
+            return "\n".join(lines).strip()
+        except Exception:
+            pass
+
+    lines = ["# Анализ искового заявления", "", "## Ответ модели", cleaned.strip(), ""]
     return "\n".join(lines).strip()
 
 # ---------------- Основной процессор ----------------
@@ -727,18 +750,70 @@ class LawsuitAnalyzer(DocumentProcessor):
         else:
             analysis = analysis_candidate or analysis
 
+        def _looks_like_json(s: str) -> bool:
+            s = (s or "").strip()
+            return s.startswith("{") and s.endswith("}")
+
         fallback_used = False
         fallback_markdown = ""
         if not _analysis_has_content(analysis):
-            fallback_text = raw_text.strip()
-            if not fallback_text:
-                raise ProcessingError("Модель вернула пустой ответ, повторите запрос позднее.", "EMPTY_ANALYSIS")
-            cleaned_fallback = TextProcessor.clean_text(fallback_text)
-            summary_fallback = cleaned_fallback[:600]
-            analysis["summary"] = summary_fallback
-            analysis["fallback_raw_text"] = "(скрыт)"
-            fallback_markdown = _build_fallback_markdown(fallback_text)
-            fallback_used = True
+            raw_trim = (raw_text or "").strip()
+            if _looks_like_json(raw_trim):
+                try:
+                    payload2, repaired2 = _extract_best_json(raw_trim)
+                    strategy2 = payload2.get("strategy") or {}
+                    analysis2 = {
+                        "summary": str(payload2.get("summary") or "").strip(),
+                        "parties": {
+                            "plaintiff": str((payload2.get("parties") or {}).get("plaintiff") or "").strip(),
+                            "defendant": str((payload2.get("parties") or {}).get("defendant") or "").strip(),
+                            "other": _clean_list((payload2.get("parties") or {}).get("other")),
+                        },
+                        "demands": _clean_list(payload2.get("demands")),
+                        "legal_basis": _clean_list(payload2.get("legal_basis")),
+                        "evidence": _clean_list(payload2.get("evidence")),
+                        "strengths": _clean_list(payload2.get("strengths")),
+                        "risks": _clean_list(payload2.get("risks")),
+                        "missing_elements": _clean_list(payload2.get("missing_elements")),
+                        "recommendations": _clean_list(payload2.get("recommendations")),
+                        "procedural_notes": _clean_list(payload2.get("procedural_notes")),
+                        "confidence": str(payload2.get("confidence") or "").strip(),
+                        "overall_assessment": str(payload2.get("overall_assessment") or "").strip(),
+                        "risk_highlights": _clean_list(payload2.get("risk_highlights")),
+                        "strategy": {
+                            "success_probability": str(strategy2.get("success_probability") or "").strip(),
+                            "actions": _clean_list(strategy2.get("actions")),
+                        },
+                        "case_law": _normalize_case_law(payload2.get("case_law")),
+                        "improvement_steps": _clean_list(payload2.get("improvement_steps")),
+                    }
+                    if repaired2:
+                        analysis2["structured_payload_repaired"] = True
+
+                    if _analysis_has_content(analysis2):
+                        analysis = analysis2
+                        fallback_used = False
+                        fallback_markdown = ""
+                    else:
+                        cleaned_fallback = TextProcessor.clean_text(raw_trim)
+                        analysis["summary"] = cleaned_fallback[:600]
+                        analysis["fallback_raw_text"] = "(скрыт)"
+                        fallback_markdown = _build_fallback_markdown(raw_trim)
+                        fallback_used = True
+                except Exception:
+                    cleaned_fallback = TextProcessor.clean_text(raw_trim)
+                    analysis["summary"] = cleaned_fallback[:600]
+                    analysis["fallback_raw_text"] = "(скрыт)"
+                    fallback_markdown = _build_fallback_markdown(raw_trim)
+                    fallback_used = True
+            else:
+                cleaned_fallback = TextProcessor.clean_text(raw_trim)
+                if not cleaned_fallback:
+                    raise ProcessingError("Модель вернула пустой ответ, повторите запрос позднее.", "EMPTY_ANALYSIS")
+                analysis["summary"] = cleaned_fallback[:600]
+                analysis["fallback_raw_text"] = cleaned_fallback
+                fallback_markdown = _build_fallback_markdown(raw_trim)
+                fallback_used = True
 
         raw_response_for_storage = raw_text
         if payload_repaired:

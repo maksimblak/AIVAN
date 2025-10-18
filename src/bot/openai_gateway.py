@@ -1071,7 +1071,18 @@ async def _ask_legal_internal(
                             logger.warning("Response contained only auxiliary events; trying next payload")
                             last_err = "empty_response"
                             continue
-                        return {"ok": True, "text": cleaned, "usage": usage_info, "structured": structured_payload}
+                        structured_out = None
+                        if cleaned.lstrip().startswith("{") and cleaned.rstrip().endswith("}"):
+                            try:
+                                structured_out = json.loads(cleaned)
+                            except Exception:
+                                structured_out = None
+                        return {
+                            "ok": True,
+                            "text": cleaned,
+                            "usage": usage_info,
+                            "structured": structured_out or structured_payload,
+                        }
 
                     # join chunks if no output_text
                     chunks: list[str] = []
@@ -1098,7 +1109,18 @@ async def _ask_legal_internal(
                             logger.warning("Joined chunks were auxiliary only; trying next payload")
                             last_err = "empty_response"
                             continue
-                        return {"ok": True, "text": cleaned_joined, "usage": usage_info, "structured": structured_payload}
+                        structured_out = None
+                        if cleaned_joined.lstrip().startswith("{") and cleaned_joined.rstrip().endswith("}"):
+                            try:
+                                structured_out = json.loads(cleaned_joined)
+                            except Exception:
+                                structured_out = None
+                        return {
+                            "ok": True,
+                            "text": cleaned_joined,
+                            "usage": usage_info,
+                            "structured": structured_out or structured_payload,
+                        }
 
                     logger.warning("OpenAI response contained no text; trying next payload option")
                     last_err = "empty_response"
