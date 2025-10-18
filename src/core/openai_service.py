@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 try:
     # базовый запрос (обязателен)
@@ -79,6 +79,8 @@ class OpenAIService:
         attachments: Sequence[QuestionAttachment] | None = None,
         force_refresh: bool = False,
         use_schema: bool = True,
+        response_schema: Mapping[str, Any] | None = None,
+        enable_web: bool | None = None,
     ) -> dict[str, Any]:
         """Запрос к OpenAI с кэшированием и обработкой ошибок."""
         self.total_requests += 1
@@ -139,6 +141,9 @@ class OpenAIService:
         force_refresh: bool = False,
         pseudo_chunk: int = 600,
         attachments: Sequence[QuestionAttachment] | None = None,
+        use_schema: bool = True,
+        response_schema: Mapping[str, Any] | None = None,
+        enable_web: bool | None = None,
     ) -> dict[str, Any]:
         """
         Стрим с кэш-фолбэком. Возвращает финальный dict, а дельты отдает через `callback`.
@@ -200,6 +205,8 @@ class OpenAIService:
                     on_delta,
                     attachments=attachments,
                     use_schema=use_schema,
+                    response_schema=response_schema,
+                    enable_web=enable_web,
                 )  # type: ignore[misc]
             except TypeError:
                 if attachments:
@@ -210,6 +217,8 @@ class OpenAIService:
                     user_text,
                     attachments=attachments,
                     use_schema=use_schema,
+                    response_schema=response_schema,
+                    enable_web=enable_web,
                 )
 
             try:

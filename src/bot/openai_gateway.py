@@ -84,6 +84,42 @@ _NOISE_RESPONSE_TYPES = {
 }
 
 
+def _truncate_for_log(text: str, limit: int = 600) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… [truncated]"
+
+
+def _collect_finish_reasons(output: Any) -> list[str]:
+    reasons: list[str] = []
+    seen: set[str] = set()
+    stack: list[Any] = [output]
+    while stack:
+        item = stack.pop()
+        if item is None:
+            continue
+        if hasattr(item, "finish_reason"):
+            reason = getattr(item, "finish_reason", None)
+            if reason:
+                reason_str = str(reason)
+                if reason_str not in seen:
+                    seen.add(reason_str)
+                    reasons.append(reason_str)
+        if isinstance(item, Mapping):
+            reason = item.get("finish_reason")
+            if reason:
+                reason_str = str(reason)
+                if reason_str not in seen:
+                    seen.add(reason_str)
+                    reasons.append(reason_str)
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple, set)):
+            stack.extend(item)
+    return reasons
+
+
 def _infer_model_caps(model: str) -> dict[str, bool]:
     lower = model.lower()
     caps: dict[str, bool] = {}
@@ -480,6 +516,7 @@ async def ask_legal(
     attachments: Sequence[QuestionAttachment] | None = None,
     use_schema: bool = True,
     response_schema: Mapping[str, Any] | None = None,
+    enable_web: bool | None = None,
 ) -> dict[str, Any]:
     """Public wrapper used by OpenAIService for non-streaming replies."""
     return await _ask_legal_internal(
@@ -489,6 +526,7 @@ async def ask_legal(
         attachments=attachments,
         use_schema=use_schema,
         response_schema=response_schema,
+        enable_web=enable_web,
     )
 
 
@@ -500,6 +538,7 @@ async def ask_legal_stream(
     attachments: Sequence[QuestionAttachment] | None = None,
     use_schema: bool = True,
     response_schema: Mapping[str, Any] | None = None,
+    enable_web: bool | None = None,
 ) -> dict[str, Any]:
     """Public wrapper that enables streaming responses through a callback."""
     return await _ask_legal_internal(
@@ -510,6 +549,7 @@ async def ask_legal_stream(
         attachments=attachments,
         use_schema=use_schema,
         response_schema=response_schema,
+        enable_web=enable_web,
     )
 
 
@@ -827,6 +867,7 @@ async def _ask_legal_internal(
     *,
     use_schema: bool = True,
     response_schema: Mapping[str, Any] | None = None,
+    enable_web: bool | None = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
     settings = _settings()
@@ -857,7 +898,12 @@ async def _ask_legal_internal(
         model_caps[key] = value
     include_sampling = model_caps.get("supports_sampling", True)
 
-    if not settings.get_bool("DISABLE_WEB", False):
+    web_allowed_global = not settings.get_bool("DISABLE_WEB", False)
+    if enable_web is None:
+        web_enabled = web_allowed_global
+    else:
+        web_enabled = bool(enable_web) and web_allowed_global
+    if web_enabled:
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     schema_payload = response_schema if response_schema is not None else LEGAL_RESPONSE_SCHEMA
@@ -1004,7 +1050,17 @@ async def _ask_legal_internal(
                                 structured_payload = structured_collector[0]
 
                             final_raw = (text or accumulated_text or "").strip()
-                            logger.debug("OpenAI raw response (stream): %s", final_raw)
+                            finish_reasons = _collect_finish_reasons(items)
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(
+                                    "OpenAI finish_reason=%s usage=%s",
+                                    finish_reasons or "n/a",
+                                    usage_info,
+                                )
+                                logger.debug(
+                                    "OpenAI raw response (stream): %s",
+                                    _truncate_for_log(final_raw),
+                                )
                             formatted_final = _clean_response_text(final_raw)
                             if callback and formatted_final:
                                 try:
@@ -1046,7 +1102,15 @@ async def _ask_legal_internal(
                         structured_payload = structured_collector[0]
                     if text and text.strip():
                         raw = text.strip()
-                        logger.debug("OpenAI raw response: %s", raw)
+                        finish_reasons = _collect_finish_reasons(items)
+                        usage_info = getattr(resp, "usage", None)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "OpenAI finish_reason=%s usage=%s",
+                                finish_reasons or "n/a",
+                                usage_info,
+                            )
+                            logger.debug("OpenAI raw response: %s", _truncate_for_log(raw))
                         cleaned = _clean_response_text(raw)
                         if not cleaned:
                             logger.warning("OpenAI response text contained only auxiliary events; trying next payload option")
@@ -1055,7 +1119,7 @@ async def _ask_legal_internal(
                         return {
                             "ok": True,
                             "text": cleaned,
-                            "usage": getattr(resp, "usage", None),
+                            "usage": usage_info,
                             "structured": structured_payload,
                         }
 
@@ -1077,7 +1141,15 @@ async def _ask_legal_internal(
                                 chunks.append(extracted_item)
                     if chunks:
                         joined = "\n\n".join(chunks).strip()
-                        logger.debug("OpenAI raw response (joined): %s", joined)
+                        finish_reasons = _collect_finish_reasons(items)
+                        usage_info = getattr(resp, "usage", None)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "OpenAI finish_reason=%s usage=%s",
+                                finish_reasons or "n/a",
+                                usage_info,
+                            )
+                            logger.debug("OpenAI raw response (joined): %s", _truncate_for_log(joined))
                         cleaned_joined = _clean_response_text(joined)
                         if not cleaned_joined:
                             logger.warning("OpenAI response chunks contained only auxiliary events; trying next payload option")
@@ -1086,7 +1158,7 @@ async def _ask_legal_internal(
                         return {
                             "ok": True,
                             "text": cleaned_joined,
-                            "usage": getattr(resp, "usage", None),
+                            "usage": usage_info,
                             "structured": structured_payload,
                         }
 

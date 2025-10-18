@@ -15,6 +15,81 @@ _JSON_RE = re.compile(r"\{[\s\S]*\}")
 
 MAX_INPUT_CHARS = 15_000
 
+LAWSUIT_RESPONSE_SCHEMA: dict[str, Any] = {
+    "name": "lawsuit_analysis",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "parties": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "plaintiff": {"type": "string"},
+                    "defendant": {"type": "string"},
+                    "other": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["plaintiff", "defendant", "other"],
+            },
+            "demands": {"type": "array", "items": {"type": "string"}},
+            "legal_basis": {"type": "array", "items": {"type": "string"}},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "strengths": {"type": "array", "items": {"type": "string"}},
+            "risks": {"type": "array", "items": {"type": "string"}},
+            "missing_elements": {"type": "array", "items": {"type": "string"}},
+            "recommendations": {"type": "array", "items": {"type": "string"}},
+            "procedural_notes": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "string"},
+            "overall_assessment": {"type": "string"},
+            "risk_highlights": {"type": "array", "items": {"type": "string"}},
+            "strategy": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "success_probability": {"type": "string"},
+                    "actions": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["success_probability", "actions"],
+            },
+            "case_law": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "court": {"type": "string"},
+                        "year": {"type": "string"},
+                        "link": {"type": "string"},
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["court", "year", "link", "summary"],
+                },
+            },
+            "improvement_steps": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": [
+            "summary",
+            "parties",
+            "demands",
+            "legal_basis",
+            "evidence",
+            "strengths",
+            "risks",
+            "missing_elements",
+            "recommendations",
+            "procedural_notes",
+            "confidence",
+            "overall_assessment",
+            "risk_highlights",
+            "strategy",
+            "case_law",
+            "improvement_steps",
+        ],
+    },
+}
+
 LAWSUIT_ANALYSIS_SYSTEM_PROMPT = """
 <pre> Ты — ИИ-Иван, юридический ИИ-ассистент. Твоя цель — помогать юристам, снимая с них рутинные задачи и помогая принимать взвешенные решения на основе судебной практики и законодательства. Твоя основная специализация — анализ и проверка исковых заявлений и других процессуальных документов Твоя цель — определить сильные и слабые стороны иска, оценить его перспективу в суде и предложить конкретные пути для усиления позиции. Проверка процессуальных документов проходит по двум критериям Первый критерий “Стратегический” - какой шанс на положительный исход данного дела, и как улучшить свою правовую позицию в заявлении Второй критерий “процессуальный” - проверка на соответствие всем процессуальным нормам и отсутствии ошибок Основные правила твоей работы: 1. Тон общения - Отвечай в дружелюбном, понятном и уважительном тоне, с акцентом на помощь, но при этом сохраняй юридическую формальность 2. Используй структурированные ответы - Разбивай текст на блоки: абзацы, подзаголовки, списки. Ставь много пробелов, чтобы не было больших сплошных блоков текста. - Используй нумерованные и маркированные списки для удобства восприятия. - Используй HTML разметку с ПОДДЕРЖИВАЕМЫМИ TELEGRAM ТЕГАМИ: <b>жирный</b> <i>курсив</i> <u>подчёркнутый</u> <s>зачёркнутый</s> <code>моноширинный</code> <pre>блок кода</pre> <blockquote>цитата</blockquote> <a href="URL">ссылка</a> <tg-spoiler>спойлер</tg-spoiler>
 
@@ -598,8 +673,10 @@ class LawsuitAnalyzer(DocumentProcessor):
             response = await self.openai_service.ask_legal(
                 system_prompt=LAWSUIT_ANALYSIS_SYSTEM_PROMPT,
                 user_text=prompt_body,
-                use_schema=False,
                 force_refresh=(attempt > 1),
+                use_schema=True,
+                response_schema=LAWSUIT_RESPONSE_SCHEMA,
+                enable_web=False,
             )
             if not response.get("ok"):
                 raise ProcessingError(response.get("error") or "Не удалось получить ответ от модели", "OPENAI_ERROR")
