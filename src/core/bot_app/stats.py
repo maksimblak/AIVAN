@@ -154,6 +154,7 @@ def peak_summary(
     *,
     mapping: Mapping[str, str] | None = None,
     limit: int = 3,
+    formatter: Callable[[str], str] | None = None,
 ) -> tuple[str, str]:
     if not counts:
         return "—", "нет данных"
@@ -162,7 +163,13 @@ def peak_summary(
     primary_parts: list[str] = []
     secondary_parts: list[str] = []
     for idx, (raw_key, value) in enumerate(best_keys, start=1):
-        label = mapping.get(raw_key, raw_key) if mapping else raw_key
+        base_label = mapping.get(raw_key, raw_key) if mapping else raw_key
+        label = str(base_label)
+        if formatter:
+            try:
+                label = formatter(label)
+            except Exception:
+                label = str(base_label)
         entry = f"{label} ({value})"
         if idx == 1:
             primary_parts.append(entry)

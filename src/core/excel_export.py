@@ -93,17 +93,13 @@ def build_practice_excel(
     ws_overview.column_dimensions["A"].width = 28
     ws_overview.column_dimensions["B"].width = 120
 
-    ws_cases = wb.create_sheet("Дела")
+    ws_cases = wb.create_sheet("Практика")
     case_headers = [
-        "№",
-        "Название",
-        "Номер дела",
-        "Суд",
-        "Дата",
-        "Регион",
-        "Оценка релевантности",
-        "Ссылка",
-        "Выдержка",
+        "Название / номер / ссылка",
+        "Суть дела / обстоятельства",
+        "Решение / выводы суда",
+        "Нормы, на которые ссылались",
+        "Применимость для текущего запроса",
     ]
     ws_cases.append(case_headers)
     for cell in ws_cases[1]:
@@ -111,38 +107,56 @@ def build_practice_excel(
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     if fragments:
-        for idx, fragment in enumerate(fragments, start=1):
+        for fragment in fragments:
             match = getattr(fragment, "match", None)
             metadata = getattr(match, "metadata", {}) if match else {}
             if not isinstance(metadata, Mapping):
                 metadata = {}
             title = metadata.get("title") or metadata.get("name") or getattr(fragment, "header", "")
             case_number = metadata.get("case_number") or metadata.get("case")
-            court = metadata.get("court")
-            date = metadata.get("date") or metadata.get("decision_date")
-            region = metadata.get("region")
             url = metadata.get("url") or metadata.get("link")
-            score = getattr(match, "score", None)
-            excerpt = getattr(fragment, "excerpt", "")
+            summary = metadata.get("summary") or getattr(fragment, "excerpt", "")
+            decision = metadata.get("decision_summary") or ""
+            norms = metadata.get("norms_summary") or ""
+            if not norms:
+                norm_names = metadata.get("norm_names")
+                if isinstance(norm_names, Sequence):
+                    norms = "\n".join(str(item).strip() for item in norm_names if str(item).strip())
+            applicability = metadata.get("applicability") or ""
+
+            name_parts = [str(title or "").strip()]
+            if case_number:
+                name_parts.append(str(case_number).strip())
+            if url:
+                name_parts.append(str(url).strip())
+            name_cell_value = "\n".join(part for part in name_parts if part)
+
             ws_cases.append(
                 [
-                    idx,
-                    str(title or "").strip(),
-                    str(case_number or "").strip(),
-                    str(court or "").strip(),
-                    str(date or "").strip(),
-                    str(region or "").strip(),
-                    float(score) if isinstance(score, (int, float)) else "",
-                    str(url or "").strip(),
-                    str(excerpt or "").strip(),
+                    name_cell_value,
+                    str(summary or "").strip(),
+                    str(decision or "").strip(),
+                    str(norms or "").strip(),
+                    str(applicability or "").strip(),
                 ]
             )
+            if url:
+                row_idx = ws_cases.max_row
+                link_cell = ws_cases.cell(row=row_idx, column=1)
+                link_cell.hyperlink = url
+                link_cell.style = "Hyperlink"
     else:
-        ws_cases.append([None, "Нет данных по практики", "", "", "", "", "", "", ""])
+        ws_cases.append(["Нет данных по судебной практике", "", "", "", ""])
 
-    for column_letter in ["B", "C", "D", "E", "F", "H", "I"]:
-        ws_cases.column_dimensions[column_letter].width = 40
-    ws_cases.column_dimensions["G"].width = 20
+    column_widths = {
+        "A": 48,
+        "B": 60,
+        "C": 55,
+        "D": 40,
+        "E": 55,
+    }
+    for letter, width in column_widths.items():
+        ws_cases.column_dimensions[letter].width = width
     for row in ws_cases.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")

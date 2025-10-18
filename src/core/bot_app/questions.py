@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -96,6 +96,10 @@ def _prepare_garant_excel_fragments(
         court: str | None = None,
         url: str | None = None,
         metadata_extra: Mapping[str, Any] | None = None,
+        summary: str | None = None,
+        decision: str | None = None,
+        norms: str | None = None,
+        applicability: str | None = None,
     ) -> None:
         if len(fragments) >= max_items or key in seen:
             return
@@ -106,6 +110,10 @@ def _prepare_garant_excel_fragments(
             "court": court or "",
             "url": url or "",
             "link": url or "",
+            "summary": summary or excerpt,
+            "decision_summary": decision or "",
+            "norms_summary": norms or "",
+            "applicability": applicability or "",
         }
         if metadata_extra:
             metadata.update(metadata_extra)
@@ -132,11 +140,18 @@ def _prepare_garant_excel_fragments(
                     else getattr(ref, "url", None)
                 )
                 topic = getattr(ref, "topic", None)
+                norm_names = [
+                    str(getattr(norm, "name", "") or "").strip()
+                    for norm in getattr(item, "norms", []) or []
+                    if str(getattr(norm, "name", "") or "").strip()
+                ]
+                norms_text = "\n".join(norm_names)
                 key = ("sutyazhnik_court", kind_value, topic, url, title)
                 metadata_extra = {
                     "source": "sutyazhnik",
                     "kind": kind_value,
                     "topic": topic,
+                    "norm_names": norm_names,
                 }
                 excerpt = f"{kind_label}: {title}"
                 _add_fragment(
@@ -146,6 +161,10 @@ def _prepare_garant_excel_fragments(
                     court=kind_label,
                     url=url,
                     metadata_extra=metadata_extra,
+                    summary=f"Решение категории «{kind_label}»: {title}",
+                    decision=f"Решение суда ({kind_label}). Ознакомьтесь с выводами по ссылке.",
+                    norms=norms_text,
+                    applicability=f"Анализируйте применимость решения ({kind_label}) к вашему делу.",
                 )
                 if len(fragments) >= max_items:
                     return fragments
@@ -178,6 +197,10 @@ def _prepare_garant_excel_fragments(
                 court=kind_label,
                 url=url,
                 metadata_extra=metadata_extra,
+                summary=f"Нормативный акт для категории «{kind_label}».",
+                decision="Используйте норму при аргументации позиции.",
+                norms=title,
+                applicability="Цитируйте при подготовке ответов и процессуальных документов.",
             )
             if len(fragments) >= max_items:
                 return fragments
@@ -203,17 +226,17 @@ def _prepare_garant_excel_fragments(
             entry = getattr(snippet, "entry", None)
             excerpt_parts: list[str] = []
             if entry is not None:
-                excerpt_parts.append(f"Entry {entry}")
+                excerpt_parts.append(f"Блок {entry}")
             if path:
                 excerpt_parts.append(path)
-            excerpt = "  ".join(excerpt_parts) if excerpt_parts else "   "
+            excerpt = " — ".join(excerpt_parts) if excerpt_parts else "Документ из поиска ГАРАНТ"
             metadata_extra = {
                 "source": "search",
                 "topic": topic,
                 "entry": entry,
             }
         else:
-            excerpt = "   "
+            excerpt = "Документ из поиска ГАРАНТ"
             metadata_extra = {
                 "source": "search",
                 "topic": topic,
@@ -225,6 +248,10 @@ def _prepare_garant_excel_fragments(
             excerpt=excerpt,
             url=url,
             metadata_extra=metadata_extra,
+            summary=excerpt or f"Документ из поиска ГАРАНТ: {title}",
+            decision="Требуется изучить текст решения по ссылке.",
+            norms="",
+            applicability="Используйте документ для расширения практики по теме.",
         )
         if len(fragments) >= max_items:
             break
@@ -264,7 +291,7 @@ async def _collect_question_attachments(message: Message) -> list[QuestionAttach
     if message.photo:
         photo = message.photo[-1]
         if photo.file_size and photo.file_size > QUESTION_ATTACHMENT_MAX_BYTES:
-            raise ValueError("зображение слишком большое. Максимальный размер вложения — 4 МБ.")
+            raise ValueError("Изображение слишком большое. Максимальный размер вложения — 4 МБ.")
 
         file_info = await bot.get_file(photo.file_id)
         file_stream = await bot.download_file(file_info.file_path)
