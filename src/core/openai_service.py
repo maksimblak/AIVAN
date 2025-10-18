@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+"""
+OpenAIService — над gateway: обычные/стримовые запросы, кэш, метрики.
+Правки:
+- Пробрасываем response_schema и enable_web в gateway (строгое json_schema + отключение web-поиска).
+- Разделяем кэш-ключ по флагу web, чтобы не смешивать ответы.
+- В стрим-фолбэке тоже передаём schema/web.
+- Универсальный колбэк (под 1 или 2 аргумента, sync/async).
+"""
+
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, Mapping
 
 try:
     # базовый запрос (обязателен)
@@ -11,7 +20,7 @@ try:
 except Exception as e:
     raise ImportError("Не найден src.bot.openai_gateway.ask_legal") from e
 
-# стриминговый запрос – может отсутствовать в gateway (обрабатываем это)
+# стриминговый запрос – может отсутствовать в gateway
 try:
     from src.bot.openai_gateway import ask_legal_stream as oai_ask_legal_stream  # type: ignore
 except Exception:  # noqa: BLE001
@@ -85,8 +94,12 @@ class OpenAIService:
         """Запрос к OpenAI с кэшированием и обработкой ошибок."""
         self.total_requests += 1
 
+        web_flag = bool(enable_web)
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
-        cache_params = {"schema": "legal_json_v2" if use_schema else "raw_json_v1"}
+        cache_params = {
+            "schema": "legal_json_v2" if use_schema else "raw_json_v1",
+            "web": web_flag,
+        }
 
         if use_cache:
             try:
@@ -109,6 +122,8 @@ class OpenAIService:
                 user_text,
                 attachments=attachments,
                 use_schema=use_schema,
+                response_schema=response_schema,  # <— важно: строгая схема
+                enable_web=web_flag,              # <— важно: явный флаг веб-инструментов
             )
 
             # кэшируем только успешный и непустой ответ
@@ -146,10 +161,10 @@ class OpenAIService:
         enable_web: bool | None = None,
     ) -> dict[str, Any]:
         """
-        Стрим с кэш-фолбэком. Возвращает финальный dict, а дельты отдает через `callback`.
+        Стрим с кэш-фолбэком. Возвращает финальный dict, а дельты отдаёт через `callback`.
 
         Поведение:
-        1) Если в кэше есть готовый ответ — отдаем его и «симулируем стрим» через callback.
+        1) Если в кэше есть готовый ответ — отдаём его и «симулируем стрим» через callback.
         2) Если в gateway есть `ask_legal_stream`:
            - поддерживаем оба варианта: (а) async-генератор дельт; (б) функция с колбэком.
         3) Если стрима нет — обычный запрос + «псевдострим» кусками.
@@ -158,9 +173,14 @@ class OpenAIService:
         self.last_full_text = ""
         parts: list[str] = []
 
+        web_flag = bool(enable_web)
+
         # кэш (и псевдострим из кэша)
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
-        cache_params = {"schema": "legal_json_v2" if use_schema else "raw_json_v1"}
+        cache_params = {
+            "schema": "legal_json_v2" if use_schema else "raw_json_v1",
+            "web": web_flag,
+        }
         if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
@@ -178,9 +198,7 @@ class OpenAIService:
                             await _safe_fire_callback(callback, formatted_text, True)
                         else:
                             for i in range(0, len(formatted_text), pseudo_chunk):
-                                await _safe_fire_callback(
-                                    callback, formatted_text[i : i + pseudo_chunk], False
-                                )
+                                await _safe_fire_callback(callback, formatted_text[i : i + pseudo_chunk], False)
                             await _safe_fire_callback(callback, "", True)
                     self.last_full_text = formatted_text
                     cached = dict(cached)
@@ -206,7 +224,7 @@ class OpenAIService:
                     attachments=attachments,
                     use_schema=use_schema,
                     response_schema=response_schema,
-                    enable_web=enable_web,
+                    enable_web=web_flag,
                 )  # type: ignore[misc]
             except TypeError:
                 if attachments:
@@ -218,7 +236,7 @@ class OpenAIService:
                     attachments=attachments,
                     use_schema=use_schema,
                     response_schema=response_schema,
-                    enable_web=enable_web,
+                    enable_web=web_flag,
                 )
 
             try:
@@ -283,6 +301,8 @@ class OpenAIService:
                 user_text,
                 attachments=attachments,
                 use_schema=use_schema,
+                response_schema=response_schema,  # <— важные пробросы
+                enable_web=web_flag,              # <— важные пробросы
             )
             original_text = str(result.get("text", "") or "")
             formatted_text = format_legal_response_text(original_text)
@@ -300,7 +320,7 @@ class OpenAIService:
             if isinstance(result, dict):
                 result["text"] = formatted_text
 
-            # кэшируем обычным способом (если еще не закэшировано)
+            # кэшируем обычным способом (если ещё не закэшировано)
             if self.cache and self.enable_cache and not attachments and result.get("ok") and result.get("text"):
                 try:
                     await self.cache.cache_response(
@@ -333,7 +353,7 @@ class OpenAIService:
         """
         Высокоуровневый помощник для обработки пользовательского вопроса.
 
-        Позволяет прокинуть системный промт и выбрать стриминговый или обычный сценарий.
+        Позволяет прокинуть системный промпт и выбрать стриминговый или обычный сценарий.
         Параметры `model` и `user_id` зарезервированы для совместимости с существующими
         вызовами и могут использоваться позже для маршрутизации запросов.
         """
@@ -341,7 +361,7 @@ class OpenAIService:
         _ = user_id
 
         if not system_prompt:
-            from src.bot.promt import LEGAL_SYSTEM_PROMPT
+            from src.bot.promt import LEGAL_SYSTEM_PROMPT  # noqa: WPS433 (локальный импорт)
 
             system_prompt = LEGAL_SYSTEM_PROMPT
 
