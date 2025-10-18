@@ -152,7 +152,6 @@ class DocumentDraftStates(StatesGroup):
     asking_details = State()
     generating = State()
 
-
 DOCUMENT_OPERATION_REQUEST_TYPES: dict[str, str] = {
     "summarize": "document_summarize",
     "analyze_risks": "document_analyze_risks",
@@ -2085,6 +2084,7 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 await state.clear()
                 return
 
+            request_type = DOCUMENT_OPERATION_REQUEST_TYPES.get(operation, f"document_{operation}")
             allowed, quota_note = await _ensure_quota(message, feature="document_processing")
             if not allowed:
                 return
@@ -2093,9 +2093,6 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
             request_success = False
             request_error: str | None = None
             request_logged = False
-            user_id = getattr(message.from_user, "id", None)
-            request_type = DOCUMENT_OPERATION_REQUEST_TYPES.get(operation, f"document_{operation}")
-            usage_recorded = False
 
             await state.set_state(DocumentProcessingStates.processing_document)
 
@@ -2109,7 +2106,7 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 request_error = "FILE_TOO_LARGE"
                 await _record_request_stat(
                     message,
-                    request_type="document_processing",
+                    request_type=request_type,
                     started_at=request_started_at,
                     success=False,
                     error_type=request_error,
@@ -2191,12 +2188,6 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     progress_callback=send_progress,
                     **options,
                 )
-                await _record_document_usage(
-                    user_id,
-                    request_type,
-                    success=bool(result.success),
-                )
-                usage_recorded = True
                 await send_progress({"stage": "finalizing", "percent": 90})
 
                 if result.success:
@@ -2273,14 +2264,12 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     reply_markup=reply_markup,
                 )
                 logger.error("Error processing photo %s: %s", file_name, exc, exc_info=True)
-                if not usage_recorded:
-                    await _record_document_usage(user_id, request_type, success=False)
 
             finally:
                 if not request_logged:
                     await _record_request_stat(
                         message,
-                        request_type="document_processing",
+                        request_type=request_type,
                         started_at=request_started_at,
                         success=request_success,
                         error_type=request_error,
@@ -2293,12 +2282,6 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
     except Exception as exc:  # noqa: BLE001
         await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
         logger.error("Error in handle_photo_upload: %s", exc, exc_info=True)
-        if 'request_type' in locals() and not locals().get('usage_recorded', False):
-            await _record_document_usage(
-                getattr(getattr(message, "from_user", None), "id", None),
-                request_type,
-                success=False,
-            )
         await state.clear()
 
 
