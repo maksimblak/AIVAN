@@ -261,64 +261,138 @@ LAWSUIT_ANALYSIS_USER_PROMPT = """
 """.strip()
 
 
-def _extract_first_json(payload: str) -> dict[str, Any]:
+def _repair_truncated_json(payload: str) -> str | None:
+    """Попробовать закрыть незавершённые строки/скобки в усечённом JSON."""
+
+    if not payload:
+        return None
+
+    result: list[str] = []
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+
+    for char in payload:
+        result.append(char)
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "\"":
+                in_string = False
+            continue
+
+        if char == "\"":
+            in_string = True
+            escaped = False
+            continue
+
+        if char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                return None
+            stack.pop()
+
+    if in_string:
+        result.append("\"")
+
+    while stack:
+        result.append(stack.pop())
+
+    repaired = "".join(result)
+    return repaired if repaired != payload else None
+
+
+def _extract_first_json(payload: str) -> tuple[dict[str, Any], bool]:
     """Попытаться выделить первый JSON-объект из ответа модели."""
 
+    decoder = json.JSONDecoder(strict=False)
+
     def _decode(text: str) -> dict[str, Any]:
-        decoder = json.JSONDecoder(strict=False)
         obj, _ = decoder.raw_decode(text)
         if not isinstance(obj, dict):
             raise json.JSONDecodeError("JSON root is not an object", text, 0)
         return obj
 
+    def _attempt_decode(text: str, *, mark_repaired: bool = False) -> tuple[dict[str, Any], bool] | None:
+        if not text:
+            return None
+        try:
+            return _decode(text), mark_repaired
+        except json.JSONDecodeError:
+            return None
+
     stripped = payload.strip()
-    try:
-        return _decode(stripped)
-    except json.JSONDecodeError:
-        match = _JSON_RE.search(stripped)
-        if match:
-            candidate = match.group(0).strip()
-            try:
-                return _decode(candidate)
-            except json.JSONDecodeError:
-                pass
+    candidate = _attempt_decode(stripped)
+    if candidate:
+        return candidate
 
-        start = stripped.find("{")
-        if start != -1:
-            depth = 0
-            in_string = False
-            escape = False
-            for idx in range(start, len(stripped)):
-                ch = stripped[idx]
-                if in_string:
-                    if escape:
-                        escape = False
-                    elif ch == "\\":
-                        escape = True
-                    elif ch == "\"":
-                        in_string = False
-                    continue
-                if ch == "\"":
-                    in_string = True
-                    continue
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = stripped[start : idx + 1]
-                        try:
-                            return _decode(candidate)
-                        except json.JSONDecodeError:
-                            break
-            if depth > 0:
-                candidate = stripped[start:] + ("}" * depth)
-                try:
-                    return _decode(candidate)
-                except json.JSONDecodeError:
-                    pass
+    match = _JSON_RE.search(stripped)
+    if match:
+        block = match.group(0).strip()
+        candidate = _attempt_decode(block)
+        if candidate:
+            return candidate
+        repaired_block = _repair_truncated_json(block)
+        if repaired_block:
+            candidate = _attempt_decode(repaired_block, mark_repaired=True)
+            if candidate:
+                return candidate
 
-        raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR")
+    start = stripped.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(stripped)):
+            ch = stripped[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == "\"":
+                    in_string = False
+                continue
+            if ch == "\"":
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    block = stripped[start : idx + 1]
+                    candidate = _attempt_decode(block)
+                    if candidate:
+                        return candidate
+                    repaired_block = _repair_truncated_json(block)
+                    if repaired_block:
+                        candidate = _attempt_decode(repaired_block, mark_repaired=True)
+                        if candidate:
+                            return candidate
+                    break
+        if depth > 0:
+            block = stripped[start:] + ("}" * depth)
+            candidate = _attempt_decode(block)
+            if candidate:
+                return candidate
+            repaired_block = _repair_truncated_json(block)
+            if repaired_block:
+                candidate = _attempt_decode(repaired_block, mark_repaired=True)
+                if candidate:
+                    return candidate
+
+    repaired_full = _repair_truncated_json(stripped)
+    if repaired_full:
+        candidate = _attempt_decode(repaired_full, mark_repaired=True)
+        if candidate:
+            return candidate
+
+    raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR")
 
 
 def _clean_list(items: Any) -> list[str]:
@@ -456,12 +530,13 @@ class LawsuitAnalyzer(DocumentProcessor):
 
         structured_payload = response.get("structured")
         raw_text = (response.get("text") or "").strip()
+        payload_repaired = False
         if isinstance(structured_payload, Mapping) and structured_payload:
             payload = dict(structured_payload)
         else:
             if not raw_text:
                 raise ProcessingError("Пустой ответ модели", "OPENAI_EMPTY")
-            payload = _extract_first_json(raw_text)
+            payload, payload_repaired = _extract_first_json(raw_text)
 
         strategy_payload = payload.get("strategy") or {}
 
@@ -490,6 +565,8 @@ class LawsuitAnalyzer(DocumentProcessor):
             "case_law": _normalize_case_law(payload.get("case_law")),
             "improvement_steps": _clean_list(payload.get("improvement_steps")),
         }
+        if payload_repaired:
+            analysis["structured_payload_repaired"] = True
 
         fallback_used = False
         fallback_markdown = ""
@@ -528,6 +605,7 @@ class LawsuitAnalyzer(DocumentProcessor):
                 "truncated": truncated,
                 "fallback_used": fallback_used,
                 "fallback_markdown": fallback_markdown or None,
+                "structured_payload_repaired": payload_repaired,
             },
             message="Анализ искового заявления готов",
         )

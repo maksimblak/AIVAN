@@ -1091,6 +1091,10 @@ class DocumentManager:
             lines.append("")
             lines.append(f"<i>Уверенность анализа: {html_escape(confidence)}</i>")
 
+        if data.get("structured_payload_repaired"):
+            lines.append("")
+            lines.append("<i>⚠️ Ответ модели был усечён; структура восстановлена автоматически, проверьте данные вручную.</i>")
+
         if data.get("fallback_used"):
             lines.append("")
             lines.append("<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>")
@@ -1257,6 +1261,14 @@ class DocumentManager:
         confidence = str(analysis.get("confidence") or "").strip()
         if confidence:
             lines.extend(["", f"_Уверенность анализа: {confidence}_"])
+
+        if analysis.get("structured_payload_repaired"):
+            lines.extend(
+                [
+                    "",
+                    "_Ответ модели был усечён; структура восстановлена автоматически — перепроверьте содержание._",
+                ]
+            )
 
         fallback_raw = str(analysis.get("fallback_raw_text") or "").strip()
         if fallback_raw:
