@@ -157,7 +157,7 @@ RISK_ANALYSIS_PROMPT = """
       "description": "описание риска с указанием нарушенного критерия и последствий",
       "clause_text": "цитата проблемного места (HTML, если нужно)",
       "span": {"start": 123, "end": 150},
-      "law_refs": ["<u>ст. 450.1 ГК РФ</u> — …", "<a href="https://...">Определение ВС РФ…</a>"],
+      "law_refs": ["<u>ст. 450.1 ГК РФ</u> — …", "<a href='https://...'>Определение ВС РФ…</a>"],
       "strategy_hint": "<b>Что сделать:</b> …"
     }
   ],
@@ -396,32 +396,49 @@ class RiskAnalyzer(DocumentProcessor):
             if len(text) <= 12000:
                 resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text)
                 return self._parse_ai_json_payload(resp, method="single", chunks=1)
-            else:
-                chunks = TextProcessor.split_into_chunks(text, max_chunk_size=8000, overlap=400)
-                risks_all: List[RiskItem] = []
-                recs_all: List[str] = []
-                summaries: List[str] = []
-                for i, chunk in enumerate(chunks, 1):
-                    part = f"(Часть {i}/{len(chunks)}; смещение {text.find(chunk)})\n\n{chunk}"
-                    resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=part)
-                    payload = self._parse_ai_json_payload(resp, method="chunk", chunks=len(chunks))
-                    risks_all.extend(payload.get("risks", []))
-                    recs_all.extend(payload.get("recommendations", []))
-                    if payload.get("summary"):
-                        summaries.append(payload["summary"])
-                return {
-                    "summary": " ".join(summaries)[:1000],
-                    "overall_level": self._dominant_level([r.risk_level for r in risks_all]) or "medium",
-                    "risks": risks_all,
-                    "recommendations": list(dict.fromkeys(recs_all))[:20],
-                    "method": "chunked",
-                    "chunks_analyzed": len(chunks),
-                }
+
+            chunks = TextProcessor.split_into_chunks(
+                text,
+                max_chunk_size=8000,
+                overlap=400,
+                return_spans=True,
+            )
+            risks_all: List[RiskItem] = []
+            recs_all: List[str] = []
+            summaries: List[str] = []
+            for i, (chunk_text, chunk_start, chunk_end) in enumerate(chunks, 1):
+                part = f"(Часть {i}/{len(chunks)}; смещение {chunk_start})\n\n{chunk_text}"
+                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=part)
+                payload = self._parse_ai_json_payload(
+                    resp,
+                    method="chunk",
+                    chunks=len(chunks),
+                    span_offset=chunk_start,
+                )
+                risks_all.extend(payload.get("risks", []))
+                recs_all.extend(payload.get("recommendations", []))
+                if payload.get("summary"):
+                    summaries.append(payload["summary"])
+            return {
+                "summary": " ".join(summaries)[:1000],
+                "overall_level": self._dominant_level([r.risk_level for r in risks_all]) or "medium",
+                "risks": risks_all,
+                "recommendations": list(dict.fromkeys(recs_all))[:20],
+                "method": "chunked",
+                "chunks_analyzed": len(chunks),
+            }
         except Exception as e:
             logger.error("Ошибка AI-анализа: %s", e)
             return {"summary": f"Ошибка анализа: {e}", "overall_level": "medium", "risks": [], "recommendations": [], "method": "error", "chunks_analyzed": 0}
 
-    def _parse_ai_json_payload(self, resp: Dict[str, Any], method: str, chunks: int) -> Dict[str, Any]:
+    def _parse_ai_json_payload(
+        self,
+        resp: Dict[str, Any],
+        method: str,
+        chunks: int,
+        *,
+        span_offset: int = 0,
+    ) -> Dict[str, Any]:
         """Извлекаем строгий JSON из ответа модели; фолбэк — пустые риски."""
         if not resp or not resp.get("ok"):
             return {"summary": "", "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
@@ -458,11 +475,11 @@ class RiskAnalyzer(DocumentProcessor):
                 risks.append(
                     RiskItem(
                         id=str(r.get("id") or (f"ai:{s}:{e}" if has_span else f"ai:{idx}")),
-                        risk_level=str(r.get("level") or "medium").lower(),
+                        risk_level=str(r.get("level") or "medium").strip().lower(),
                         description=description,
                         clause_text=clause_text,
-                        start=s,
-                        end=e,
+                        start=max(0, s + span_offset if has_span else span_offset),
+                        end=max(0, e + span_offset if has_span else span_offset),
                         law_refs=[str(x) for x in (r.get("law_refs") or [])],
                         source="ai_analysis",
                         strategy_hint=str(r.get("strategy_hint") or "").strip(),
@@ -473,7 +490,7 @@ class RiskAnalyzer(DocumentProcessor):
 
         return {
             "summary": str(data.get("summary") or "")[:1000],
-            "overall_level": str(data.get("overall_level") or "medium").lower(),
+            "overall_level": str(data.get("overall_level") or "medium").strip().lower(),
             "risks": risks,
             "recommendations": [str(x) for x in (data.get("recommendations") or [])][:20],
             "method": method,

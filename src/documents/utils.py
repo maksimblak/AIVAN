@@ -148,56 +148,66 @@ class TextProcessor:
         return normalized.strip()
 
     @staticmethod
-    def split_into_chunks(text: str, *, max_chunk_size: int, overlap: int = 0) -> list[str]:
-        """Split long text into overlapping chunks preserving paragraphs when possible."""
+    def split_into_chunks(
+        text: str,
+        *,
+        max_chunk_size: int,
+        overlap: int = 0,
+        return_spans: bool = False,
+    ) -> list[str] | list[tuple[str, int, int]]:
+        """Split long text into contiguous chunks keeping offsets when requested."""
         text = text.strip()
         if not text:
             return []
+
         if max_chunk_size <= 0 or len(text) <= max_chunk_size:
+            if return_spans:
+                length = len(text)
+                return [(text, 0, length)]
             return [text]
 
-        paragraphs = [para.strip() for para in text.split("\n\n") if para.strip()]
-        chunks: list[str] = []
-        current: list[str] = []
-        current_len = 0
+        overlap = max(0, overlap)
+        if overlap >= max_chunk_size:
+            overlap = max_chunk_size - 1
 
-        def flush_chunk() -> None:
-            nonlocal current, current_len
-            if not current:
-                return
-            chunk_text = "\n\n".join(current)
-            chunks.append(chunk_text)
-            if overlap > 0 and len(chunk_text) > overlap:
-                overlap_text = chunk_text[-overlap:]
-                current = [overlap_text]
-                current_len = len(overlap_text)
+        chunks: list[str] | list[tuple[str, int, int]] = []
+        start = 0
+        length = len(text)
+
+        while start < length:
+            end = min(length, start + max_chunk_size)
+            if end < length:
+                # Prefer breaking on double newline, then newline, then space.
+                break_points = (
+                    text.rfind("\n\n", start + 1, end),
+                    text.rfind("\n", start + 1, end),
+                    text.rfind(" ", start + 1, end),
+                )
+                for pos in break_points:
+                    if pos != -1 and pos > start + max_chunk_size * 0.4:
+                        end = pos
+                        break
+
+            if end <= start:
+                end = min(length, start + max_chunk_size)
+
+            chunk_text = text[start:end]
+            if not chunk_text:
+                break
+
+            if return_spans:
+                chunks.append((chunk_text, start, end))
             else:
-                current = []
-                current_len = 0
+                chunks.append(chunk_text)
 
-        for paragraph in paragraphs:
-            para_len = len(paragraph)
-            if para_len > max_chunk_size:
-                start = 0
-                while start < para_len:
-                    end = min(para_len, start + max_chunk_size)
-                    slice_text = paragraph[start:end]
-                    current.append(slice_text)
-                    current_len += len(slice_text)
-                    if current_len >= max_chunk_size:
-                        flush_chunk()
-                    start = end
-                continue
+            if end >= length:
+                break
 
-            additional = para_len if not current else para_len + 2
-            if current_len + additional > max_chunk_size:
-                flush_chunk()
+            start = end - overlap if overlap else end
+            if start <= end - max_chunk_size:
+                start = end - max(1, max_chunk_size - 1)
 
-            current.append(paragraph)
-            current_len += additional
-
-        flush_chunk()
-        return [chunk for chunk in chunks if chunk.strip()]
+        return chunks
 
     @staticmethod
     def extract_metadata(text: str) -> dict[str, Any]:
