@@ -96,6 +96,9 @@ def _prepare_garant_excel_fragments(
         court: str | None = None,
         url: str | None = None,
         metadata_extra: Mapping[str, Any] | None = None,
+        date: str | None = None,
+        region: str | None = None,
+        relevance: float | str | None = None,
         summary: str | None = None,
         decision: str | None = None,
         norms: str | None = None,
@@ -110,6 +113,10 @@ def _prepare_garant_excel_fragments(
             "court": court or "",
             "url": url or "",
             "link": url or "",
+            "date": date or "",
+            "decision_date": date or "",
+            "region": region or "",
+            "score": relevance if relevance is not None else "",
             "summary": summary or excerpt,
             "decision_summary": decision or "",
             "norms_summary": norms or "",
@@ -161,6 +168,9 @@ def _prepare_garant_excel_fragments(
                     court=kind_label,
                     url=url,
                     metadata_extra=metadata_extra,
+                    date=None,
+                    region=None,
+                    relevance=None,
                     summary=f"Решение категории «{kind_label}»: {title}",
                     decision=f"Решение суда ({kind_label}). Ознакомьтесь с выводами по ссылке.",
                     norms=norms_text,
@@ -197,6 +207,9 @@ def _prepare_garant_excel_fragments(
                 court=kind_label,
                 url=url,
                 metadata_extra=metadata_extra,
+                date=None,
+                region=None,
+                relevance=None,
                 summary=f"Нормативный акт для категории «{kind_label}».",
                 decision="Используйте норму при аргументации позиции.",
                 norms=title,
@@ -224,6 +237,12 @@ def _prepare_garant_excel_fragments(
             snippet = snippets[0]
             path = snippet.formatted_path() if hasattr(snippet, "formatted_path") else ""
             entry = getattr(snippet, "entry", None)
+            relevance_value: float | str | None = getattr(snippet, "relevance", None)
+            if isinstance(relevance_value, str):
+                try:
+                    relevance_value = float(relevance_value)
+                except ValueError:
+                    pass
             excerpt_parts: list[str] = []
             if entry is not None:
                 excerpt_parts.append(f"Блок {entry}")
@@ -241,6 +260,7 @@ def _prepare_garant_excel_fragments(
                 "source": "search",
                 "topic": topic,
             }
+            relevance_value = None
         key = ("search", topic, url, title)
         _add_fragment(
             key,
@@ -252,6 +272,9 @@ def _prepare_garant_excel_fragments(
             decision="Требуется изучить текст решения по ссылке.",
             norms="",
             applicability="Используйте документ для расширения практики по теме.",
+            date=None,
+            region=None,
+            relevance=relevance_value,
         )
         if len(fragments) >= max_items:
             break

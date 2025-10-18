@@ -95,11 +95,16 @@ def build_practice_excel(
 
     ws_cases = wb.create_sheet("Практика")
     case_headers = [
+        "№",
         "Название / номер / ссылка",
         "Суть дела / обстоятельства",
         "Решение / выводы суда",
         "Нормы, на которые ссылались",
         "Применимость для текущего запроса",
+        "Суд",
+        "Дата",
+        "Регион",
+        "Оценка релевантности",
     ]
     ws_cases.append(case_headers)
     for cell in ws_cases[1]:
@@ -107,7 +112,7 @@ def build_practice_excel(
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     if fragments:
-        for fragment in fragments:
+        for idx, fragment in enumerate(fragments, start=1):
             match = getattr(fragment, "match", None)
             metadata = getattr(match, "metadata", {}) if match else {}
             if not isinstance(metadata, Mapping):
@@ -123,6 +128,16 @@ def build_practice_excel(
                 if isinstance(norm_names, Sequence):
                     norms = "\n".join(str(item).strip() for item in norm_names if str(item).strip())
             applicability = metadata.get("applicability") or ""
+            court = metadata.get("court") or ""
+            date = metadata.get("date") or metadata.get("decision_date") or ""
+            region = metadata.get("region") or ""
+            relevance_raw = metadata.get("score")
+            if relevance_raw in (None, ""):
+                relevance_raw = getattr(match, "score", "")
+            if isinstance(relevance_raw, (int, float)):
+                relevance_value = f"{float(relevance_raw):.2f}"
+            else:
+                relevance_value = str(relevance_raw or "").strip()
 
             name_parts = [str(title or "").strip()]
             if case_number:
@@ -133,27 +148,37 @@ def build_practice_excel(
 
             ws_cases.append(
                 [
+                    idx,
                     name_cell_value,
                     str(summary or "").strip(),
                     str(decision or "").strip(),
                     str(norms or "").strip(),
                     str(applicability or "").strip(),
+                    str(court or "").strip(),
+                    str(date or "").strip(),
+                    str(region or "").strip(),
+                    relevance_value,
                 ]
             )
             if url:
                 row_idx = ws_cases.max_row
-                link_cell = ws_cases.cell(row=row_idx, column=1)
+                link_cell = ws_cases.cell(row=row_idx, column=2)
                 link_cell.hyperlink = url
                 link_cell.style = "Hyperlink"
     else:
-        ws_cases.append(["Нет данных по судебной практике", "", "", "", ""])
+        ws_cases.append([None, "Нет данных по судебной практике", "", "", "", "", "", "", "", ""])
 
     column_widths = {
-        "A": 48,
-        "B": 60,
-        "C": 55,
-        "D": 40,
-        "E": 55,
+        "A": 6,
+        "B": 48,
+        "C": 60,
+        "D": 55,
+        "E": 40,
+        "F": 55,
+        "G": 28,
+        "H": 16,
+        "I": 28,
+        "J": 18,
     }
     for letter, width in column_widths.items():
         ws_cases.column_dimensions[letter].width = width
