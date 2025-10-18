@@ -682,8 +682,7 @@ async def handle_search_practice_callback(callback: CallbackQuery) -> None:
 
         instruction_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
-                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
+                [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")]
             ]
         )
 
