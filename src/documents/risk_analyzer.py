@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -426,24 +426,41 @@ class RiskAnalyzer(DocumentProcessor):
         if not resp or not resp.get("ok"):
             return {"summary": "", "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
         raw = resp.get("text", "") or ""
-        data = self._safe_json_loads(raw)
+        structured = resp.get("structured")
+        data: Any = structured if isinstance(structured, Mapping) else None
+        if data is None:
+            data = self._safe_json_loads(raw)
         if not isinstance(data, dict):
             return {"summary": raw[:500], "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
 
         # нормализуем риски
         risks: List[RiskItem] = []
-        for r in data.get("risks", []) or []:
+        for idx, r in enumerate(data.get("risks", []) or []):
             try:
                 span = r.get("span") or {}
-                s, e = int(span.get("start", -1)), int(span.get("end", -1))
-                if s < 0 or e <= s:
+                s_raw, e_raw = span.get("start", None), span.get("end", None)
+                try:
+                    s = int(s_raw)
+                    e = int(e_raw)
+                except (TypeError, ValueError):
+                    s, e = 0, 0
+                if s < 0 or e < 0:
+                    s, e = 0, 0
+                has_span = e > s
+                if not has_span:
+                    s, e = 0, 0
+                description = str(r.get("description") or "").strip()
+                if not description:
                     continue
+                clause_text = str(r.get("clause_text") or "").strip()
+                if not clause_text and not has_span:
+                    clause_text = description
                 risks.append(
                     RiskItem(
-                        id=str(r.get("id") or f"ai:{s}"),
+                        id=str(r.get("id") or (f"ai:{s}:{e}" if has_span else f"ai:{idx}")),
                         risk_level=str(r.get("level") or "medium").lower(),
-                        description=str(r.get("description") or "").strip(),
-                        clause_text=str(r.get("clause_text") or "").strip(),
+                        description=description,
+                        clause_text=clause_text,
                         start=s,
                         end=e,
                         law_refs=[str(x) for x in (r.get("law_refs") or [])],
