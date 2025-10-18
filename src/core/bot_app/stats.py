@@ -27,13 +27,35 @@ PROGRESS_BAR_LENGTH = 10
 HEADER_DIVIDER = "━━━━━━━━━━━━"
 FEATURE_LABELS: Mapping[str, str] = {
     "legal_question": "Юридические вопросы",
-    "document_processing": "Обработка документов",
+    "document_processing": "Работа с документами",
     "judicial_practice": "Судебная практика",
     "document_draft": "Черновики документов",
     "voice_message": "Голосовые ответы",
     "ocr_processing": "Распознавание текста",
     "document_chat": "Чаты по документам",
+    "document_work": "Работа с документами",
 }
+
+DOCUMENT_REQUEST_PREFIXES: tuple[str, ...] = ("document_", "doc_")
+DOCUMENT_REQUEST_ALIASES: frozenset[str] = frozenset(
+    {
+        "ocr_processing",
+        "ocr",
+        "lawsuit_analysis",
+        "summarize",
+        "analyze_risks",
+        "anonymize",
+        "translate",
+    }
+)
+
+
+def _is_document_request_type(request_type: str | None) -> bool:
+    """Определяет, относится ли тип запроса к операциям с документами."""
+    if not request_type:
+        return False
+    normalized = request_type.lower()
+    return normalized.startswith(DOCUMENT_REQUEST_PREFIXES) or normalized in DOCUMENT_REQUEST_ALIASES
 DAY_NAMES: Mapping[str, str] = {
     "0": "Пн",
     "1": "Вт",
@@ -323,7 +345,23 @@ async def generate_user_stats_response(
 
     day_counts = stats.get("day_of_week_counts") or {}
     hour_counts = stats.get("hour_of_day_counts") or {}
-    type_stats = stats.get("request_types") or {}
+    raw_type_stats = stats.get("request_types") or {}
+    document_requests_total = 0
+    type_stats: dict[str, int] = {}
+    for raw_type, raw_value in raw_type_stats.items():
+        if raw_type is None:
+            continue
+        try:
+            count = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        key = str(raw_type)
+        if _is_document_request_type(key):
+            document_requests_total += count
+            continue
+        type_stats[key] = type_stats.get(key, 0) + count
+    if document_requests_total:
+        type_stats["document_work"] = type_stats.get("document_work", 0) + document_requests_total
 
     day_primary, day_secondary = peak_summary(day_counts, mapping=DAY_NAMES)
     hour_primary, hour_secondary = peak_summary(

@@ -31,6 +31,7 @@ from src.bot.ui_components import Emoji
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.formatting import _format_progress_extras, _split_plain_text
 from src.core.bot_app.menus import cmd_start
+from src.core.bot_app.payments import get_plan_pricing
 from src.core.bot_app.voice import download_voice_to_temp
 from src.documents.base import ProcessingError
 from src.documents.document_drafter import (
@@ -59,6 +60,79 @@ settings = simple_context.settings
 GENERIC_INTERNAL_ERROR_HTML = "<i>Произошла внутренняя ошибка. Попробуйте позже.</i>"
 GENERIC_INTERNAL_ERROR_TEXT = "Произошла внутренняя ошибка. Попробуйте позже."
 
+
+async def _ensure_quota(message: Message, *, feature: str) -> tuple[bool, str | None]:
+    """Проверяет наличие квоты и списывает триал/подписку при необходимости."""
+    access_service = getattr(simple_context, "access_service", None)
+    if access_service is None or not message.from_user:
+        return True, None
+
+    try:
+        decision = await access_service.check_and_consume(message.from_user.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to check access for %s: %s", feature, exc, exc_info=True)
+        await message.answer(
+            f"{Emoji.ERROR} Не удалось подтвердить доступ. Попробуйте позже.",
+            parse_mode=ParseMode.HTML,
+        )
+        return False, None
+
+    if decision.allowed:
+        quota_text = (decision.message or "").strip()
+        return True, quota_text or None
+
+    if decision.has_subscription and decision.subscription_plan:
+        plan_name = decision.subscription_plan
+        plan_info = get_plan_pricing(plan_name)
+        if plan_info:
+            plan_name = plan_info.plan.name
+        await message.answer(
+            f"{Emoji.WARNING} <b>Лимит запросов исчерпан</b>\n\n"
+            f"Тариф: <b>{plan_name}</b>\n"
+            "Продлите подписку или обновите тариф, чтобы продолжить работу.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await message.answer(
+            f"{Emoji.WARNING} <b>Квота запросов исчерпана</b>\n\n"
+            "Оформите подписку командой /buy, чтобы продолжить.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    return False, None
+
+
+async def _record_request_stat(
+    message: Message,
+    *,
+    request_type: str,
+    started_at: float,
+    success: bool,
+    error_type: str | None = None,
+) -> None:
+    """Фиксирует статистику запроса в базе."""
+    db = getattr(simple_context, "db", None)
+    if db is None or not hasattr(db, "record_request") or not message.from_user:
+        return
+
+    duration_ms = max(0, int((time.time() - started_at) * 1000))
+    try:
+        await db.record_request(
+            user_id=message.from_user.id,
+            request_type=request_type,
+            tokens_used=0,
+            response_time_ms=duration_ms,
+            success=success,
+            error_type=error_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to record %s request for user %s: %s",
+            request_type,
+            getattr(message.from_user, "id", "unknown"),
+            exc,
+        )
+
 _NUMBERED_ANSWER_RE = re.compile(
     r"^\s*(\d+)(?:[\).:-]|\s+-|\s+)\s*(.*)"
 )
@@ -77,6 +151,17 @@ class DocumentDraftStates(StatesGroup):
     waiting_for_request = State()
     asking_details = State()
     generating = State()
+
+
+DOCUMENT_OPERATION_REQUEST_TYPES: dict[str, str] = {
+    "summarize": "document_summarize",
+    "analyze_risks": "document_analyze_risks",
+    "lawsuit_analysis": "document_lawsuit_analysis",
+    "anonymize": "document_anonymize",
+    "translate": "document_translate",
+    "ocr": "document_ocr",
+    "chat": "document_chat",
+}
 
 
 def _get_document_manager() -> DocumentManager | None:
@@ -612,6 +697,13 @@ async def handle_doc_draft_request(
         await state.clear()
         return
 
+    allowed, quota_note = await _ensure_quota(message, feature="document_draft")
+    if not allowed:
+        return
+
+    request_started_at = time.time()
+    request_error: str | None = None
+
     await send_typing_once(message.bot, message.chat.id, "typing")
 
     progress = ProgressStatus(
@@ -635,12 +727,34 @@ async def handle_doc_draft_request(
         await progress.complete()
         await asyncio.sleep(0.3)
     except DocumentDraftingError as err:
+        request_error = "DOCUMENT_DRAFTING_ERROR"
         await progress.fail(note=str(err))
+        await _record_request_stat(
+            message,
+            request_type="document_draft",
+            started_at=request_started_at,
+            success=False,
+            error_type=request_error,
+        )
+        if quota_note:
+            with suppress(Exception):
+                await message.answer(quota_note, parse_mode=ParseMode.HTML)
         await state.clear()
         return
     except Exception as exc:  # noqa: BLE001
+        request_error = "INTERNAL_ERROR"
         logger.error("Ошибка планирования документа: %s", exc, exc_info=True)
         await progress.fail(note="Попробуйте еще раз")
+        await _record_request_stat(
+            message,
+            request_type="document_draft",
+            started_at=request_started_at,
+            success=False,
+            error_type=request_error,
+        )
+        if quota_note:
+            with suppress(Exception):
+                await message.answer(quota_note, parse_mode=ParseMode.HTML)
         await state.clear()
         return
     else:
@@ -676,6 +790,17 @@ async def handle_doc_draft_request(
             parse_mode=ParseMode.HTML,
         )
         await _finalize_draft(message, state)
+
+    await _record_request_stat(
+        message,
+        request_type="document_draft",
+        started_at=request_started_at,
+        success=True,
+        error_type=None,
+    )
+    if quota_note:
+        with suppress(Exception):
+            await message.answer(quota_note, parse_mode=ParseMode.HTML)
 
 
 async def handle_doc_draft_answer(
@@ -1133,6 +1258,15 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    allowed, quota_note = await _ensure_quota(message, feature="document_draft")
+    if not allowed:
+        return
+
+    request_started_at = time.time()
+    request_success = False
+    request_logged = False
+    request_error: str | None = None
+
     progress: ProgressStatus | None = None
     try:
         progress = ProgressStatus(
@@ -1160,16 +1294,42 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         async with typing_action(message.bot, message.chat.id, "upload_document"):
             result = await generate_document(openai_service, request_text, title, answers)
     except DocumentDraftingError as err:
+        request_error = "DOCUMENT_DRAFTING_ERROR"
         if progress:
             await progress.fail(note=str(err))
         await message.answer(f"{Emoji.ERROR} Не удалось подготовить документ: {err}")
+        await _record_request_stat(
+            message,
+            request_type="document_draft",
+            started_at=request_started_at,
+            success=False,
+            error_type=request_error,
+        )
+        request_logged = True
+        if quota_note:
+            with suppress(Exception):
+                await message.answer(quota_note, parse_mode=ParseMode.HTML)
+            quota_note = None
         await state.clear()
         return
     except Exception as exc:  # noqa: BLE001
+        request_error = "INTERNAL_ERROR"
         logger.error("Ошибка генерации документа: %s", exc, exc_info=True)
         if progress:
             await progress.fail(note="Сбой при генерации документа")
         await message.answer(f"{Emoji.ERROR} Произошла ошибка при генерации документа")
+        await _record_request_stat(
+            message,
+            request_type="document_draft",
+            started_at=request_started_at,
+            success=False,
+            error_type=request_error,
+        )
+        request_logged = True
+        if quota_note:
+            with suppress(Exception):
+                await message.answer(quota_note, parse_mode=ParseMode.HTML)
+            quota_note = None
         await state.clear()
         return
 
@@ -1201,10 +1361,35 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
                 extra_questions,
                 title="Дополнительные вопросы",
             )
+            await _record_request_stat(
+                message,
+                request_type="document_draft",
+                started_at=request_started_at,
+                success=True,
+                error_type=None,
+            )
+            request_logged = True
+            if quota_note:
+                with suppress(Exception):
+                    await message.answer(quota_note, parse_mode=ParseMode.HTML)
+                quota_note = None
             return
 
         issues_text = "\n".join(result.issues) or "Модель не смогла подготовить документ."
         await message.answer(f"{Emoji.WARNING} Документ не готов. Причина:\n{issues_text}")
+        request_error = result.error_code or "DOCUMENT_INCOMPLETE"
+        await _record_request_stat(
+            message,
+            request_type="document_draft",
+            started_at=request_started_at,
+            success=False,
+            error_type=request_error,
+        )
+        request_logged = True
+        if quota_note:
+            with suppress(Exception):
+                await message.answer(quota_note, parse_mode=ParseMode.HTML)
+            quota_note = None
         await state.clear()
         return
 
@@ -1333,7 +1518,9 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
             with suppress(Exception):
                 if progress.message_id:
                     await message.bot.delete_message(message.chat.id, progress.message_id)
+        request_success = True
     except DocumentDraftingError as err:
+        request_error = "DOCX_BUILD_ERROR"
         if progress:
             await progress.fail(note=str(err))
         await message.answer(
@@ -1342,9 +1529,36 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
             f"⚠️ {err}",
             parse_mode=ParseMode.HTML,
         )
+        if not request_logged:
+            await _record_request_stat(
+                message,
+                request_type="document_draft",
+                started_at=request_started_at,
+                success=False,
+                error_type=request_error,
+            )
+            request_logged = True
+            if quota_note:
+                with suppress(Exception):
+                    await message.answer(quota_note, parse_mode=ParseMode.HTML)
+                quota_note = None
     finally:
         tmp_path.unlink(missing_ok=True)
     await state.clear()
+
+    if not request_logged:
+        await _record_request_stat(
+            message,
+            request_type="document_draft",
+            started_at=request_started_at,
+            success=request_success,
+            error_type=request_error,
+        )
+        request_logged = True
+        if quota_note:
+            with suppress(Exception):
+                await message.answer(quota_note, parse_mode=ParseMode.HTML)
+            quota_note = None
 
 
 async def handle_document_processing(callback: CallbackQuery) -> None:
@@ -1634,6 +1848,16 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                 await state.clear()
                 return
 
+            request_type = DOCUMENT_OPERATION_REQUEST_TYPES.get(operation, f"document_{operation}")
+            request_started_at = time.time()
+            request_success = False
+            request_error: str | None = None
+            request_logged = False
+
+            allowed, quota_note = await _ensure_quota(message, feature="document_processing")
+            if not allowed:
+                return
+
             await state.set_state(DocumentProcessingStates.processing_document)
 
             file_name = message.document.file_name or "unknown"
@@ -1643,6 +1867,15 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
             max_size = 50 * 1024 * 1024
             if file_size > max_size:
                 reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                request_error = "FILE_TOO_LARGE"
+                await _record_request_stat(
+                    message,
+                    request_type=request_type,
+                    started_at=request_started_at,
+                    success=False,
+                    error_type=request_error,
+                )
+                request_logged = True
                 await message.answer(
                     f"{Emoji.ERROR} Файл слишком большой. Максимальный размер: {max_size // (1024*1024)} МБ",
                     parse_mode=ParseMode.HTML,
@@ -1768,7 +2001,9 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                             await status_msg.delete()
 
                     logger.info("Successfully processed document %s for user %s", file_name, message.from_user.id)
+                    request_success = True
                 else:
+                    request_error = result.error_code or "PROCESSING_ERROR"
                     await send_progress(
                         {'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message}
                     )
@@ -1783,6 +2018,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                             await status_msg.delete()
 
             except Exception as exc:  # noqa: BLE001
+                request_error = getattr(exc, "error_code", "INTERNAL_ERROR")
                 with suppress(Exception):
                     await send_progress(
                         {"stage": "failed", "percent": progress_state.get("percent", 0), "note": GENERIC_INTERNAL_ERROR_HTML}
@@ -1800,6 +2036,17 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                 logger.error("Error processing document %s: %s", file_name, exc, exc_info=True)
 
             finally:
+                if not request_logged:
+                    await _record_request_stat(
+                        message,
+                        request_type=request_type,
+                        started_at=request_started_at,
+                        success=request_success,
+                        error_type=request_error,
+                    )
+                if quota_note:
+                    with suppress(Exception):
+                        await message.answer(quota_note, parse_mode=ParseMode.HTML)
                 await state.clear()
 
     except Exception as exc:  # noqa: BLE001
@@ -1838,6 +2085,18 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 await state.clear()
                 return
 
+            allowed, quota_note = await _ensure_quota(message, feature="document_processing")
+            if not allowed:
+                return
+
+            request_started_at = time.time()
+            request_success = False
+            request_error: str | None = None
+            request_logged = False
+            user_id = getattr(message.from_user, "id", None)
+            request_type = DOCUMENT_OPERATION_REQUEST_TYPES.get(operation, f"document_{operation}")
+            usage_recorded = False
+
             await state.set_state(DocumentProcessingStates.processing_document)
 
             photo = message.photo[-1]
@@ -1847,6 +2106,15 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
 
             max_size = 20 * 1024 * 1024
             if file_size > max_size:
+                request_error = "FILE_TOO_LARGE"
+                await _record_request_stat(
+                    message,
+                    request_type="document_processing",
+                    started_at=request_started_at,
+                    success=False,
+                    error_type=request_error,
+                )
+                request_logged = True
                 await message.answer(
                     f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
                 )
@@ -1923,6 +2191,12 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     progress_callback=send_progress,
                     **options,
                 )
+                await _record_document_usage(
+                    user_id,
+                    request_type,
+                    success=bool(result.success),
+                )
+                usage_recorded = True
                 await send_progress({"stage": "finalizing", "percent": 90})
 
                 if result.success:
@@ -1970,7 +2244,9 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                             await status_msg.delete()
 
                     logger.info("Successfully processed photo %s for user %s", file_name, message.from_user.id)
+                    request_success = True
                 else:
+                    request_error = result.error_code or "PROCESSING_ERROR"
                     await send_progress(
                         {"stage": "failed", "percent": progress_state["percent"], "note": result.message}
                     )
@@ -1982,6 +2258,7 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     )
 
             except Exception as exc:  # noqa: BLE001
+                request_error = getattr(exc, "error_code", "INTERNAL_ERROR")
                 with suppress(Exception):
                     await send_progress(
                         {"stage": "failed", "percent": progress_state["percent"], "note": GENERIC_INTERNAL_ERROR_TEXT}
@@ -1996,13 +2273,32 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                     reply_markup=reply_markup,
                 )
                 logger.error("Error processing photo %s: %s", file_name, exc, exc_info=True)
+                if not usage_recorded:
+                    await _record_document_usage(user_id, request_type, success=False)
 
             finally:
+                if not request_logged:
+                    await _record_request_stat(
+                        message,
+                        request_type="document_processing",
+                        started_at=request_started_at,
+                        success=request_success,
+                        error_type=request_error,
+                    )
+                if quota_note:
+                    with suppress(Exception):
+                        await message.answer(quota_note, parse_mode=ParseMode.HTML)
                 await state.clear()
 
     except Exception as exc:  # noqa: BLE001
         await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
         logger.error("Error in handle_photo_upload: %s", exc, exc_info=True)
+        if 'request_type' in locals() and not locals().get('usage_recorded', False):
+            await _record_document_usage(
+                getattr(getattr(message, "from_user", None), "id", None),
+                request_type,
+                success=False,
+            )
         await state.clear()
 
 
