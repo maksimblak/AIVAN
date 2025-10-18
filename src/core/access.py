@@ -20,7 +20,7 @@ class AccessDecision:
 
 
 class AccessService:
-    """Encapsulates access control: admin, subscription, and trial consumption."""
+    """Управляет доступом: администраторы, подписка и пробный лимит."""
 
     def __init__(self, *, db: DatabaseAdvanced, trial_limit: int, admin_ids: set[int]):
         self._db = db
@@ -28,9 +28,10 @@ class AccessService:
         self._admin_ids = set(admin_ids)
 
     async def check_and_consume(self, user_id: int) -> AccessDecision:
-        """Ensure user exists; if admin/subscriber -> allowed. Otherwise consume one trial.
+        """Проверяет пользователя и при необходимости списывает пробную попытку.
 
-        Returns AccessDecision with details for UI formatting.
+        Если пользователь администратор или подписчик, доступ открывается без списания.
+        Возвращает AccessDecision с деталями для отображения в интерфейсе.
         """
         user = await self._db.ensure_user(
             user_id, default_trial=self._trial_limit, is_admin=user_id in self._admin_ids
@@ -63,8 +64,8 @@ class AccessService:
                         subscription_plan=subscription_plan,
                         subscription_requests_remaining=0,
                         message=(
-                            "Subscription is active but the request limit is exhausted. "
-                            "Extend or upgrade your plan to continue."
+                            "Подписка активна, но лимит запросов исчерпан. "
+                            "Продлите или улучшите тариф, чтобы продолжить работу."
                         ),
                     )
                 return AccessDecision(
@@ -74,20 +75,20 @@ class AccessService:
                     subscription_plan=subscription_plan,
                     subscription_requests_remaining=subscription_balance,
                     message=(
-                        f"Subscription {subscription_plan}: {subscription_balance} request(s) remaining."
+                        f"Тариф {subscription_plan}: осталось {subscription_balance} запросов."
                     ),
                 )
             return AccessDecision(
                 allowed=True,
                 has_subscription=True,
                 subscription_until=subscription_until,
-                message="Subscription is active.",
+                message="Подписка активна.",
             )
 
-        # Try to decrement trial
+        # Пытаемся списать попытку из пробного лимита
         trial_before = int(user.trial_remaining)
         if await self._db.decrement_trial(user_id):
-            # Re-fetch remaining to be precise
+            # Повторно считываем остаток, чтобы данные были точнее
             trial_after = max(0, trial_before - 1)
             try:
                 user_after = await self._db.get_user(user_id)
@@ -110,17 +111,17 @@ class AccessService:
                 trial_used=used_before_request,
                 trial_remaining=trial_after,
                 message=(
-                    f"Trial mode: {trial_after} of {self._trial_limit} request(s) remaining."
+                    f"Пробный режим: осталось {trial_after} из {self._trial_limit} запросов."
                 ),
                 is_trial=True,
             )
 
-        # No access
+        # Доступ запрещен
         remaining = max(0, trial_before)
         return AccessDecision(
             allowed=False,
             trial_used=0,
             trial_remaining=remaining,
-            message="Request limit reached. Purchase a plan with /buy.",
+            message="Лимит запросов исчерпан. Оформите тариф командой /buy.",
             is_trial=True,
         )

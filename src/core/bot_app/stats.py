@@ -24,6 +24,7 @@ from src.core.subscription_payments import (
 
 PERIOD_OPTIONS: Sequence[int] = (7, 30, 90)
 PROGRESS_BAR_LENGTH = 10
+HEADER_DIVIDER = "━━━━━━━━━━━━"
 FEATURE_LABELS: Mapping[str, str] = {
     "legal_question": "Юридические вопросы",
     "document_processing": "Обработка документов",
@@ -342,7 +343,7 @@ async def generate_user_stats_response(
 
     lines = [
         f"{Emoji.STATS} <b>Моя статистика</b>",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        HEADER_DIVIDER,
         "",
         f"📅 <i>Период: последние {normalized_days} дней</i>",
         "",

@@ -62,7 +62,7 @@ def get_plan_pricing(plan_id: str | None) -> SubscriptionPlanPricing | None:
 
 _CATALOG_HEADER_LINES = [
     "✨ <b>Каталог подписок AIVAN</b>",
-    "━━━━━━━━━━━━━━━━━━━━",
+    "━━━━━━━━━━━━",
     "",
     "💡 <b>Выберите идеальный тариф для себя</b>",
     "🎯 Доступ ко всем функциям AI-юриста",

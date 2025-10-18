@@ -1647,6 +1647,86 @@ class DatabaseAdvanced:
         }
 
     # Методы для реферальной системы
+    async def apply_referral_code(self, user_id: int, referral_code: str) -> tuple[bool, str]:
+        """
+        Закрепляет пользователя за реферером по коду.
+
+        Возвращает кортеж (успех, причина), где причина принимает значения:
+        - "applied" — код успешно применён;
+        - "invalid_code" — код не найден или пуст;
+        - "self_referral" — пользователь попытался использовать собственный код;
+        - "already_linked" — уже привязан к этому рефереру;
+        - "already_has_referrer" — уже есть другой реферер.
+        """
+        normalized_code = (referral_code or "").strip().upper()
+        if not normalized_code or normalized_code == "SYSTEM_ERROR":
+            return False, "invalid_code"
+
+        async with self.pool.acquire() as conn:
+            try:
+                await self._ensure_referral_columns(conn)
+
+                cursor = await conn.execute(
+                    "SELECT user_id FROM users WHERE referral_code = ?",
+                    (normalized_code,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if not row:
+                    return False, "invalid_code"
+
+                referrer_id = int(row[0])
+                if referrer_id == user_id:
+                    return False, "self_referral"
+
+                cursor = await conn.execute(
+                    "SELECT referred_by FROM users WHERE user_id = ?",
+                    (user_id,),
+                )
+                current_row = await cursor.fetchone()
+                await cursor.close()
+                if not current_row:
+                    raise DatabaseException(f"User {user_id} not found while applying referral code")
+
+                existing_referrer = current_row[0]
+                if existing_referrer:
+                    if int(existing_referrer) == referrer_id:
+                        return False, "already_linked"
+                    return False, "already_has_referrer"
+
+                now = int(time.time())
+                await conn.execute("BEGIN")
+                try:
+                    cursor = await conn.execute(
+                        "UPDATE users SET referred_by = ?, updated_at = ? "
+                        "WHERE user_id = ? AND (referred_by IS NULL OR referred_by = 0)",
+                        (referrer_id, now, user_id),
+                    )
+                    updated_rows = cursor.rowcount
+                    await cursor.close()
+                    if updated_rows == 0:
+                        await conn.rollback()
+                        return False, "already_has_referrer"
+
+                    cursor = await conn.execute(
+                        "UPDATE users SET referrals_count = referrals_count + 1, updated_at = ? "
+                        "WHERE user_id = ?",
+                        (now, referrer_id),
+                    )
+                    await cursor.close()
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
+
+                return True, "applied"
+
+            except DatabaseException:
+                raise
+            except Exception as e:
+                logger.error(f"Database error in apply_referral_code: {e}")
+                raise DatabaseException(f"Error applying referral code: {e}")
+
     async def generate_referral_code(self, user_id: int) -> str:
         """Генерация реферального кода для пользователя"""
         import secrets
@@ -1684,6 +1764,8 @@ class DatabaseAdvanced:
             except Exception as e:
                 logger.error(f"Database error in generate_referral_code: {e}")
                 raise DatabaseException(f"Error generating referral code: {e}")
+
+
 
 
 

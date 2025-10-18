@@ -987,7 +987,7 @@ def format_plan_summary(plan: DraftPlan) -> str:
 
     # Красивый заголовок документа
     lines.append("📋 <b>Подготовка документа</b>")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━")
     lines.append("")
     lines.append(f"<b>Документ:</b> {title_escaped}")
     lines.append("")

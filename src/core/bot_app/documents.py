@@ -1389,10 +1389,10 @@ async def handle_document_processing(callback: CallbackQuery) -> None:
 
         message_text = (
             "🗂️ <b>Работа с документами</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "━━━━━━━━━━━━\n\n"
             "🤖 <i>Автоматическая обработка и анализ\n"
             "   ваших документов с помощью ИИ</i>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "━━━━━━━━━━━━\n\n"
             "📋 <b>Доступные операции:</b>\n\n"
             "📄 <b>Краткая выжимка</b>\n"
             "   └ Превращает объёмные документы\n"
@@ -1409,7 +1409,7 @@ async def handle_document_processing(callback: CallbackQuery) -> None:
             "🔍 <b>Распознавание текста</b>\n"
             "   └ Извлекает текст со сканов\n"
             "      и фотографий\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "━━━━━━━━━━━━\n\n"
             "👇 Выберите нужную операцию:"
         )
 
@@ -1453,7 +1453,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
         detailed_descriptions = {
             "summarize": (
                 "📝 <b>Краткое содержание</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "⚙️ <b>Что делает:</b>\n\n"
                 "📚 <b>Выжимка</b>\n"
                 "   └ Ключевые выводы и факты\n\n"
@@ -1461,7 +1461,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
                 "   └ Логичная последовательность\n\n"
                 "💡 <b>Советы</b>\n"
                 "   └ На что обратить внимание\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "📊 <b>Идеально для:</b>\n"
                 "   • Больших документов\n"
                 "   • Решений судов\n"
@@ -1469,7 +1469,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             ),
             "analyze_risks": (
                 "⚠️ <b>Анализ рисков</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "🛡️ <b>Что проверяем:</b>\n\n"
                 "📜 <b>Критичные условия</b>\n"
                 "   └ Нестандартные формулировки\n\n"
@@ -1477,7 +1477,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
                 "   └ Нарушения законодательства\n\n"
                 "💰 <b>Финансовые риски</b>\n"
                 "   └ Штрафы и санкции\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "📊 <b>Результат:</b>\n"
                 "   ✓ Оценка риска\n"
                 "   ✓ Перечень нарушений\n"
@@ -1485,7 +1485,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             ),
             "lawsuit_analysis": (
                 "⚖️ <b>Анализ искового заявления</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "🧠 <b>Что получаете:</b>\n\n"
                 "📌 <b>Аргументация</b>\n"
                 "   └ Сильные и слабые стороны\n\n"
@@ -1493,14 +1493,14 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
                 "   └ Поиск релевантных решений\n\n"
                 "🛠️ <b>Рекомендации</b>\n"
                 "   └ Что улучшить в позиции\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "📊 <b>Идеально для:</b>\n"
                 "   • Подготовки к суду\n"
                 "   • Анализа претензий"
             ),
             "chat": (
                 "💬 <b>Чат с документом</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "🤖 <b>Как работает:</b>\n"
                 "   • Отвечает на вопросы по содержанию\n"
                 "   • Помогает быстро ориентироваться\n"
@@ -1508,7 +1508,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             ),
             "anonymize": (
                 "🕶️ <b>Обезличивание</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "⚙️ <b>Что делает:</b>\n\n"
                 "🧾 <b>Поиск данных</b>\n"
                 "   └ Персональные и идентификационные\n\n"
@@ -1519,7 +1519,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             ),
             "translate": (
                 "🌍 <b>Перевод документов</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "⚙️ <b>Функции:</b>\n\n"
                 "📄 <b>Перевод текста</b>\n"
                 "   └ С сохранением структуры\n\n"
@@ -1530,7 +1530,7 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             ),
             "ocr": (
                 "🔍 <b>Распознавание текста</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "━━━━━━━━━━━━\n\n"
                 "🖼️ <b>Что умеет:</b>\n\n"
                 "📷 <b>Извлечение текста</b>\n"
                 "   └ Со сканов и фото\n\n"
