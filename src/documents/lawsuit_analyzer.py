@@ -367,6 +367,35 @@ def _normalize_case_law(items: Any) -> list[dict[str, str]]:
     return normalized
 
 
+def _analysis_has_content(analysis: Mapping[str, Any]) -> bool:
+    """Проверить, что в анализе есть осмысленные данные."""
+    for value in analysis.values():
+        if isinstance(value, str):
+            if value.strip():
+                return True
+        elif isinstance(value, Mapping):
+            if _analysis_has_content(value):
+                return True
+        elif isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+            for item in value:
+                if isinstance(item, Mapping):
+                    if _analysis_has_content(item):
+                        return True
+                else:
+                    if str(item or "").strip():
+                        return True
+    return False
+
+
+def _build_fallback_markdown(raw_text: str) -> str:
+    """Сформировать простой Markdown на основе сырого ответа модели."""
+    cleaned = TextProcessor.clean_text(raw_text)
+    if not cleaned:
+        return ""
+    lines = ["# Анализ искового заявления", "", "## Ответ модели", cleaned.strip(), ""]
+    return "\n".join(lines).strip()
+
+
 class LawsuitAnalyzer(DocumentProcessor):
     """Анализирует исковые заявления: требования, доказательства, риски и рекомендации."""
 
@@ -462,13 +491,32 @@ class LawsuitAnalyzer(DocumentProcessor):
             "improvement_steps": _clean_list(payload.get("improvement_steps")),
         }
 
+        fallback_used = False
+        fallback_markdown = ""
+        if not _analysis_has_content(analysis):
+            fallback_text = raw_text.strip()
+            if not fallback_text:
+                raise ProcessingError(
+                    "Модель вернула пустой ответ, повторите запрос позднее.",
+                    "EMPTY_ANALYSIS",
+                )
+            cleaned_fallback = TextProcessor.clean_text(fallback_text)
+            summary_fallback = cleaned_fallback[:600]
+            analysis["summary"] = summary_fallback
+            analysis["fallback_raw_text"] = cleaned_fallback
+            fallback_markdown = _build_fallback_markdown(fallback_text)
+            fallback_used = True
+
         confidence_label = analysis.get("confidence")
         if confidence_label:
             await _notify("analysis_ready", 85.0, note=f"Уверенность: {confidence_label}")
         else:
             await _notify("analysis_ready", 85.0)
 
-        markdown_report = self._build_markdown_report(analysis)
+        if fallback_used and fallback_markdown:
+            markdown_report = fallback_markdown
+        else:
+            markdown_report = self._build_markdown_report(analysis)
 
         await _notify("completed", 100.0)
 
@@ -478,6 +526,8 @@ class LawsuitAnalyzer(DocumentProcessor):
                 "markdown": markdown_report,
                 "raw_response": raw_text,
                 "truncated": truncated,
+                "fallback_used": fallback_used,
+                "fallback_markdown": fallback_markdown or None,
             },
             message="Анализ искового заявления готов",
         )
@@ -574,5 +624,9 @@ class LawsuitAnalyzer(DocumentProcessor):
         confidence = analysis.get("confidence")
         if confidence:
             lines.extend(["", f"_Уровень уверенности анализа: {confidence}_"])
+
+        fallback_raw = str(analysis.get("fallback_raw_text") or "").strip()
+        if fallback_raw:
+            lines.extend(["", "## Ответ модели (fallback)", fallback_raw, ""])
 
         return "\n".join(lines).strip()

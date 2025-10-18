@@ -428,7 +428,11 @@ class DocumentManager:
 
         elif operation == "lawsuit_analysis":
             analysis = result.data.get("analysis") or {}
-            markdown = self._build_lawsuit_markdown(analysis).strip()
+            markdown = (result.data.get("markdown") or "").strip()
+            if not markdown:
+                markdown = self._build_lawsuit_markdown(analysis).strip()
+            if not markdown:
+                markdown = str(result.data.get("fallback_markdown") or "").strip()
             if not markdown:
                 raise ProcessingError(
                     "Не удалось подготовить содержимое для DOCX-отчета",
@@ -1014,6 +1018,10 @@ class DocumentManager:
             lines.append("")
             lines.append(f"<i>{html_escape(str(note))}</i>")
 
+        if data.get("fallback_used"):
+            lines.append("")
+            lines.append("<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>")
+
         return "\n".join(lines).strip()
 
     def _format_chat_loaded(self, data: Dict[str, Any], message: str) -> str:
@@ -1150,5 +1158,9 @@ class DocumentManager:
         confidence = str(analysis.get("confidence") or "").strip()
         if confidence:
             lines.extend(["", f"_Уверенность анализа: {confidence}_"])
+
+        fallback_raw = str(analysis.get("fallback_raw_text") or "").strip()
+        if fallback_raw:
+            lines.extend(["", "## Ответ модели (fallback)", fallback_raw])
 
         return "\n".join(lines).strip()
