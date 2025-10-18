@@ -25,6 +25,16 @@ from src.core.subscription_payments import (
 PERIOD_OPTIONS: Sequence[int] = (7, 30, 90)
 PROGRESS_BAR_LENGTH = 10
 HEADER_DIVIDER = "━━━━━━━━━━━━"
+DOCUMENT_OPERATION_LABELS: Mapping[str, str] = {
+    "document_summarize": "📑 Краткая выжимка документа",
+    "document_analyze_risks": "⚠️ Анализ рисков",
+    "document_lawsuit_analysis": "⚖️ Анализ искового заявления",
+    "document_anonymize": "🕶️ Анонимизация",
+    "document_translate": "🌍 Перевод документов",
+    "document_ocr": "🔍 Распознавание текста",
+    "document_chat": "💬 Чат с документом",
+    "document_draft": "✨ Создание юридического документа",
+}
 FEATURE_LABELS: Mapping[str, str] = {
     "legal_question": "Юридические вопросы",
     "document_processing": "Работа с документами",
@@ -34,6 +44,7 @@ FEATURE_LABELS: Mapping[str, str] = {
     "ocr_processing": "Распознавание текста",
     "document_chat": "Чаты по документам",
     "document_work": "Работа с документами",
+    **DOCUMENT_OPERATION_LABELS,
 }
 
 DOCUMENT_REQUEST_PREFIXES: tuple[str, ...] = ("document_", "doc_")
@@ -347,6 +358,7 @@ async def generate_user_stats_response(
     hour_counts = stats.get("hour_of_day_counts") or {}
     raw_type_stats = stats.get("request_types") or {}
     document_requests_total = 0
+    document_breakdown: dict[str, int] = {}
     type_stats: dict[str, int] = {}
     for raw_type, raw_value in raw_type_stats.items():
         if raw_type is None:
@@ -358,6 +370,7 @@ async def generate_user_stats_response(
         key = str(raw_type)
         if _is_document_request_type(key):
             document_requests_total += count
+            document_breakdown[key] = document_breakdown.get(key, 0) + count
             continue
         type_stats[key] = type_stats.get(key, 0) + count
     if document_requests_total:
@@ -448,6 +461,16 @@ async def generate_user_stats_response(
             lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
     else:
         lines.append(_format_stat_row("  • Типы", "нет данных"))
+
+    if document_breakdown:
+        lines.extend(["", divider, "", "🗂️ <b>Работа с документами</b>", ""])
+        sorted_document_types = sorted(
+            document_breakdown.items(), key=lambda item: item[1], reverse=True
+        )
+        for req_type, count in sorted_document_types:
+            share_pct = (count / period_requests * 100) if period_requests else 0.0
+            label = DOCUMENT_OPERATION_LABELS.get(req_type, FEATURE_LABELS.get(req_type, req_type))
+            lines.append(_format_stat_row(f"  • {label}", f"{count} ({share_pct:.0f}%)"))
 
     if last_transaction:
         lines.extend(["", divider, "", "💳 <b>Последний платёж</b>", ""])
