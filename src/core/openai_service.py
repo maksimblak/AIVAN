@@ -355,6 +355,7 @@ class OpenAIService:
                 callback=stream_callback,
                 force_refresh=force_refresh,
                 attachments=attachments,
+                enable_web=True,
             )
 
         return await self.ask_legal(
@@ -362,6 +363,7 @@ class OpenAIService:
             user_text,
             attachments=attachments,
             force_refresh=force_refresh,
+            enable_web=True,
         )
 
     # ------------------------ служебные методы ------------------------
