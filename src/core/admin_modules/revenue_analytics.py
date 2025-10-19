@@ -9,11 +9,9 @@
 - Net MRR Growth
 """
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-import json
 
 
 @dataclass
@@ -304,7 +302,7 @@ class RevenueAnalytics:
             try:
                 mrr = await self.get_mrr_breakdown(month_str)
                 historical.append(mrr)
-            except:
+            except Exception:
                 pass
 
         if len(historical) < 2:
@@ -440,7 +438,7 @@ class RevenueAnalytics:
             try:
                 mrr = await self.get_mrr_breakdown(month_str)
                 history.append(mrr)
-            except:
+            except Exception:
                 pass
 
         return history

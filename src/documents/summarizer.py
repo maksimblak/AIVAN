@@ -1,4 +1,4 @@
-"""
+﻿"""
 Модуль саммаризации документов
 Создает структурированное резюме документа с ключевыми выводами для юристов
 """
@@ -421,11 +421,11 @@ class DocumentSummarizer(DocumentProcessor):
         # 2) ключевые положения — заголовки/пункты/строки с двоеточиями или маркерами
         bullets = []
         for line in text.splitlines():
-            l = line.strip()
-            if not l:
+            line_str = line.strip()
+            if not line_str:
                 continue
-            if re.match(r"^(\d+[.)]|[-–—*•])\s+", l) or (":" in l and len(l) < 200):
-                bullets.append(l)
+            if re.match(r"^(\d+[.)]|[-–—*•])\s+", line_str) or (":" in line_str and len(line_str) < 200):
+                bullets.append(line_str)
             if len(bullets) >= self.max_key_items:
                 break
 
@@ -608,3 +608,5 @@ class DocumentSummarizer(DocumentProcessor):
 
 
 __all__ = ["DocumentSummarizer"]
+
+

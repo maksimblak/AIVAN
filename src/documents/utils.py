@@ -10,7 +10,7 @@ import mimetypes
 import re
 import statistics
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

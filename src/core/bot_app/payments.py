@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from html import escape as html_escape
-from typing import Any
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode

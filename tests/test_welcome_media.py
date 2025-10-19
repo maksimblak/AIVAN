@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+﻿# mypy: ignore-errors
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -86,3 +87,5 @@ async def test_cmd_start_sends_welcome_video(tmp_path):
     assert message._videos == [clip]
     assert not message._photos
     assert message._texts, "welcome text should follow the media"
+
+

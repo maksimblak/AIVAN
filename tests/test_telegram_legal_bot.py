@@ -1,3 +1,4 @@
+﻿# mypy: ignore-errors
 import io
 import sys
 import types
@@ -191,3 +192,5 @@ def test_healthcheck_main_outputs_payload(monkeypatch: pytest.MonkeyPatch) -> No
     buffer.seek(0)
     payload = buffer.read()
     assert '"status": "fail"' in payload
+
+

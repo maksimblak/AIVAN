@@ -1,3 +1,4 @@
+﻿# mypy: ignore-errors
 import re
 import sys
 import types
@@ -223,3 +224,5 @@ async def test_send_html_text_handles_split_failure(
     send_mock.assert_awaited_once()
     _, kwargs = send_mock.await_args
     assert kwargs["html"] == "hello world"
+
+

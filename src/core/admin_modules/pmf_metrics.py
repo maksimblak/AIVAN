@@ -8,11 +8,7 @@
 4. Usage Intensity - как часто используют
 """
 
-import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any
-import json
 
 
 @dataclass

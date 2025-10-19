@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import time
-from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,13 +9,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from src.bot.ui_components import Emoji
 from src.core.bot_app import context as ctx
 from src.core.bot_app.formatting import (
-    _format_number,
     _format_response_time,
     _format_stat_row,
     _format_trend_value,
 )
 from src.core.bot_app.formatting import _format_currency, _format_datetime
-from src.core.bot_app.payments import get_plan_pricing, plan_stars_amount
+from src.core.bot_app.payments import get_plan_pricing
 from src.core.subscription_payments import (
     SubscriptionPayloadError,
     parse_subscription_payload,
@@ -355,11 +353,11 @@ async def generate_user_stats_response(
     period_requests = int(stats.get("period_requests", 0) or 0)
     previous_requests = int(stats.get("previous_period_requests", 0) or 0)
     period_successful = int(stats.get("period_successful", 0) or 0)
-    previous_successful = int(stats.get("previous_period_successful", 0) or 0)
-    period_tokens = int(stats.get("period_tokens", 0) or 0)
+    previous_successful = int(stats.get("previous_period_successful", 0) or 0)  # noqa: F841
+    period_tokens = int(stats.get("period_tokens", 0) or 0)  # noqa: F841
     avg_response_time_ms = int(stats.get("avg_response_time_ms", 0) or 0)
 
-    success_rate = (period_successful / period_requests * 100) if period_requests else 0.0
+    success_rate = (period_successful / period_requests * 100) if period_requests else 0.0  # noqa: F841
 
     day_counts = stats.get("day_of_week_counts") or {}
     hour_counts = stats.get("hour_of_day_counts") or {}
@@ -391,7 +389,7 @@ async def generate_user_stats_response(
     last_transaction = stats.get("last_transaction")
 
     created_at_ts = stats.get("created_at") or getattr(user, "created_at", 0)
-    updated_at_ts = stats.get("updated_at") or getattr(user, "updated_at", 0)
+    updated_at_ts = stats.get("updated_at") or getattr(user, "updated_at", 0)  # noqa: F841
     last_request_ts = stats.get("last_request_at", 0)
 
     subscription_balance_raw = stats.get("subscription_requests_balance")

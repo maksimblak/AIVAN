@@ -221,7 +221,7 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
         elif reference:
             basis_lines.append(f"• {html.escape(reference)}")
     if basis_lines:
-        parts.append(f"<b>Правовое основание:</b>\n" + "\n".join(basis_lines))
+        parts.append("<b>Правовое основание:</b>\n" + "\n".join(basis_lines))
 
     risk_lines: list[str] = []
     for r in risks:
@@ -229,7 +229,7 @@ def _format_structured_legal_response(data: Mapping[str, Any]) -> str:
         if rtxt:
             risk_lines.append(f"• {html.escape(rtxt)}")
     if risk_lines:
-        parts.append(f"<b>Риски:</b>\n" + "\n".join(risk_lines))
+        parts.append("<b>Риски:</b>\n" + "\n".join(risk_lines))
 
     if disclaimer:
         parts.append(f"<i>{html.escape(disclaimer)}</i>")

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Модуль валидации входных данных для безопасности и корректности обработки
 """
 
@@ -302,24 +302,24 @@ class InputValidator:
     def validate_config_value(cls, key: str, value: Any, expected_type: type) -> ValidationResult:
         """Валидация конфигурационных значений"""
         try:
-            if expected_type == bool:
+            if expected_type is bool:
                 if isinstance(value, str):
                     cleaned_bool = value.lower() in ("true", "1", "yes", "on")
                 else:
                     cleaned_bool = bool(value)
-            elif expected_type == int:
+            elif expected_type is int:
                 cleaned_int = int(value)
                 if cleaned_int < 0:
                     return ValidationResult(
                         is_valid=False, errors=[f"Значение {key} должно быть неотрицательным"]
                     )
-            elif expected_type == float:
+            elif expected_type is float:
                 cleaned_float = float(value)
                 if cleaned_float < 0:
                     return ValidationResult(
                         is_valid=False, errors=[f"Значение {key} должно быть неотрицательным"]
                     )
-            elif expected_type == str:
+            elif expected_type is str:
                 cleaned_str = str(value).strip()
                 if not cleaned_str:
                     return ValidationResult(
@@ -329,13 +329,13 @@ class InputValidator:
                 cleaned_value = expected_type(value)
 
             # Возвращаем правильное значение в зависимости от типа
-            if expected_type == bool:
+            if expected_type is bool:
                 return ValidationResult(is_valid=True, cleaned_data=str(cleaned_bool))
-            elif expected_type == int:
+            elif expected_type is int:
                 return ValidationResult(is_valid=True, cleaned_data=str(cleaned_int))
-            elif expected_type == float:
+            elif expected_type is float:
                 return ValidationResult(is_valid=True, cleaned_data=str(cleaned_float))
-            elif expected_type == str:
+            elif expected_type is str:
                 return ValidationResult(is_valid=True, cleaned_data=cleaned_str)
             else:
                 return ValidationResult(is_valid=True, cleaned_data=str(cleaned_value))
@@ -366,3 +366,4 @@ def validate_input(validation_func):
         return wrapper
 
     return decorator
+

@@ -1,3 +1,4 @@
+﻿# mypy: ignore-errors
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -98,3 +99,5 @@ async def test_process_document_unknown_operation(tmp_path: Path) -> None:
 
     assert result.success is False
     assert result.error_code == "UNKNOWN_OPERATION"
+
+

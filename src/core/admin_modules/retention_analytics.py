@@ -9,7 +9,6 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 import json
 
@@ -905,6 +904,3 @@ class RetentionAnalytics:
 
         return distribution
 
-__all__ = (
-    "session_duration_avg_minutes",
-)

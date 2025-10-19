@@ -281,7 +281,7 @@ class ServiceRegistry:
                                 node = NodeInfo.from_dict(node_dict)
                                 if not node.is_healthy:
                                     dead_nodes.append(node_id)
-                            except:
+                            except Exception:
                                 dead_nodes.append(node_id)  # Некорректные данные тоже удаляем
 
                         if dead_nodes:

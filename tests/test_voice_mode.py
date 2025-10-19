@@ -1,4 +1,5 @@
-﻿import io
+﻿# mypy: ignore-errors
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -114,3 +115,5 @@ async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
         ms.audio_service = original_audio_service
         ms.config = original_config
         ms.process_question = original_process_question
+
+

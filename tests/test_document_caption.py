@@ -1,3 +1,4 @@
+﻿# mypy: ignore-errors
 import asyncio
 import sys
 import types
@@ -310,3 +311,5 @@ def test_finalize_draft_truncates_caption_and_preserves_html(monkeypatch):
     assert "Документ успешно создан" in caption
     assert "<b>Проверено</b>" in caption
     assert doc_call["parse_mode"] == module.ParseMode.HTML
+
+

@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 # Фикс кодировки для Windows
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Добавляем путь к проекту
 sys.path.insert(0, str(Path(__file__).parent))

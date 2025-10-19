@@ -1,3 +1,4 @@
+﻿# mypy: ignore-errors
 import asyncio
 import sys
 import types
@@ -96,4 +97,6 @@ async def _assert_manual_update_advances_flow() -> None:
         await status.complete()
 
     assert message.deleted
+
+
 
