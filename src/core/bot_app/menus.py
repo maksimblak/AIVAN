@@ -29,6 +29,7 @@ __all__ = [
 
 SECTION_DIVIDER = "<code>────────────────────</code>"
 HEAVY_DIVIDER = "━━━━━━━━━━━━"
+_USER_NAME_PLACEHOLDER = "__USER_NAME__"
 
 
 def _extract_start_payload(message: Message) -> str:
@@ -73,6 +74,28 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+async def _callback_rate_limit_guard(callback: CallbackQuery) -> bool:
+    if not callback.from_user:
+        return True
+
+    limiter = ctx.rate_limiter
+    if limiter is None:
+        return True
+
+    allowed = await limiter.allow(callback.from_user.id)
+    if allowed:
+        return True
+
+    try:
+        await callback.answer(
+            f"{Emoji.WARNING} Слишком много действий. Попробуйте повторить чуть позже.",
+            show_alert=True,
+        )
+    except TelegramBadRequest:
+        pass
+    return False
 
 
 async def _try_send_welcome_media(
@@ -198,8 +221,9 @@ async def cmd_start(message: Message) -> None:
     main_menu_keyboard = _main_menu_keyboard()
 
     if show_welcome:
-        user_name = message.from_user.first_name or "Пользователь"
-        welcome_raw = f"""<b>Добро пожаловать, {user_name}!</b>
+        raw_user_name = message.from_user.first_name or "Пользователь"
+        safe_user_name = html_escape(raw_user_name)
+        welcome_template = f"""<b>Добро пожаловать, {_USER_NAME_PLACEHOLDER}!</b>
     
     Меня зовут <b>ИИ-ИВАН</b>, я ваш виртуальный юридический ассистент.
     
@@ -226,7 +250,10 @@ async def cmd_start(message: Message) -> None:
     💬 "Могут ли наследники оспорить завещание после 6 месяцев?".
     
     <b> ПОПРОБУЙТЕ ПРЯМО СЕЙЧАС </b>👇👇👇"""
-        welcome_html = sanitize_telegram_html(welcome_raw)
+        welcome_html = sanitize_telegram_html(welcome_template).replace(
+            _USER_NAME_PLACEHOLDER,
+            safe_user_name,
+        )
     
         media_sent = await _try_send_welcome_media(
             message=message,
@@ -307,6 +334,9 @@ async def handle_my_profile_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Ошибка данных")
         return
 
+    if not await _callback_rate_limit_guard(callback):
+        return
+
     db = ctx.db
     try:
         await callback.answer()
@@ -381,6 +411,9 @@ async def handle_my_profile_callback(callback: CallbackQuery) -> None:
 async def handle_my_stats_callback(callback: CallbackQuery) -> None:
     if not callback.from_user or callback.message is None:
         await callback.answer("❌ Ошибка данных", show_alert=True)
+        return
+
+    if not await _callback_rate_limit_guard(callback):
         return
 
     db = ctx.db
@@ -475,6 +508,9 @@ def _build_referral_link(referral_code: str | None) -> tuple[str | None, str | N
 async def handle_referral_program_callback(callback: CallbackQuery) -> None:
     if not callback.from_user:
         await callback.answer("❌ Ошибка данных")
+        return
+
+    if not await _callback_rate_limit_guard(callback):
         return
 
     db = ctx.db
@@ -660,6 +696,9 @@ async def handle_copy_referral_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Ошибка данных")
         return
 
+    if not await _callback_rate_limit_guard(callback):
+        return
+
     try:
         callback_data = callback.data or ""
         if callback_data.startswith("copy_referral_"):
@@ -705,6 +744,9 @@ async def handle_back_to_main_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Ошибка данных")
         return
 
+    if not await _callback_rate_limit_guard(callback):
+        return
+
     try:
         await callback.answer()
         message = callback.message
@@ -729,6 +771,9 @@ async def handle_legal_question_callback(callback: CallbackQuery) -> None:
     """Handle 'legal_question' menu button."""
     if not callback.from_user:
         await callback.answer("❌ Ошибка данных")
+        return
+
+    if not await _callback_rate_limit_guard(callback):
         return
 
     try:
@@ -787,6 +832,9 @@ async def handle_search_practice_callback(callback: CallbackQuery) -> None:
     """Handle 'search_practice' menu button."""
     if not callback.from_user:
         await callback.answer("❌ Ошибка данных")
+        return
+
+    if not await _callback_rate_limit_guard(callback):
         return
 
     try:
@@ -849,6 +897,9 @@ async def handle_prepare_documents_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Ошибка данных")
         return
 
+    if not await _callback_rate_limit_guard(callback):
+        return
+
     try:
         await callback.answer()
 
@@ -893,8 +944,18 @@ async def handle_help_info_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Ошибка данных")
         return
 
+    if not await _callback_rate_limit_guard(callback):
+        return
+
     try:
         await callback.answer()
+
+        configured_support = (ctx.SUPPORT_USERNAME or "").strip()
+        if configured_support and not configured_support.startswith("@"):
+            configured_support = f"@{configured_support}"
+        fallback_bot = (ctx.BOT_USERNAME or "").strip()
+        fallback_contact = f"@{fallback_bot}" if fallback_bot else "—"
+        support_contact = configured_support or fallback_contact
 
         support_text_lines = [
             "🔧 <b>Техническая поддержка</b>",
@@ -942,7 +1003,7 @@ async def handle_help_info_callback(callback: CallbackQuery) -> None:
             "   ├ Все данные зашифрованы",
             "   └ Не передаем данные третьим лицам",
         ]
-        support_text = "\n".join(support_text_lines)
+        support_text = "\n".join(support_text_lines).replace("@support_username", support_contact)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")]]

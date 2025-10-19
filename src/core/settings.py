@@ -15,6 +15,7 @@ class AppSettings(BaseModel):
 
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
+    telegram_support_username: str | None = Field(default=None, alias="TELEGRAM_SUPPORT_USERNAME")
 
     use_status_animation: bool = Field(default=True, alias="USE_STATUS_ANIMATION")
     use_streaming: bool = Field(default=True, alias="USE_STREAMING")

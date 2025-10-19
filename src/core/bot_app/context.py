@@ -50,6 +50,7 @@ __all__ = [
     "WELCOME_MEDIA",
     "BOT_TOKEN",
     "BOT_USERNAME",
+    "SUPPORT_USERNAME",
     "USE_ANIMATION",
     "USE_STREAMING",
     "SAFE_LIMIT",
@@ -95,6 +96,7 @@ _runtime: AppRuntime | None = None
 WELCOME_MEDIA: WelcomeMedia | None = None
 BOT_TOKEN = ""
 BOT_USERNAME = ""
+SUPPORT_USERNAME = ""
 USE_ANIMATION = True
 USE_STREAMING = True
 SAFE_LIMIT = 3900
@@ -169,7 +171,7 @@ def _sync_runtime_globals() -> None:
     cfg = _runtime.settings
     drv = _runtime.derived
 
-    global WELCOME_MEDIA, BOT_TOKEN, BOT_USERNAME, USE_ANIMATION, USE_STREAMING
+    global WELCOME_MEDIA, BOT_TOKEN, BOT_USERNAME, SUPPORT_USERNAME, USE_ANIMATION, USE_STREAMING
     global SAFE_LIMIT, MAX_MESSAGE_LENGTH, DB_PATH, TRIAL_REQUESTS, SUB_DURATION_DAYS
     global RUB_PROVIDER_TOKEN, SUB_PRICE_RUB, SUB_PRICE_RUB_KOPEKS
     global STARS_PROVIDER_TOKEN, SUB_PRICE_XTR, DYNAMIC_PRICE_XTR
@@ -185,6 +187,8 @@ def _sync_runtime_globals() -> None:
     BOT_TOKEN = cfg.telegram_bot_token
     username_attr = getattr(cfg, "telegram_bot_username", "")
     BOT_USERNAME = (username_attr or "").strip()
+    support_attr = getattr(cfg, "telegram_support_username", "")
+    SUPPORT_USERNAME = (support_attr or "").strip()
     USE_ANIMATION = cfg.use_status_animation
     USE_STREAMING = cfg.use_streaming
     SAFE_LIMIT = drv.safe_limit
