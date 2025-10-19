@@ -18,7 +18,7 @@ from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
 from src.bot.status_manager import ProgressStatus
 from src.bot.stream_manager import StreamManager, StreamingCallback
 from src.bot.typing_indicator import send_typing_once, typing_action
-from src.bot.ui_components import Emoji, sanitize_telegram_html
+from src.bot.ui_components import Emoji
 from src.core.attachments import QuestionAttachment
 from src.core.exceptions import (
     ErrorContext,
@@ -27,7 +27,7 @@ from src.core.exceptions import (
     SystemException,
     ValidationException,
 )
-from src.core.safe_telegram import send_html_text
+from src.core.safe_telegram import format_safe_html, send_html_text
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.common import get_user_session, get_safe_db_method, ensure_valid_user_id
 from src.core.bot_app.feedback import (
@@ -817,7 +817,7 @@ async def process_question(
 
         raw_response_text = result.get("text") or stream_final_text or ""
         if raw_response_text:
-            clean_html = sanitize_telegram_html(raw_response_text)
+            clean_html = format_safe_html(raw_response_text)
             chunks = _split_html_for_telegram(clean_html, TELEGRAM_HTML_SAFE_LIMIT)
 
             if len(chunks) == 1:
