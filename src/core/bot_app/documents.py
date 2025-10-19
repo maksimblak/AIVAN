@@ -188,6 +188,23 @@ def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
     )
 
 
+def _with_back_to_menu(markup: InlineKeyboardMarkup | None = None) -> InlineKeyboardMarkup:
+    """Append a back-to-menu button to existing markup (or create new one)."""
+    back_button = InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_menu")
+
+    if markup is None:
+        return InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+
+    keyboard = [list(row) for row in (markup.inline_keyboard or [])]
+    if not any(
+        isinstance(btn, InlineKeyboardButton) and getattr(btn, "callback_data", "") == "back_to_menu"
+        for row in keyboard
+        for btn in row
+    ):
+        keyboard.append([back_button])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 _BASE_STAGE_LABELS: dict[str, tuple[str, str]] = {
     "start": ("Подготавливаем задачу", "⚙️"),
     "downloading": ("Загружаем документ", "📥"),
@@ -1510,6 +1527,7 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
             FSInputFile(str(tmp_path), filename=filename),
             caption=final_caption,
             parse_mode=ParseMode.HTML,
+            reply_markup=_with_back_to_menu(),
         )
         if progress:
             await progress.complete(note="Документ готов")
@@ -1855,6 +1873,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
             request_success = False
             request_error: str | None = None
             request_logged = False
+            back_button_sent = False
 
             allowed, quota_note = await _ensure_quota(message, feature="document_processing")
             if not allowed:
@@ -1954,13 +1973,16 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
 
                 if result.success:
                     formatted_result = document_manager.format_result_for_telegram(result, operation)
-                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    base_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    primary_markup = _with_back_to_menu(base_markup)
                     for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
                         await message.answer(
                             chunk,
                             parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup if idx == 0 else None,
+                            reply_markup=primary_markup if idx == 0 else None,
                         )
+                        if idx == 0:
+                            back_button_sent = True
 
                     exports = result.data.get("exports") or []
                     for export in exports:
@@ -2196,11 +2218,12 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 if result.success:
                     formatted_result = document_manager.format_result_for_telegram(result, operation)
 
-                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    base_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    primary_markup = _with_back_to_menu(base_markup)
                     for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
                         await message.answer(
                             chunk,
-                            reply_markup=reply_markup if idx == 0 else None,
+                            reply_markup=primary_markup if idx == 0 else None,
                         )
 
                     exports = result.data.get("exports") or []

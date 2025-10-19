@@ -49,8 +49,6 @@ def _build_base_commands() -> list[BotCommand]:
     return [
         BotCommand(command="start", description=f"{Emoji.ROBOT} Запустить бота"),
         BotCommand(command="buy", description=f"{Emoji.MAGIC} Оформить подписку"),
-        BotCommand(command="status", description=f"{Emoji.STATS} Статус подписки"),
-        BotCommand(command="mystats", description="Показать мою статистику"),
     ]
 
 
