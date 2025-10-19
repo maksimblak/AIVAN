@@ -59,9 +59,9 @@ def _main_menu_text() -> str:
         "⚖️ <b>ИИ-ИВАН</b> — ваш виртуальный\n"
         "   юридический ассистент\n\n"
         "🎯 <b>Доступные возможности:</b>\n"
+        "   • Юридический вопрос\n"
         "   • Поиск и анализ судебной практики\n"
-        "   • Работа с документами\n"
-        "   • Юридические консультации\n\n"
+        "   • Работа с документами\n\n"
         "Выберите действие:"
     )
 
@@ -69,6 +69,7 @@ def _main_menu_text() -> str:
 def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="⚖️ Юридический вопрос", callback_data="legal_question")],
             [InlineKeyboardButton(text="🔍 Поиск и анализ судебной практики", callback_data="search_practice")],
             [InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing")],
             [
@@ -705,6 +706,54 @@ async def handle_back_to_main_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Произошла ошибка")
 
 
+async def handle_legal_question_callback(callback: CallbackQuery) -> None:
+    """Handle 'legal_question' menu button."""
+    if not callback.from_user:
+        await callback.answer("❌ Ошибка данных")
+        return
+
+    try:
+        await callback.answer()
+
+        instruction_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")],
+            ]
+        )
+
+        question_text_lines = [
+            "⚖️ <b>Юридический вопрос</b>",
+            HEAVY_DIVIDER,
+            "",
+            "🧠 <i>Задайте правовую ситуацию — я дам",
+            "   развёрнутый ответ и предложу стратегии</i>",
+            "",
+            HEAVY_DIVIDER,
+            "",
+            "📋 <b>Что будет в ответе:</b>",
+            "",
+            "• анализ вашей ситуации и рисков",
+            "• ссылки на нормы права и практику",
+            "• рекомендации по следующим шагам",
+            "",
+            "✍️ Напишите вопрос одним сообщением —",
+            "   и дождитесь ответа в чате.",
+        ]
+
+        await callback.message.edit_text(
+            "\n".join(question_text_lines),
+            parse_mode=ParseMode.HTML,
+            reply_markup=instruction_keyboard,
+        )
+
+        user_session = get_user_session(callback.from_user.id)
+        setattr(user_session, "practice_search_mode", False)
+        setattr(user_session, "document_preparation_mode", False)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error in handle_legal_question_callback: %s", exc)
+        await callback.answer("❌ Произошла ошибка")
+
+
 async def handle_search_practice_callback(callback: CallbackQuery) -> None:
     """Handle 'search_practice' menu button."""
     if not callback.from_user:
@@ -1000,6 +1049,7 @@ def register_menu_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(handle_my_profile_callback, F.data == "my_profile")
     dp.callback_query.register(handle_my_stats_callback, F.data == "my_stats")
     dp.callback_query.register(handle_back_to_main_callback, F.data == "back_to_main")
+    dp.callback_query.register(handle_legal_question_callback, F.data == "legal_question")
     dp.callback_query.register(handle_search_practice_callback, F.data == "search_practice")
     dp.callback_query.register(handle_prepare_documents_callback, F.data == "prepare_documents")
     dp.callback_query.register(handle_referral_program_callback, F.data == "referral_program")
