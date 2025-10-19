@@ -1,67 +1,61 @@
 # AIVAN Production Deployment Guide
 
-This document summarises how to run the bot in a production-ready way after the recent
-hardening pass.
+This runbook описывает безопасный запуск Telegram-бота AIVAN в staging и production средах.
 
-## 1. Prerequisites
-- Python 3.12 (or run via the provided Docker image).
-- Access to the required external services: OpenAI, Telegram Bot API, payment providers.
-- Redis (optional, enables persistent rate limiting and scaling scenarios).
-- Prometheus + Grafana stack (optional, for observability).
+## 1. Предварительные требования
+- Python 3.12+ или Docker/Compose.
+- Telegram Bot API токен и OpenAI API ключ (создайте свежие перед релизом).
+- (Опционально) Redis для rate-limit'ов и горизонтального масштабирования.
+- (Опционально) Prometheus + Grafana для метрик.
+- VPN/прокси, если инфраструктура требует выхода в Telegram/OpenAI через прокси.
 
-## 2. Configuration
-1. Copy `.env.example` to the secure location you use for secrets management.
-2. Fill in the required variables:
+## 2. Подготовка конфигурации
+1. Скопируйте `.env.example` в защищённое место, но **не коммитьте** реальные секреты.
+2. Заполните обязательные переменные:
    - `TELEGRAM_BOT_TOKEN`
    - `OPENAI_API_KEY`
-   - Payment tokens (`CRYPTO_PAY_TOKEN`, `TELEGRAM_PROVIDER_TOKEN_*`, etc.).
-3. Set optional knobs when you enable extra services:
-   - `REDIS_URL` when deploying Redis.
-   - `PROMETHEUS_PORT` when exposing metrics.
-4. Do **not** commit real secret values. The repository now only ships placeholders.
+   - `DB_PATH` (по умолчанию `data/bot.sqlite3`)
+3. Настройте дополнительные блоки:
+   - Голосовой режим (`ENABLE_VOICE_MODE`, `VOICE_*`).
+   - Платежи (`CRYPTO_PAY_TOKEN`, `TELEGRAM_PROVIDER_TOKEN_*`, `YOOKASSA_*` и т.д.).
+   - RAG (`RAG_ENABLED`, `RAG_QDRANT_URL`, `RAG_COLLECTION`).
+4. Убедитесь, что секреты хранятся в секрет-менеджере (Vault, AWS Secrets Manager, GitHub Actions secrets).
 
-## 3. Running With Poetry (development / staging)
+## 3. Запуск для разработки / QA
 ```bash
 poetry install --with dev
 poetry run python -m telegram_legal_bot.main
 ```
+Отладочные логи включаются через `LOG_LEVEL=DEBUG`, healthcheck доступен через `python -m telegram_legal_bot.healthcheck`.
 
-> The launcher fails fast if required secrets are still placeholders.
-
-## 4. Running With Docker
+## 4. Docker-развёртывание
 ```bash
 docker build -t aivan-bot .
-docker run --env-file path/to/prod.env aivan-bot
+docker run --env-file path/to/prod.env --volume $(pwd)/data:/app/data aivan-bot
 ```
-
-- Health probes use `python -m telegram_legal_bot.healthcheck`.
-- The container exposes port `8000` for optional HTTP services (metrics, REST, etc.).
 
 ### Docker Compose
-Use `docker-compose.yml` when running the bot together with Redis / Prometheus / Grafana.
-Remember to set:
-```yaml
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      PROMETHEUS_PORT: 9000    # match healthcheck expectations
+```bash
+docker compose up --build aivan
 ```
+Включает Redis и (опционально) стек мониторинга. Проверьте монтирование `./data`, `./logs` и профили `monitoring` для Prometheus/Grafana.
 
-## 5. Observability & Health
-- Prometheus exporter is enabled via `ENABLE_PROMETHEUS=1` and `PROMETHEUS_PORT`.
-- Docker health check validates environment, storage permissions, and optional services.
-- Metrics include system status, request counters, and health-check summaries.
+## 5. Наблюдаемость
+- Метрики Prometheus активируются `ENABLE_PROMETHEUS=1` и `PROMETHEUS_PORT` (по умолчанию 9000).
+- Healthcheck в Dockerfile автоматически выполняет `python -m telegram_legal_bot.healthcheck`.
+- `scripts/validate_project.py` проверяет зависимости, DI-контейнер и SQLite.
 
-## 6. Release Checklist
-1. `poetry check` – validates the packaging metadata.
-2. `poetry run pytest` – run automated tests (add a CI workflow to enforce this).
-3. Build Docker image and run `python -m telegram_legal_bot.healthcheck` manually.
-4. Ensure secrets are sourced from your secrets manager (Vault, AWS SM, etc.).
-5. Configure logging destination (JSON logs work well with ELK / Loki).
-6. Tag the image and push to your registry.
+## 6. Release checklist
+1. Поменяйте все ключи, которые могли находиться в репозитории или в старых окружениях.
+2. `poetry run python scripts/run_tests.py` — без ошибок.
+3. Соберите Docker-образ и прогоните healthcheck локально.
+4. Обновите changelog/релиз-ноты, опишите миграции и особенности деплоя.
+5. Добавьте артефакты (Docker image tag, helm chart и т.п.) в релиз.
+6. Убедитесь, что CI содержит шаги lint→test→build→scan и использует секреты из менеджера.
 
-## 7. Next Steps / Open Items
-- Add CI/CD pipeline (GitHub Actions / GitLab CI) to automate the checklist.
-- Rotate production tokens since the previous `.env` leaked real values.
-- Consider reducing image size (multi-stage build already prepared) by using wheels caches.
-- Audit large modules such as `core/main_simple.py` and split into maintainable components.
-- Finalise localisation: current README still contains mojibake from incorrect encoding.
+## 7. Дополнительные рекомендации
+- При ротации секретов используйте rolling reload контейнеров.
+- Настройте alerting в Prometheus/Grafana на ключевые метрики (`openai_errors_total`, `payment_failures_total`, `security_warnings_total`).
+- Пересматривайте лимиты OpenAI и Telegram, чтобы избежать блокировок.
+- Планируйте резервное копирование `data/` либо переход на внешнюю БД (PostgreSQL) для продакшена.
+
