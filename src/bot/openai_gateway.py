@@ -127,10 +127,12 @@ _NOISE_RESPONSE_TYPES = {
 StreamCallback = Callable[[str, bool], Awaitable[None] | None]
 
 
-def _truncate_for_log(text: str, limit: int = 600) -> str:
+def _truncate_for_log(text: str, limit: int | None = None) -> str:
     if not text:
         return ""
-    return text if len(text) <= limit else f"{text[:limit]}… [truncated]"
+    if limit is not None and limit > 0 and len(text) > limit:
+        return f"{text[:limit]}… [truncated]"
+    return text
 
 
 def _collect_finish_reasons(output: Any) -> list[str]:
