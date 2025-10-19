@@ -379,7 +379,7 @@ def handle_exceptions(error_handler: ErrorHandler, context_func: Callable | None
                 if context_func:
                     try:
                         context = context_func(*args, **kwargs)
-                    except:
+                    except Exception:
                         pass
 
                 custom_exc = await error_handler.handle_exception(e, context)

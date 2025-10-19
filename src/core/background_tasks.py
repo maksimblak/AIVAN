@@ -116,7 +116,7 @@ class BackgroundTask(ABC):
                             additional_data={"retry_count": retry_count},
                         )
                         await self._error_handler.handle_exception(e, context)
-                    except:
+                    except Exception:
                         pass
 
                 if retry_count > self.max_retries:

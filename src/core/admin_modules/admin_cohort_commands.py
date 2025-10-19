@@ -153,7 +153,7 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
     for feature, adoption in cohort.top_features[:5]:
         text += f"  • {feature}: {adoption:.1f}% пользователей\n"
 
-    text += f"\n<b>📉 Отток:</b>\n"
+    text += "\n<b>📉 Отток:</b>\n"
     text += f"  Пользователей в оттоке: {cohort.churned_count}\n"
     text += f"  Доля оттока: {cohort.churn_rate:.1f}%\n"
     if cohort.avg_days_to_churn:
@@ -211,7 +211,7 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
     for cohort_month, days in sorted(adoption.avg_days_to_first_use.items(), reverse=True):
         text += f"  {cohort_month}: {days:.1f} дней\n"
 
-    text += f"\n<b>🔗 Влияние на удержание:</b>\n"
+    text += "\n<b>🔗 Влияние на удержание:</b>\n"
     text += f"  С фичей: {adoption.users_with_feature_retention:.1f}%\n"
     text += f"  Без фичи: {adoption.users_without_feature_retention:.1f}%\n"
     text += f"  Прирост удержания: <b>{adoption.retention_lift:+.1f}%</b>\n\n"

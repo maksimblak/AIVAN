@@ -361,7 +361,7 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
         if success:
             sent_count += 1
 
-    text = f"✅ <b>NPS-опросы отправлены</b>\n\n"
+    text = "✅ <b>NPS-опросы отправлены</b>\n\n"
     text += f"Сегмент: {segment}\n"
     text += f"Отправлено: {sent_count} пользователям\n\n"
     text += "Пользователи получат опрос при следующем взаимодействии с ботом."

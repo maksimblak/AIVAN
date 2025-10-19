@@ -6,14 +6,12 @@
 from __future__ import annotations
 
 import logging
-from html import escape as html_escape
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from src.bot.ui_components import Emoji
 from src.core.admin_modules.retention_analytics import RetentionAnalytics
 from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, parse_user_id, require_admin
 
@@ -99,7 +97,7 @@ async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]
     avg_diversity = sum(u.feature_diversity for u in retained) / len(retained)
     avg_requests_day = sum(u.avg_requests_per_day for u in retained) / len(retained)
 
-    output += f"<b>📊 Средние показатели:</b>\n"
+    output += "<b>📊 Средние показатели:</b>\n"
     output += f"• Индекс Power: {avg_power:.1f}/100\n"
     output += f"• Разнообразие функций: {avg_diversity:.1f}%\n"
     output += f"• Активность: {avg_requests_day:.1f} запросов/день\n\n"
@@ -115,7 +113,7 @@ async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]
         output += f"   • Платежей: {user.payment_count}\n"
         output += f"   • Индекс Power: {user.power_user_score}/100\n"
         output += f"   • Активность: {user.avg_requests_per_day:.1f} запр./день\n"
-        output += f"   • Любимые фичи:\n"
+        output += "   • Любимые фичи:\n"
 
         for feature, count in user.favorite_features[:3]:
             output += f"      - {feature}: {count} раз\n"
@@ -289,12 +287,12 @@ async def handle_compare_groups(callback: CallbackQuery, db, admin_ids: set[int]
     # Power Score (только у retained)
     output += "<b>⚡ Индекс Power:</b>\n"
     output += f"Продлевающие: {retained_data['avg_power_score']:.1f}/100\n"
-    output += f"Отток: нет данных (не продлили)\n\n"
+    output += "Отток: нет данных (не продлили)\n\n"
 
     # Feature Diversity
     output += "<b>🎯 Разнообразие функций:</b>\n"
     output += f"Продлевающие: {retained_data['avg_feature_diversity']:.1f}%\n"
-    output += f"Отток: изучают меньше функций\n\n"
+    output += "Отток: изучают меньше функций\n\n"
 
     # Топ фичи для retained
     output += "<b>💎 Что ценят продлевающие:</b>\n"
@@ -372,36 +370,36 @@ async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
 
     if retained_user:
         output = f"<b>💎 Пользователь (продлевает) #{user_id}</b>\n\n"
-        output += f"<b>💰 Монетизация:</b>\n"
+        output += "<b>💰 Монетизация:</b>\n"
         output += f"• Платежей: {retained_user.payment_count}\n"
         output += f"• Потрачено: {retained_user.total_spent} руб\n"
         output += f"• Время жизни: {retained_user.lifetime_days} дней\n"
         output += f"• Время до первой оплаты: {retained_user.time_to_first_payment_days} дней\n\n"
 
-        output += f"<b>📊 Активность:</b>\n"
+        output += "<b>📊 Активность:</b>\n"
         output += f"• Всего запросов: {retained_user.total_requests}\n"
         output += f"• В день: {retained_user.avg_requests_per_day:.1f}\n"
         output += f"• Дней активности в неделю: {retained_user.days_active_per_week:.1f}\n"
         output += f"• Максимальная серия: {retained_user.streak_max_days} дней подряд\n\n"
 
-        output += f"<b>🎯 Вовлеченность:</b>\n"
+        output += "<b>🎯 Вовлеченность:</b>\n"
         output += f"• Индекс Power: {retained_user.power_user_score:.1f}/100\n"
         output += f"• Разнообразие функций: {retained_user.feature_diversity:.1f}%\n"
         output += f"• Вероятность удержания: {retained_user.retention_probability:.1f}%\n\n"
 
-        output += f"<b>💝 Любимые фичи:</b>\n"
+        output += "<b>💝 Любимые фичи:</b>\n"
         for feature, count in retained_user.favorite_features[:5]:
             output += f"• {feature}: {count} раз\n"
 
-        output += f"\n<b>⏰ Паттерны:</b>\n"
+        output += "\n<b>⏰ Паттерны:</b>\n"
         if retained_user.usage_patterns.get('peak_hour') is not None:
             output += f"• Пик активности: {retained_user.usage_patterns['peak_hour']:02d}:00\n"
         if retained_user.usage_patterns.get('is_weekday_user'):
-            output += f"• Тип: Будние дни (B2B?)\n"
+            output += "• Тип: Будние дни (B2B?)\n"
         else:
-            output += f"• Тип: Выходные (B2C?)\n"
+            output += "• Тип: Выходные (B2C?)\n"
 
-        output += f"\n<b>✅ Что делает его ценным:</b>\n"
+        output += "\n<b>✅ Что делает его ценным:</b>\n"
 
         if retained_user.power_user_score > 70:
             output += "• 🌟 Power user - критически зависит от продукта\n"
@@ -419,33 +417,33 @@ async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
 
         if churned_user:
             output = f"<b>📉 Пользователь в оттоке #{user_id}</b>\n\n"
-            output += f"<b>💰 История:</b>\n"
+            output += "<b>💰 История:</b>\n"
             output += f"• Платежей: {churned_user.payment_count}\n"
             output += f"• Потрачено: {churned_user.total_spent} руб\n"
             output += f"• Был активен: {churned_user.lifetime_days} дней\n"
             output += f"• Последняя активность: {churned_user.last_active_days_ago} дней назад\n\n"
 
-            output += f"<b>📊 Активность:</b>\n"
+            output += "<b>📊 Активность:</b>\n"
             output += f"• Всего запросов: {churned_user.total_requests}\n\n"
 
-            output += f"<b>❌ Причины оттока:</b>\n"
+            output += "<b>❌ Причины оттока:</b>\n"
             for indicator in churned_user.churn_indicators:
                 output += f"• {indicator}\n"
 
-            output += f"\n<b>🎯 Что НЕ попробовал:</b>\n"
+            output += "\n<b>🎯 Что НЕ попробовал:</b>\n"
             for feature in churned_user.unused_features[:5]:
                 output += f"• {feature}\n"
 
             if churned_user.drop_off_feature:
                 output += f"\n<b>📍 Последняя активность:</b>\n{churned_user.drop_off_feature}\n"
 
-            output += f"\n<b>🔧 Проблемы:</b>\n"
+            output += "\n<b>🔧 Проблемы:</b>\n"
             if churned_user.had_technical_issues:
                 output += "⚠️ Были технические ошибки\n"
             if churned_user.received_poor_responses:
                 output += "😞 Получал плохие ответы\n"
 
-            output += f"\n<b>🎯 План возврата:</b>\n"
+            output += "\n<b>🎯 План возврата:</b>\n"
             output += f"• Вероятность: {churned_user.winback_probability:.0f}%\n"
             output += f"• Действие: <i>{churned_user.recommended_action}</i>\n"
 

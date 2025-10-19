@@ -848,8 +848,8 @@ async def handle_doc_draft_answer(
     answer_text = (source_text or "").strip()
     if not answer_text:
         await message.answer(
-            f"⚠️ <b>Пустой ответ</b>\n\n"
-            f"📝 Пожалуйста, введите ваш ответ на вопрос",
+            "⚠️ <b>Пустой ответ</b>\n\n"
+            "📝 Пожалуйста, введите ваш ответ на вопрос",
             parse_mode=ParseMode.HTML,
         )
         return

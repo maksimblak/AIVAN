@@ -7,11 +7,7 @@
 - Влияние изменений продукта на retention
 """
 
-import asyncio
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any
-import json
+from dataclasses import dataclass
 
 
 @dataclass
@@ -425,7 +421,7 @@ class CohortAnalytics:
         # 4. Power users
         avg_power_users = sum(c.power_users_count for c in cohorts) / len(cohorts)
         if best.power_users_count > avg_power_users * 1.5:
-            insights.append(f"🌟 Лучшая когорта производит в 1.5x больше power users")
+            insights.append("🌟 Лучшая когорта производит в 1.5x больше power users")
 
         # 5. Churn warning
         high_churn_cohorts = [c for c in cohorts if c.churn_rate > 50]

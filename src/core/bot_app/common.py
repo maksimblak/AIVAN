@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 
 from src.core.bot_app import context as ctx
 from src.core.session_store import UserSession

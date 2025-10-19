@@ -20,7 +20,6 @@ try:
         Histogram,
         Info,
         generate_latest,
-        start_http_server,
     )
 
     PROMETHEUS_AVAILABLE = True
@@ -312,6 +311,10 @@ class MetricsCollector:
 
             self.observe_histogram(
                 "telegram_response_duration_seconds", duration, {"message_type": message_type}
+            )
+            self.inc_counter(
+                "telegram_responses_total",
+                {"message_type": message_type, "status": status},
             )
 
     @asynccontextmanager

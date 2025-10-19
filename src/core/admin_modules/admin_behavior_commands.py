@@ -13,7 +13,6 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from src.bot.ui_components import Emoji
 from src.core.admin_modules.admin_utils import back_keyboard, parse_user_id, render_dashboard, require_admin
 from src.core.user_behavior_tracker import UserBehaviorTracker
 
@@ -266,8 +265,8 @@ async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
         peak_hour = sorted_hours[0][0]
         output += "<b>💡 Рекомендации:</b>\n"
         output += f"• Планируйте обновления вне пика ({peak_hour:02d}:00)\n"
-        output += f"• Делайте анонсы в пиковые часы\n"
-        output += f"• Усиливайте поддержку в пиковое время\n"
+        output += "• Делайте анонсы в пиковые часы\n"
+        output += "• Усиливайте поддержку в пиковое время\n"
 
     async def build_dashboard():
         return output, back_keyboard("behavior:menu")

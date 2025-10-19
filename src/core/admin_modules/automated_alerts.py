@@ -12,11 +12,10 @@
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from html import escape as html_escape
 import logging
-from typing import Any, Awaitable, Callable, Iterable
-import json
+from typing import Any, Awaitable, Iterable
 import time
 
 logger = logging.getLogger(__name__)
@@ -505,6 +504,5 @@ async def start_monitoring(db, bot, admin_chat_ids: list[int], config: AlertConf
 
 __all__ = (
     "AutomatedAlerts",
-    "retention_analytics",
     "start_monitoring",
 )

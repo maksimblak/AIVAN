@@ -120,8 +120,6 @@ def _split_html_safely(html: str, hard_limit: int = DEFAULT_TEXT_LIMIT) -> list[
 
     cleaned = re.sub(r"<br\s*/?>", "<br>", html, flags=re.IGNORECASE)
 
-    chunks: list[str] = []
-
     def _pack(parts: Iterable[str], sep: str) -> list[str]:
         out, cur, ln = [], [], 0
         for p in parts:

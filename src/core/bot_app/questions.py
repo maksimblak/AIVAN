@@ -36,7 +36,7 @@ from src.core.bot_app.feedback import (
     send_rating_request,
 )
 from src.core.garant_api import GarantAPIError
-from src.core.validation import InputValidator, ValidationSeverity
+from src.core.validation import InputValidator
 from src.core.excel_export import build_practice_excel
 
 __all__ = [
@@ -947,7 +947,7 @@ async def process_question(
                     caption="📊 Отчёт по судебной практике (XLSX)",
                     parse_mode=ParseMode.HTML,
                 )
-            except Exception as excel_error:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 logger.warning("Failed to build practice Excel", exc_info=True)
             finally:
                 with suppress(Exception):

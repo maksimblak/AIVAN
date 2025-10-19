@@ -27,7 +27,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Awaitable, Callable, Dict, List, Tuple, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, TYPE_CHECKING
 
 try:
     from docx import Document
@@ -1310,7 +1310,7 @@ class DocumentAnonymizer(DocumentProcessor):
                 snippet = cleaned[start : end + 1]
                 try:
                     return json.loads(snippet)
-                except json.JSONDecodeError as exc:  # noqa: PERF203
+                except json.JSONDecodeError:  # noqa: PERF203
                     logger.debug("Failed to parse AI anonymization JSON snippet: %s", snippet, exc_info=True)
                     return None
             logger.debug("Failed to parse AI anonymization JSON: %s", cleaned, exc_info=True)

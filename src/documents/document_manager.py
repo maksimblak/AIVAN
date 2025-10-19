@@ -5,8 +5,6 @@ High level orchestration layer for document-related processors.
 from __future__ import annotations
 
 import asyncio
-import asyncio
-import html
 import json
 import logging
 import re
@@ -310,7 +308,7 @@ class DocumentManager:
             except ProcessingError as exc:
                 logger.warning("Failed to prepare exports for %s: %s", operation, exc)
                 result = DocumentResult.error_result(exc.message, exc.error_code or "EXPORT_ERROR")
-            except Exception as exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 logger.exception("Unexpected error while preparing exports for %s", operation)
                 result = DocumentResult.error_result(
                     "Не удалось подготовить файл отчета", "EXPORT_ERROR"

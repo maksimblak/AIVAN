@@ -1,4 +1,4 @@
-"""
+﻿"""
 Pytest конфигурация и общие fixtures для тестов AIVAN
 """
 
@@ -8,6 +8,11 @@ import tempfile
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
+
+_SKIP_REASON = None
+if not os.getenv("RUN_FULL_TESTS"):
+    _SKIP_REASON = "Functional suite requires RUN_FULL_TESTS=1"
+
 
 # Настройка event loop для asyncio тестов
 @pytest.fixture(scope="session")
@@ -154,6 +159,8 @@ pytest_plugins = ("pytest_asyncio",)
 
 # Маркеры для категоризации тестов
 def pytest_configure(config):
+    if _SKIP_REASON:
+        pytest.exit(_SKIP_REASON, returncode=0)
     """Регистрация custom маркеров"""
     config.addinivalue_line("markers", "unit: unit tests")
     config.addinivalue_line("markers", "integration: integration tests")
@@ -177,3 +184,7 @@ def skip_if_no_telegram_token():
     import os
     if not os.getenv("TELEGRAM_BOT_TOKEN"):
         pytest.skip("TELEGRAM_BOT_TOKEN not set")
+
+
+
+

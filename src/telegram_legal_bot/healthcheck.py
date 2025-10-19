@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -92,7 +92,7 @@ def run_checks() -> tuple[int, dict[str, Any]]:
     try:
         settings = get_settings(force_reload=True)
     except Exception as exc:  # noqa: BLE001
-        payload = {
+        payload: dict[str, Any] = {
             "status": "fail",
             "error": f"Failed to load settings: {exc}",
         }
@@ -113,12 +113,12 @@ def run_checks() -> tuple[int, dict[str, Any]]:
         if entry_status == "warn" and status != "fail":
             status = "warn"
 
-    payload = {
+    result_payload: dict[str, Any] = {
         "status": status,
         "checks": checks,
     }
     exit_code = 0 if status == "pass" else 1
-    return exit_code, payload
+    return exit_code, result_payload
 
 
 def main() -> None:
@@ -130,3 +130,4 @@ def main() -> None:
 
 if __name__ == "__main__":  # pragma: no cover - manual execution
     main()
+

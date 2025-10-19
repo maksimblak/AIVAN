@@ -9,7 +9,6 @@ import inspect
 import logging
 import time
 from collections import deque
-from contextlib import suppress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -173,7 +172,7 @@ class DatabaseHealthCheck(HealthCheck):
                         return HealthCheckResult(status=status, message=message, details=pool_stats)
             else:
                 # Fallback для старой версии БД
-                user = await self.database.get_user(1)  # Тестовый запрос
+                await self.database.get_user(1)  # Тестовый запрос
                 return HealthCheckResult(
                     status=HealthStatus.HEALTHY,
                     message="Database connection healthy (legacy mode)",

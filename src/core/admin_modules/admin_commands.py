@@ -62,9 +62,6 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     conversion_metrics = await analytics.get_conversion_metrics()
     feature_usage = await analytics.get_feature_usage_stats(days=30)
 
-    # Подсчёт общего количества пользователей
-    total_users = sum(seg.user_count for seg in segments.values() if not seg.segment_id.startswith('plan_'))
-
     # Форматируем планы
     plan_lines = []
     total_paid = 0
@@ -76,7 +73,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
 
     plan_block = ""
     if plan_lines:
-        plan_block = f"\n\n<b>💎 Платные подписки:</b>\n" + "\n".join(plan_lines)
+        plan_block = "\n\n<b>💎 Платные подписки:</b>\n" + "\n".join(plan_lines)
 
     # Форматируем статистику использования функций
     feature_icons = {
@@ -110,7 +107,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
         name = feature_names.get(feature_key, feature_key)
         feature_lines.append(f"  {icon} {name}: <b>{count}</b>")
 
-    feature_block = f"\n\n<b>🔧 Популярные функции (30 дн.):</b>\n" + "\n".join(feature_lines)
+    feature_block = "\n\n<b>🔧 Популярные функции (30 дн.):</b>\n" + "\n".join(feature_lines)
 
     # Форматируем конверсию с индикатором
     conversion_rate = conversion_metrics.conversion_rate
