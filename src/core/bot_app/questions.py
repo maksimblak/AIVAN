@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import time
 from contextlib import suppress, asynccontextmanager
 from html import escape as html_escape
@@ -61,6 +62,30 @@ def _split_html_for_telegram(html: str, limit: int = TELEGRAM_HTML_SAFE_LIMIT) -
     if not text:
         return [" "]
 
+    def _smart_cut(segment: str, max_len: int) -> tuple[str, str]:
+        cut = min(max_len, len(segment))
+        if cut <= 0:
+            return "", segment
+
+        lt = segment.rfind("<", 0, cut)
+        gt = segment.rfind(">", 0, cut)
+        if lt > gt:
+            cut = lt
+        for pattern in ("\n\n", "\n", " • ", " — ", ". ", "; ", ": ", ", ", " "):
+            pos = segment.rfind(pattern, 0, cut)
+            if pos >= 0 and pos >= cut - 200:
+                cut = pos + len(pattern)
+                break
+
+        if cut <= 0:
+            cut = min(max_len, len(segment))
+        head = segment[:cut].rstrip()
+        tail = segment[cut:]
+        if not head and tail:
+            head = tail[:max_len]
+            tail = tail[max_len:]
+        return head, tail
+
     chunks: list[str] = []
     buffer = ""
 
@@ -84,8 +109,14 @@ def _split_html_for_telegram(html: str, limit: int = TELEGRAM_HTML_SAFE_LIMIT) -
 
         remaining = segment
         while len(remaining) > limit:
-            chunks.append(remaining[:limit].rstrip())
-            remaining = remaining[limit:]
+            head, remaining = _smart_cut(remaining, limit)
+            if not head:
+                raw_slice = remaining[:limit]
+                fallback = raw_slice.rstrip() or raw_slice
+                chunks.append(fallback)
+                remaining = remaining[len(raw_slice):]
+                continue
+            chunks.append(head)
         buffer = remaining
 
     flush_buffer()
