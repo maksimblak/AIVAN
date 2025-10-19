@@ -59,7 +59,7 @@ def _main_menu_text() -> str:
         "⚖️ <b>ИИ-ИВАН</b> — ваш виртуальный\n"
         "   юридический ассистент\n\n"
         "🎯 <b>Доступные возможности:</b>\n"
-        "   • Поиск судебной практики\n"
+        "   • Поиск и анализ судебной практики\n"
         "   • Работа с документами\n"
         "   • Юридические консультации\n\n"
         "Выберите действие:"
@@ -69,7 +69,7 @@ def _main_menu_text() -> str:
 def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Поиск судебной практики", callback_data="search_practice")],
+            [InlineKeyboardButton(text="🔍 Поиск и анализ судебной практики", callback_data="search_practice")],
             [InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing")],
             [
                 InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
@@ -721,7 +721,7 @@ async def handle_search_practice_callback(callback: CallbackQuery) -> None:
         )
 
         practice_text_lines = [
-            "🔍 <b>Поиск судебной практики</b>",
+            "🔍 <b>Поиск и анализ судебной практики</b>",
             HEAVY_DIVIDER,
             "",
             "⚖️ <i>Найду релевантную судебную практику",
