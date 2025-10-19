@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -706,8 +707,16 @@ async def handle_back_to_main_callback(callback: CallbackQuery) -> None:
 
     try:
         await callback.answer()
-        await callback.message.edit_text(
-            _main_menu_text(),
+        message = callback.message
+        if message:
+            try:
+                await message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                logger.debug("Failed to clear reply_markup for message %s", message.message_id)
+        chat_id = message.chat.id if message else callback.from_user.id
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text=_main_menu_text(),
             parse_mode=ParseMode.HTML,
             reply_markup=_main_menu_keyboard(),
         )
@@ -891,9 +900,8 @@ async def handle_help_info_callback(callback: CallbackQuery) -> None:
             "🔧 <b>Техническая поддержка</b>",
             HEAVY_DIVIDER,
             "",
-            "📞 <b>Контакты поддержки</b>",
-            "   ├ Telegram: @support_username",
-            "   └ Email: support@example.com",
+            "💬 <b>Нужна помощь?</b>",
+            "   └ Свяжитесь с нами: @support_username",
             "",
             HEAVY_DIVIDER,
             "",
