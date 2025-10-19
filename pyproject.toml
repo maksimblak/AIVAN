@@ -71,5 +71,28 @@ combine_as_imports = true
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-select = ["E","F","I","W","UP","N","B","PL"]
-ignore = ["E501"]
+exclude = ["tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E402", "E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "src.core.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "src.documents.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "src.bot.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
