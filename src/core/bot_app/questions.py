@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from contextlib import suppress
+from contextlib import suppress, asynccontextmanager
 from html import escape as html_escape
 from typing import Any, Mapping, Sequence
 from types import SimpleNamespace
@@ -47,6 +47,11 @@ __all__ = [
 
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
 LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
+
+
+@asynccontextmanager
+async def _noop_async_context():
+    yield
 
 logger = logging.getLogger("ai-ivan.simple.questions")
 
@@ -642,79 +647,86 @@ async def process_question(
 
         status = await _start_status_indicator(message)
 
+        typing_context_manager = (
+            typing_action(message.bot, message.chat.id, action)
+            if status is None and message.bot
+            else _noop_async_context()
+        )
+
         models = simple_context.derived().models if callable(simple_context.derived) else None
         model_to_use = (models or {}).get("primary") if models else None
 
         if openai_service is None:
             raise SystemException("OpenAI service is not available", error_context)
 
-        try:
-            stream_manager = StreamManager(
-                bot=message.bot,
-                chat_id=message.chat.id,
-                reply_to_message_id=message.message_id,
-                send_interval=1.8,
-            ) if use_streaming else None
+        async with typing_context_manager:
+            try:
+                stream_manager = StreamManager(
+                    bot=message.bot,
+                    chat_id=message.chat.id,
+                    reply_to_message_id=message.message_id,
+                    send_interval=1.8,
+                ) if use_streaming else None
 
-            callback = StreamingCallback(stream_manager) if stream_manager else None
+                callback = StreamingCallback(stream_manager) if stream_manager else None
 
-            result = await openai_service.answer_question(
-                request_text,
-                system_prompt=system_prompt_override,
-                attachments=attachments_list or None,
-                stream_callback=callback,
-                model=model_to_use,
-                user_id=user_id,
-            )
-            final_answer_text = result.get("text")
+                result = await openai_service.answer_question(
+                    request_text,
+                    system_prompt=system_prompt_override,
+                    attachments=attachments_list or None,
+                    stream_callback=callback,
+                    model=model_to_use,
+                    user_id=user_id,
+                )
+                final_answer_text = result.get("text")
 
-            if stream_manager:
-                had_stream_content = bool((stream_manager.pending_text or "").strip())
-                stream_final_text = stream_manager.pending_text or ""
-                await stream_manager.stop()
-                if stream_manager.message and message.bot:
-                    with suppress(Exception):
-                        await message.bot.delete_message(
-                            message.chat.id, stream_manager.message.message_id
+                if stream_manager:
+                    had_stream_content = bool((stream_manager.pending_text or "").strip())
+                    stream_final_text = stream_manager.pending_text or ""
+                    await stream_manager.stop()
+                    if stream_manager.message and message.bot:
+                        with suppress(Exception):
+                            await message.bot.delete_message(
+                                message.chat.id, stream_manager.message.message_id
+                            )
+
+            except (NetworkException, OpenAIException) as exc:
+                ok_flag = False
+                request_error_type = type(exc).__name__
+                raise
+            else:
+                ok_flag = True
+                if practice_mode_used and practice_excel_fragments:
+                    summary_payload = result.get("practice_summary")
+                    if not isinstance(summary_payload, dict):
+                        summary_payload = {} if summary_payload is None else {"summary_html": str(summary_payload)}
+                    existing_fragments = list(summary_payload.get("fragments") or [])
+                    combined_fragments = existing_fragments + practice_excel_fragments
+
+                    deduped_fragments: list[Any] = []
+                    seen_fragment_keys: set[tuple[Any, ...]] = set()
+                    for fragment in combined_fragments:
+                        metadata: Mapping[str, Any] | dict[str, Any] = {}
+                        match = getattr(fragment, "match", None)
+                        if match is not None:
+                            metadata = getattr(match, "metadata", {}) or {}
+                        if not isinstance(metadata, Mapping):
+                            metadata = {}
+                        key = (
+                            metadata.get("title"),
+                            metadata.get("url"),
+                            metadata.get("topic"),
                         )
+                        if key in seen_fragment_keys:
+                            continue
+                        seen_fragment_keys.add(key)
+                        deduped_fragments.append(fragment)
+                        if len(deduped_fragments) >= 10:
+                            break
 
-        except (NetworkException, OpenAIException) as exc:
-            ok_flag = False
-            request_error_type = type(exc).__name__
-            raise
-        else:
-            ok_flag = True
-            if practice_mode_used and practice_excel_fragments:
-                summary_payload = result.get("practice_summary")
-                if not isinstance(summary_payload, dict):
-                    summary_payload = {} if summary_payload is None else {"summary_html": str(summary_payload)}
-                existing_fragments = list(summary_payload.get("fragments") or [])
-                combined_fragments = existing_fragments + practice_excel_fragments
-
-                deduped_fragments: list[Any] = []
-                seen_fragment_keys: set[tuple[Any, ...]] = set()
-                for fragment in combined_fragments:
-                    metadata: Mapping[str, Any] | dict[str, Any] = {}
-                    match = getattr(fragment, "match", None)
-                    if match is not None:
-                        metadata = getattr(match, "metadata", {}) or {}
-                    if not isinstance(metadata, Mapping):
-                        metadata = {}
-                    key = (
-                        metadata.get("title"),
-                        metadata.get("url"),
-                        metadata.get("topic"),
-                    )
-                    if key in seen_fragment_keys:
-                        continue
-                    seen_fragment_keys.add(key)
-                    deduped_fragments.append(fragment)
-                    if len(deduped_fragments) >= 10:
-                        break
-
-                summary_payload["fragments"] = deduped_fragments
-                summary_payload.setdefault("summary_html", result.get("text") or "")
-                result["practice_summary"] = summary_payload
+                    summary_payload["fragments"] = deduped_fragments
+                    summary_payload.setdefault("summary_html", result.get("text") or "")
+                    result["practice_summary"] = summary_payload
 
         timer.stop()
 
