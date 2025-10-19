@@ -25,9 +25,9 @@ async def _run_async() -> None:
 
 def main() -> None:
     try:
-        if sys.platform == "win32":
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            logging.getLogger("ai-ivan.simple").info("Using Windows Proactor event loop")
+        if sys.platform.startswith("win"):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            logging.getLogger("ai-ivan.simple").info("Using Windows Selector event loop")
         else:
             try:
                 import uvloop  # type: ignore

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable, Sequence
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 
 from src.bot.status_manager import register_progressbar
@@ -250,15 +251,23 @@ async def run_bot() -> None:
         logger.info("Prometheus metrics available at http://localhost:%s/metrics", cfg.prometheus_port)
 
     try:
-        logger.info("Starting bot polling...")
-        await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        logger.info("AI-Ivan stopped by user")
-        set_system_status("stopping")
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Fatal error in main loop: %s", exc)
-        set_system_status("stopping")
-        raise
+        while True:
+            try:
+                logger.info("Starting bot polling...")
+                await dp.start_polling(bot)
+                logger.info("Dispatcher polling finished; exiting loop")
+                break
+            except TelegramNetworkError as exc:
+                logger.warning("TG hiccup: %s; retry in 2s", exc)
+                await asyncio.sleep(2)
+                continue
+            except KeyboardInterrupt:
+                logger.info("AI-Ivan stopped by user")
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Fatal in polling; restarting in 5s: %s", exc)
+                await asyncio.sleep(5)
+                continue
     finally:
         logger.info("Shutting down services...")
         set_system_status("stopping")
