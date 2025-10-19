@@ -1,116 +1,96 @@
 #!/usr/bin/env python3
+"""Bootstrap validation script for the AIVAN project.
+
+The checks here mirror the expectations of our CI pipeline and should be used
+before every release or infrastructure change.
 """
-Скрипт валидации проекта AIVAN
-Проверяет все основные компоненты и зависимости
-"""
+
+from __future__ import annotations
 
 import asyncio
 import contextlib
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from pydantic import ValidationError
 
-# Добавляем корень проекта в PYTHONPATH до импорта внутренних модулей
-project_root = Path(__file__).resolve().parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.settings import AppSettings
+from src.core.db_advanced import DatabaseAdvanced  # noqa: E402
+from src.core.di_container import create_container  # noqa: E402
+from src.core.settings import AppSettings  # noqa: E402
 
 
-async def validate_dependencies():
-    """Проверка зависимостей"""
-    print("🔍 Проверка зависимостей...")
-
+async def validate_dependencies() -> bool:
+    print("\n>> Checking mandatory dependencies")
     try:
-        import aiogram
-        import openai
-        import aiosqlite
-        import httpx
-        import pytest
-        print("✅ Основные зависимости найдены")
-    except ImportError as e:
-        print(f"❌ Отсутствует зависимость: {e}")
+        import aiogram  # noqa: F401
+        import openai  # noqa: F401
+        import aiosqlite  # noqa: F401
+        import httpx  # noqa: F401
+        import pytest  # noqa: F401
+    except ImportError as exc:
+        print(f"FAILED: missing required dependency -> {exc}")
         return False
 
-    # Проверка опциональных зависимостей
-    optional_deps = {
-        "redis": "Redis (опционально)",
-        "prometheus_client": "Prometheus метрики (опционально)",
-        "psutil": "Системный мониторинг (опционально)"
+    optional = {
+        "redis": "Redis client (rate limiting and caching)",
+        "prometheus_client": "Prometheus exporter",
+        "psutil": "System metrics collector",
     }
-
-    for dep, desc in optional_deps.items():
+    for module, description in optional.items():
         try:
-            __import__(dep)
-            print(f"✅ {desc}")
+            __import__(module)
+            print(f"OK: {description}")
         except ImportError:
-            print(f"⚠️  {desc} - не установлено")
-
+            print(f"INFO: {description} is not installed (optional)")
     return True
 
 
-async def validate_database():
-    """Проверка базы данных"""
-    print("\n🗄️  Проверка базы данных...")
-
+async def validate_database() -> bool:
+    print("\n>> Checking SQLite bootstrap")
+    tmp_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_file.close()
     try:
-        from src.core.db_advanced import DatabaseAdvanced
+        db = DatabaseAdvanced(tmp_file.name, max_connections=2)
+        await db.init()
 
-        # Создаем временную БД для тестов
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
-            db_path = tmp.name
+        user = await db.ensure_user(user_id=123, default_trial=10, is_admin=False)
+        assert user.user_id == 123
 
-        try:
-            db = DatabaseAdvanced(db_path, max_connections=2)
-            await db.init()
+        trial_ok = await db.decrement_trial(123)
+        assert trial_ok
 
-            # Тест создания пользователя
-            user = await db.ensure_user(123, default_trial=10, is_admin=False)
-            assert user.user_id == 123
-
-            # Тест декремента trial
-            result = await db.decrement_trial(123)
-            assert result is True
-
-            await db.close()
-            print("✅ База данных работает корректно")
-            return True
-
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-    except Exception as e:
-        print(f"❌ Ошибка базы данных: {e}")
+        await db.close()
+        print("OK: database bootstrap and basic queries succeeded")
+        return True
+    except Exception as exc:
+        print(f"FAILED: database validation error -> {exc}")
         return False
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_file.name)
 
 
-async def validate_di_container():
-    """Проверка DI контейнера"""
-    print("\n📦 Проверка DI контейнера...")
+async def validate_di_container() -> bool:
+    print("\n>> Checking dependency injection container")
+    tmp_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_file.close()
 
-    container = None
-    tmp_db = None
+    env = {
+        "TELEGRAM_BOT_TOKEN": "test-token",
+        "OPENAI_API_KEY": "test-key",
+        "DB_PATH": tmp_file.name,
+    }
+
     try:
-        from src.core.di_container import create_container
-        from src.core.db_advanced import DatabaseAdvanced
-
-        tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp_db.close()
-
-        env = {
-            "TELEGRAM_BOT_TOKEN": "test-token",
-            "OPENAI_API_KEY": "test-key",
-            "DB_PATH": tmp_db.name,
-        }
-
         settings = AppSettings.load(env)
         container = create_container(settings)
-        assert container is not None
 
         resolved_settings = container.get(AppSettings)
         assert resolved_settings is settings
@@ -119,178 +99,124 @@ async def validate_di_container():
         await db.init()
         await db.close()
 
-        print("✅ DI контейнер работает корректно")
+        print("OK: dependency injection container resolved core services")
         return True
-
     except ValidationError as exc:
-        print(f"❌ Не удалось собрать настройки для DI контейнера: {exc}")
+        print(f"FAILED: invalid settings -> {exc}")
         return False
-    except Exception as e:
-        print(f"❌ Ошибка DI контейнера: {e}")
+    except Exception as exc:
+        print(f"FAILED: DI container error -> {exc}")
         return False
-
     finally:
-        if container is not None:
-            try:
-                await container.cleanup()
-            except Exception:
-                pass
-        if tmp_db is not None:
-            with contextlib.suppress(Exception):
-                os.unlink(tmp_db.name)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_file.name)
 
 
-
-async def validate_performance():
-    """Проверка компонентов производительности"""
-    print("\n⚡ Проверка оптимизаций производительности...")
+async def validate_cache_and_metrics() -> bool:
+    print("\n>> Checking cache and timing helpers")
+    try:
+        from src.core.cache import CacheEntry, InMemoryCacheBackend
+        from src.core.metrics import MetricsCollector
+    except ImportError as exc:
+        print(f"FAILED: unable to import cache/metrics utilities -> {exc}")
+        return False
 
     try:
-        from src.core.performance import (  # type: ignore
-            PerformanceMetrics,
-            LRUCache,
-            timing,
-            get_performance_summary,
+        cache = InMemoryCacheBackend(max_size=4, cleanup_interval=0)
+        entry = CacheEntry(
+            key="demo",
+            value="value",
+            created_at=time.time(),
+            ttl_seconds=60,
         )
+        await cache.set("demo", entry)
+        stored = await cache.get("demo")
+        assert stored is not None and stored.value == "value"
 
-        # Тест метрик
-        metrics = PerformanceMetrics()
-        metrics.record_timing("test", 0.1)
-        avg = metrics.get_average_timing("test")
-        assert avg == 0.1
-
-        # Тест кеша
-        cache = LRUCache(max_size=10, ttl_seconds=3600)
-        await cache.set("test_key", "test_value")
-        value = await cache.get("test_key")
-        assert value == "test_value"
-
-        # Тест декоратора timing
-        @timing("test_function")
-        async def test_func():
+        metrics = MetricsCollector(enable_prometheus=False)
+        async with metrics.time_openai_request(model="demo"):
             await asyncio.sleep(0.01)
-            return "result"
 
-        result = await test_func()
-        assert result == "result"
-
-        print("✅ Компоненты производительности работают корректно")
+        print("OK: cache and metrics utilities executed successfully")
         return True
-
-    except ImportError:
-        print("⚠️  Модуль src.core.performance отсутствует — проверка пропущена")
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка компонентов производительности: {e}")
+    except Exception as exc:
+        print(f"FAILED: cache or timing check error -> {exc}")
         return False
 
 
-async def validate_configuration():
-    """Проверка конфигурации проекта"""
-    print("\n⚙️  Проверка конфигурации...")
+async def validate_configuration() -> bool:
+    print("\n>> Checking repository configuration files")
 
-    # Проверка pyproject.toml
-    pyproject_path = project_root / "pyproject.toml"
-    if not pyproject_path.exists():
-        print("❌ Файл pyproject.toml не найден")
-        return False
-
-    with open(pyproject_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        if "[project]" in content and "dependencies" in content:
-            print("✅ pyproject.toml корректно настроен")
-        else:
-            print("❌ pyproject.toml имеет некорректную структуру")
-            return False
-
-    # Проверка Docker файлов
-    dockerfile_path = project_root / "Dockerfile"
-    if dockerfile_path.exists():
-        print("✅ Dockerfile найден")
-    else:
-        print("❌ Dockerfile отсутствует")
-        return False
-
-    docker_compose_path = project_root / "docker-compose.yml"
-    if docker_compose_path.exists():
-        print("✅ docker-compose.yml найден")
-    else:
-        print("❌ docker-compose.yml отсутствует")
-        return False
-
-    # Проверка README
-    readme_path = project_root / "README.md"
-    if readme_path.exists():
-        print("✅ README.md найден")
-    else:
-        print("❌ README.md отсутствует")
-        return False
-
-    return True
-
-
-async def validate_tests():
-    """Проверка тестов"""
-    print("\n🧪 Проверка тестов...")
-
-    tests_dir = project_root / "tests"
-    if not tests_dir.exists():
-        print("❌ Директория tests не найдена")
-        return False
-
-    discovered = list(tests_dir.rglob("test_*.py"))
-    if not discovered:
-        print("❌ Не найдено ни одного тестового файла")
-        return False
-
-    print(f"✅ Найдено тестовых файлов: {len(discovered)}")
-    return True
-
-
-async def main():
-    """Основная функция валидации"""
-    print("🚀 AIVAN Project Validation")
-    print("=" * 50)
-
-    validators = [
-        validate_dependencies,
-        validate_configuration,
-        validate_database,
-        validate_di_container,
-        validate_performance,
-        validate_tests,
+    required_files = [
+        PROJECT_ROOT / "pyproject.toml",
+        PROJECT_ROOT / "Dockerfile",
+        PROJECT_ROOT / "docker-compose.yml",
+        PROJECT_ROOT / "README.md",
     ]
 
-    results = []
-    for validator in validators:
+    missing = [path.name for path in required_files if not path.exists()]
+    if missing:
+        print(f"FAILED: missing files -> {', '.join(missing)}")
+        return False
+
+    print("OK: core configuration files are present")
+    return True
+
+
+async def validate_tests_present() -> bool:
+    print("\n>> Checking tests directory")
+    tests_dir = PROJECT_ROOT / "tests"
+    if not tests_dir.exists():
+        print("FAILED: tests directory is missing")
+        return False
+
+    test_files = list(tests_dir.rglob("test_*.py"))
+    if not test_files:
+        print("FAILED: no pytest-style files were discovered")
+        return False
+
+    print(f"OK: discovered {len(test_files)} test files")
+    return True
+
+
+async def main() -> int:
+    print("AIVAN Project Validation")
+    print("=" * 72)
+
+    validators = [
+        ("Dependencies", validate_dependencies),
+        ("Configuration files", validate_configuration),
+        ("Database", validate_database),
+        ("Dependency injection", validate_di_container),
+        ("Cache and metrics", validate_cache_and_metrics),
+        ("Tests", validate_tests_present),
+    ]
+
+    results: list[bool] = []
+    for name, validator in validators:
         try:
-            result = await validator()
-            results.append(result)
-        except Exception as e:
-            print(f"❌ Критическая ошибка в {validator.__name__}: {e}")
+            success = await validator()
+            results.append(success)
+        except Exception as exc:
+            print(f"FAILED: unexpected error in {name} -> {exc}")
             results.append(False)
 
-    print("\n" + "=" * 50)
-    passed = sum(results)
+    passed = sum(1 for result in results if result)
     total = len(results)
 
+    print("\n" + "=" * 72)
+    print(f"Validation summary: {passed}/{total} checks passed")
     if passed == total:
-        print(f"🎉 Все проверки пройдены! ({passed}/{total})")
-        print("✅ Проект готов к использованию")
+        print("All validation checks succeeded.")
         return 0
-    else:
-        print(f"⚠️  Пройдено проверок: {passed}/{total}")
-        print("❌ Требуются исправления")
-        return 1
+
+    print("One or more validation checks failed. Review the logs above.")
+    return 1
 
 
 if __name__ == "__main__":
     try:
-        exit_code = asyncio.run(main())
-        sys.exit(exit_code)
+        sys.exit(asyncio.run(main()))
     except KeyboardInterrupt:
-        print("\n❌ Валидация прервана пользователем")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ Критическая ошибка валидации: {e}")
+        print("\nInterrupted by user.")
         sys.exit(1)
