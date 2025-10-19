@@ -123,6 +123,17 @@ def _split_html_for_telegram(html: str, limit: int = TELEGRAM_HTML_SAFE_LIMIT) -
 
     return chunks or [" "]
 
+
+def _ensure_double_newlines(html: str) -> str:
+    """Ensure single newlines are promoted to double newlines for better spacing."""
+    if not html:
+        return ""
+
+    normalized = html.replace("\r\n", "\n")
+    normalized = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized
+
 logger = logging.getLogger("ai-ivan.simple.questions")
 
 
@@ -810,12 +821,13 @@ async def process_question(
             chunks = _split_html_for_telegram(clean_html, TELEGRAM_HTML_SAFE_LIMIT)
 
             if len(chunks) == 1:
+                formatted_chunk = _ensure_double_newlines(chunks[0])
                 try:
-                    await message.answer(chunks[0], parse_mode=ParseMode.HTML)
+                    await message.answer(formatted_chunk, parse_mode=ParseMode.HTML)
                 except TelegramBadRequest as exc:
                     logger.warning(
                         "Telegram rejected HTML chunk (len=%s), using safe sender fallback: %s",
-                        len(chunks[0]),
+                        len(formatted_chunk),
                         exc,
                     )
                     await send_html_text(
@@ -837,8 +849,9 @@ async def process_question(
                 idx = 0
                 try:
                     for idx, chunk in enumerate(chunks, start=1):
+                        formatted_chunk = _ensure_double_newlines(chunk)
                         prefix = f"<b>Часть {idx}/{total}</b>\n\n"
-                        await message.answer(prefix + chunk, parse_mode=ParseMode.HTML)
+                        await message.answer(prefix + formatted_chunk, parse_mode=ParseMode.HTML)
                 except TelegramBadRequest as exc:
                     logger.warning(
                         "Telegram rejected multipart HTML at part %s/%s: %s. Falling back to safe sender.",
