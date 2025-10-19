@@ -17,7 +17,7 @@ from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
 from src.bot.status_manager import ProgressStatus
 from src.bot.stream_manager import StreamManager, StreamingCallback
 from src.bot.typing_indicator import send_typing_once, typing_action
-from src.bot.ui_components import Emoji
+from src.bot.ui_components import Emoji, sanitize_telegram_html
 from src.core.attachments import QuestionAttachment
 from src.core.exceptions import (
     ErrorContext,
@@ -47,11 +47,50 @@ __all__ = [
 
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
 LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
+TELEGRAM_HTML_SAFE_LIMIT = 3500
 
 
 @asynccontextmanager
 async def _noop_async_context():
     yield
+
+
+def _split_html_for_telegram(html: str, limit: int = TELEGRAM_HTML_SAFE_LIMIT) -> list[str]:
+    """Split sanitized HTML into chunks that fit Telegram limits."""
+    text = (html or "").strip()
+    if not text:
+        return [" "]
+
+    chunks: list[str] = []
+    buffer = ""
+
+    def flush_buffer() -> None:
+        nonlocal buffer
+        if buffer:
+            chunks.append(buffer)
+            buffer = ""
+
+    for paragraph in text.split("\n\n"):
+        segment = paragraph.strip()
+        if not segment:
+            continue
+
+        candidate = (buffer + ("\n\n" if buffer else "") + segment) if buffer else segment
+        if len(candidate) <= limit:
+            buffer = candidate
+            continue
+
+        flush_buffer()
+
+        remaining = segment
+        while len(remaining) > limit:
+            chunks.append(remaining[:limit].rstrip())
+            remaining = remaining[limit:]
+        buffer = remaining
+
+    flush_buffer()
+
+    return chunks or [" "]
 
 logger = logging.getLogger("ai-ivan.simple.questions")
 
@@ -734,18 +773,39 @@ async def process_question(
             await status.update_stage(percent=92)
             await status.complete()
 
-        if result.get("mode") == "html":
-            await send_html_text(
-                message.bot,
-                chat_id=message.chat.id,
-                html=result.get("text", ""),
-                reply_to=message.message_id,
-            )
-        else:
-            text_to_send = result.get("text") or stream_final_text or ""
-            if text_to_send:
-                with suppress(Exception):
-                    await message.answer(text_to_send, parse_mode=ParseMode.HTML)
+        raw_response_text = result.get("text") or stream_final_text or ""
+        if raw_response_text:
+            clean_html = sanitize_telegram_html(raw_response_text)
+            if len(clean_html) <= TELEGRAM_HTML_SAFE_LIMIT:
+                try:
+                    await message.answer(clean_html, parse_mode=ParseMode.HTML)
+                except TelegramBadRequest as exc:
+                    logger.warning(
+                        "Telegram rejected sanitized HTML (len=%s), fallback via safe sender: %s",
+                        len(clean_html),
+                        exc,
+                    )
+                    await send_html_text(
+                        message.bot,
+                        chat_id=message.chat.id,
+                        raw_text=raw_response_text,
+                        reply_to_message_id=message.message_id,
+                    )
+                except Exception as send_exc:
+                    logger.warning("Failed to send sanitized HTML, fallback to safe sender: %s", send_exc)
+                    await send_html_text(
+                        message.bot,
+                        chat_id=message.chat.id,
+                        raw_text=raw_response_text,
+                        reply_to_message_id=message.message_id,
+                    )
+            else:
+                await send_html_text(
+                    message.bot,
+                    chat_id=message.chat.id,
+                    raw_text=raw_response_text,
+                    reply_to_message_id=message.message_id,
+                )
 
         if use_streaming and had_stream_content and stream_manager is not None:
             combined_stream_text = stream_final_text or ""
@@ -757,8 +817,8 @@ async def process_question(
                 await send_html_text(
                     message.bot,
                     chat_id=message.chat.id,
-                    html=result["extra_content"],
-                    reply_to=message.message_id,
+                    raw_text=result["extra_content"],
+                    reply_to_message_id=message.message_id,
                 )
 
         if result.get("attachments"):
@@ -782,7 +842,7 @@ async def process_question(
                 summary_html = summary_payload.get("summary_html", "")
                 rag_fragments = summary_payload.get("fragments") or []
                 structured_payload = summary_payload.get("structured", {})
-                excel_source = final_answer_text or text_to_send or ""
+                excel_source = final_answer_text or raw_response_text or ""
                 practice_excel_path = await asyncio.to_thread(
                     build_practice_excel,
                     summary_html=excel_source,
