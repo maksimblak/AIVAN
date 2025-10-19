@@ -935,6 +935,7 @@ async def process_question(
                         practice_excel_path.unlink(missing_ok=True)
 
         # Показываем контекстную подсказку о возможностях бота
+        hint_text: str | None = None
         try:
             from src.core.bot_app.hints import get_contextual_hint
 
@@ -948,7 +949,6 @@ async def process_question(
             candidate_contexts.append("text_question")
 
             seen: set[str] = set()
-            hint_text: str | None = None
             for ctx_name in candidate_contexts:
                 if ctx_name in seen:
                     continue
@@ -957,9 +957,6 @@ async def process_question(
                 if hint_text:
                     break
 
-            if hint_text:
-                with suppress(Exception):
-                    await message.answer(hint_text, parse_mode=ParseMode.HTML)
         except Exception as hint_error:
             logger.debug("Failed to send hint: %s", hint_error)
 
@@ -1002,6 +999,10 @@ async def process_question(
                     request_record_id,
                     answer_snapshot=final_answer_text or "",
                 )
+
+        if hint_text:
+            with suppress(Exception):
+                await message.answer(hint_text, parse_mode=ParseMode.HTML)
 
         logger.info("Successfully processed question for user %s in %.2fs", user_id, timer.duration)
         return (isinstance(result, dict) and (result.get("text") or "")) or ""
