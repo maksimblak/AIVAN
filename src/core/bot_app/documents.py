@@ -1887,7 +1887,9 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
 
             max_size = 50 * 1024 * 1024
             if file_size > max_size:
-                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                reply_markup = _with_back_to_menu(
+                    _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                )
                 request_error = "FILE_TOO_LARGE"
                 await _record_request_stat(
                     message,
@@ -1902,6 +1904,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
+                back_button_sent = True
                 await state.clear()
                 return
 
@@ -2005,10 +2008,15 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                         caption_lines = [header, f"<code>{file_html}</code>"]
                         caption = "\n".join(line for line in caption_lines if line)
                         try:
+                            export_markup = None
+                            if not back_button_sent:
+                                export_markup = _with_back_to_menu()
+                                back_button_sent = True
                             await message.answer_document(
                                 FSInputFile(export_path),
                                 caption=caption,
                                 parse_mode=ParseMode.HTML,
+                                reply_markup=export_markup,
                             )
                         except Exception as send_error:  # noqa: BLE001
                             logger.error("Не удалось отправить файл %s: %s", export_path, send_error, exc_info=True)
@@ -2031,12 +2039,15 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     await send_progress(
                         {'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message}
                     )
-                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    reply_markup = _with_back_to_menu(
+                        _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    )
                     await message.answer(
                         f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{html_escape(str(result.message))}",
                         parse_mode=ParseMode.HTML,
                         reply_markup=reply_markup,
                     )
+                    back_button_sent = True
                     if 'status_msg' in locals() and status_msg:
                         with suppress(Exception):
                             await status_msg.delete()
@@ -2051,12 +2062,15 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     with suppress(Exception):
                         await status_msg.delete()
 
-                reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                reply_markup = _with_back_to_menu(
+                    _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                )
                 await message.answer(
                     f"{Emoji.ERROR} <b>Ошибка обработки документа</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup,
                 )
+                back_button_sent = True
                 logger.error("Error processing document %s: %s", file_name, exc, exc_info=True)
 
             finally:
@@ -2072,18 +2086,33 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     with suppress(Exception):
                         await message.answer(quota_note, parse_mode=ParseMode.HTML)
                 await state.clear()
+                if not back_button_sent:
+                    with suppress(Exception):
+                        await message.answer(
+                            "Выберите следующее действие:",
+                            reply_markup=_with_back_to_menu(),
+                        )
+                    back_button_sent = True
 
     except Exception as exc:  # noqa: BLE001
-        reply_markup = None
-        if 'operation' in locals() and locals().get('operation') == "ocr":
-            reply_markup = _build_ocr_reply_markup(locals().get('output_format', 'txt'))
+        reply_markup = _with_back_to_menu(
+            _build_ocr_reply_markup(locals().get('output_format', 'txt')) if 'operation' in locals() and locals().get('operation') == "ocr" else None
+        )
         await message.answer(
             f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
         )
+        back_button_sent = True
         logger.error("Error in handle_document_upload: %s", exc, exc_info=True)
         await state.clear()
+        if not back_button_sent:
+            with suppress(Exception):
+                await message.answer(
+                    "Выберите следующее действие:",
+                    reply_markup=_with_back_to_menu(),
+                )
+            back_button_sent = True
 
 
 async def handle_photo_upload(message: Message, state: FSMContext) -> None:
@@ -2118,6 +2147,7 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
             request_success = False
             request_error: str | None = None
             request_logged = False
+            back_button_sent = False
 
             await state.set_state(DocumentProcessingStates.processing_document)
 
@@ -2138,8 +2168,10 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 )
                 request_logged = True
                 await message.answer(
-                    f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ"
+                    f"❌ Фотография слишком большая. Максимальный размер: {max_size // (1024*1024)} МБ",
+                    reply_markup=_with_back_to_menu(),
                 )
+                back_button_sent = True
                 await state.clear()
                 return
 
@@ -2225,6 +2257,8 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                             chunk,
                             reply_markup=primary_markup if idx == 0 else None,
                         )
+                        if idx == 0:
+                            back_button_sent = True
 
                     exports = result.data.get("exports") or []
                     for export in exports:
@@ -2243,7 +2277,15 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                         parts.append(export_file_name)
                         caption = " • ".join(part for part in parts if part)
                         try:
-                            await message.answer_document(FSInputFile(export_path), caption=caption)
+                            export_markup = None
+                            if not back_button_sent:
+                                export_markup = _with_back_to_menu()
+                                back_button_sent = True
+                            await message.answer_document(
+                                FSInputFile(export_path),
+                                caption=caption,
+                                reply_markup=export_markup,
+                            )
                         except Exception as send_error:  # noqa: BLE001
                             logger.error(
                                 "Не удалось отправить файл %s: %s", export_path, send_error, exc_info=True
@@ -2306,9 +2348,21 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 await state.clear()
 
     except Exception as exc:  # noqa: BLE001
-        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
+        await message.answer(
+            f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_with_back_to_menu(),
+        )
+        back_button_sent = True
         logger.error("Error in handle_photo_upload: %s", exc, exc_info=True)
         await state.clear()
+        if not back_button_sent:
+            with suppress(Exception):
+                await message.answer(
+                    "Выберите следующее действие:",
+                    reply_markup=_with_back_to_menu(),
+                )
+            back_button_sent = True
 
 
 async def cmd_askdoc(message: Message) -> None:
