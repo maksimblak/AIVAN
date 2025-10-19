@@ -18,7 +18,7 @@ from src.bot.ui_components import Emoji
 from src.core.bot_app import context as simple_context
 
 if TYPE_CHECKING:
-    from src.core.audio_service import AudioService
+    pass
 
 __all__ = ["register_voice_handlers", "download_voice_to_temp"]
 

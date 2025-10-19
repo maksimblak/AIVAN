@@ -91,12 +91,6 @@ def _build_category_keyboard() -> InlineKeyboardMarkup:
 
 
 def _build_category_text(category: str, alerts: list) -> str:
-    emoji_map = {
-        "revenue": "💰",
-        "retention": "🎯",
-        "pmf": "📊",
-        "technical": "⚙️",
-    }
     severity_map = {
         "critical": "🚨",
         "warning": "⚠️",
