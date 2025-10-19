@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
 from src.bot.status_manager import ProgressStatus
@@ -133,6 +133,14 @@ def _ensure_double_newlines(html: str) -> str:
     normalized = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     return normalized
+
+
+def _back_to_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_main")]
+        ]
+    )
 
 logger = logging.getLogger("ai-ivan.simple.questions")
 
@@ -734,6 +742,8 @@ async def process_question(
             else _noop_async_context()
         )
 
+        back_to_menu_required = False
+
         models = simple_context.derived().models if callable(simple_context.derived) else None
         model_to_use = (models or {}).get("primary") if models else None
 
@@ -817,6 +827,7 @@ async def process_question(
 
         raw_response_text = result.get("text") or stream_final_text or ""
         if raw_response_text:
+            back_to_menu_required = True
             clean_html = format_safe_html(raw_response_text)
             chunks = _split_html_for_telegram(clean_html, TELEGRAM_HTML_SAFE_LIMIT)
 
@@ -885,6 +896,7 @@ async def process_question(
                 await stream_manager.finalize(combined_stream_text)
 
         if result.get("extra_content"):
+            back_to_menu_required = True
             with suppress(Exception):
                 await send_html_text(
                     message.bot,
@@ -894,6 +906,7 @@ async def process_question(
                 )
 
         if result.get("attachments"):
+            back_to_menu_required = True
             for attachment in result["attachments"]:
                 try:
                     caption = attachment.get("caption")
@@ -967,6 +980,13 @@ async def process_question(
         if quota_msg_to_send:
             with suppress(Exception):
                 await message.answer(quota_msg_to_send, parse_mode=ParseMode.HTML)
+
+        if back_to_menu_required:
+            with suppress(Exception):
+                await message.answer(
+                    "Выберите следующее действие:",
+                    reply_markup=_back_to_main_keyboard(),
+                )
 
         if hasattr(user_session, "add_question_stats"):
             with suppress(Exception):
