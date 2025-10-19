@@ -776,13 +776,15 @@ async def process_question(
         raw_response_text = result.get("text") or stream_final_text or ""
         if raw_response_text:
             clean_html = sanitize_telegram_html(raw_response_text)
-            if len(clean_html) <= TELEGRAM_HTML_SAFE_LIMIT:
+            chunks = _split_html_for_telegram(clean_html, TELEGRAM_HTML_SAFE_LIMIT)
+
+            if len(chunks) == 1:
                 try:
-                    await message.answer(clean_html, parse_mode=ParseMode.HTML)
+                    await message.answer(chunks[0], parse_mode=ParseMode.HTML)
                 except TelegramBadRequest as exc:
                     logger.warning(
-                        "Telegram rejected sanitized HTML (len=%s), fallback via safe sender: %s",
-                        len(clean_html),
+                        "Telegram rejected HTML chunk (len=%s), using safe sender fallback: %s",
+                        len(chunks[0]),
                         exc,
                     )
                     await send_html_text(
@@ -792,7 +794,7 @@ async def process_question(
                         reply_to_message_id=message.message_id,
                     )
                 except Exception as send_exc:
-                    logger.warning("Failed to send sanitized HTML, fallback to safe sender: %s", send_exc)
+                    logger.warning("Failed to send HTML chunk, fallback to safe sender: %s", send_exc)
                     await send_html_text(
                         message.bot,
                         chat_id=message.chat.id,
@@ -800,12 +802,38 @@ async def process_question(
                         reply_to_message_id=message.message_id,
                     )
             else:
-                await send_html_text(
-                    message.bot,
-                    chat_id=message.chat.id,
-                    raw_text=raw_response_text,
-                    reply_to_message_id=message.message_id,
-                )
+                total = len(chunks)
+                idx = 0
+                try:
+                    for idx, chunk in enumerate(chunks, start=1):
+                        prefix = f"<b>Часть {idx}/{total}</b>\n\n"
+                        await message.answer(prefix + chunk, parse_mode=ParseMode.HTML)
+                except TelegramBadRequest as exc:
+                    logger.warning(
+                        "Telegram rejected multipart HTML at part %s/%s: %s. Falling back to safe sender.",
+                        idx,
+                        total,
+                        exc,
+                    )
+                    await send_html_text(
+                        message.bot,
+                        chat_id=message.chat.id,
+                        raw_text=raw_response_text,
+                        reply_to_message_id=message.message_id,
+                    )
+                except Exception as send_exc:
+                    logger.warning(
+                        "Failed to send multipart HTML (part %s/%s). Fallback to safe sender: %s",
+                        idx,
+                        total,
+                        send_exc,
+                    )
+                    await send_html_text(
+                        message.bot,
+                        chat_id=message.chat.id,
+                        raw_text=raw_response_text,
+                        reply_to_message_id=message.message_id,
+                    )
 
         if use_streaming and had_stream_content and stream_manager is not None:
             combined_stream_text = stream_final_text or ""
