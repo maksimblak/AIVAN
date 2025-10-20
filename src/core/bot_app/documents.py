@@ -1603,9 +1603,13 @@ async def handle_document_processing(callback: CallbackQuery) -> None:
             ],
         ]
 
+        disabled_operations = {"summarize", "analyze_risks", "anonymize", "ocr"}
         secondary_buttons = []
         for op_key, op_info in operations.items():
             if op_key in {"translate", "chat", "lawsuit_analysis"}:
+                continue
+            if op_key in disabled_operations:
+                # Temporarily hide summary, risk analysis, anonymization, and OCR buttons.
                 continue
             emoji = op_info.get("emoji", "📄")
             name = op_info.get("name", op_key)
