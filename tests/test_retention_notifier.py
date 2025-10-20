@@ -3,6 +3,12 @@
 """
 import asyncio
 import sys
+import os
+import pytest
+
+if os.getenv("RUN_FULL_TESTS") != "1":
+    pytestmark = pytest.mark.skip(reason="Integration script; set RUN_FULL_TESTS=1 to enable.")
+
 from pathlib import Path
 
 # Фикс кодировки для Windows

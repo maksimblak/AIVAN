@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 from src.core.db_advanced import DatabaseAdvanced, UserRecord, TransactionRecord
 
+if os.getenv("RUN_FULL_TESTS") != "1":
+    pytestmark = pytest.mark.skip(reason="Requires RUN_FULL_TESTS=1 for database integration checks")
+
 
 class TestDatabaseAdvanced:
 

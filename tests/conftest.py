@@ -9,10 +9,6 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-_SKIP_REASON = None
-if not os.getenv("RUN_FULL_TESTS"):
-    _SKIP_REASON = "Functional suite requires RUN_FULL_TESTS=1"
-
 
 # Настройка event loop для asyncio тестов
 @pytest.fixture(scope="session")
@@ -156,11 +152,11 @@ def sample_documents():
 # Настройка для pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
 
+collect_ignore = ["scripts/test_rag.py", "scripts\\test_rag.py"]
+
 
 # Маркеры для категоризации тестов
 def pytest_configure(config):
-    if _SKIP_REASON:
-        pytest.exit(_SKIP_REASON, returncode=0)
     """Регистрация custom маркеров"""
     config.addinivalue_line("markers", "unit: unit tests")
     config.addinivalue_line("markers", "integration: integration tests")
@@ -188,3 +184,5 @@ def skip_if_no_telegram_token():
 
 
 
+
+collect_ignore_glob = ["scripts/test_*.py"]

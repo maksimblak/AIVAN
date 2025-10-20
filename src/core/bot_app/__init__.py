@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from . import context, documents, payments  # noqa: F401
 from .context import *  # noqa: F401,F403
-from .context import __all__ as _context_all  # type: ignore  # re-export for explicit namespace
 
-__all__ = _context_all
+__all__ = ["context", "documents", "payments", *context.__all__]
 

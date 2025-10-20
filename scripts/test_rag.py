@@ -8,8 +8,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+try:
+    import pytest  # type: ignore
+except Exception:  # pragma: no cover - pytest not available in runtime
+    pytest = None
+
+if pytest and os.getenv("RUN_FULL_TESTS") != "1":
+    pytestmark = pytest.mark.skip(reason="Manual RAG script; set RUN_FULL_TESTS=1 to enable.")
 
 # Добавляем путь к проекту до импорта внутренних модулей
 project_root = Path(__file__).resolve().parent.parent

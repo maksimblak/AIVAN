@@ -9,6 +9,11 @@ import os
 import sys
 import time
 
+import pytest
+
+if os.getenv("RUN_FULL_TESTS") != "1":
+    pytestmark = pytest.mark.skip(reason="Streaming integration test requires RUN_FULL_TESTS=1")
+
 # Импортируем необходимые модули
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "bot"))

@@ -8,9 +8,14 @@ import os
 import sys
 import tempfile
 
+import pytest
+
 # Импортируем advanced database
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
 from src.core.db_advanced import DatabaseAdvanced, TransactionStatus
+
+if os.getenv("RUN_FULL_TESTS") != "1":
+    pytestmark = pytest.mark.skip(reason="Integration script; set RUN_FULL_TESTS=1 to enable.")
 
 
 async def test_payment_idempotency():
