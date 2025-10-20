@@ -813,6 +813,10 @@ async def ask_legal(
     use_schema: bool = True,
     response_schema: Mapping[str, Any] | None = None,
     enable_web: bool | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_output_tokens: int | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Public wrapper used by OpenAIService for non-streaming replies."""
     return await _ask_legal_internal(
@@ -823,6 +827,10 @@ async def ask_legal(
         use_schema=use_schema,
         response_schema=response_schema,
         enable_web=enable_web,
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens,
+        model_override=model,
     )
 
 
@@ -835,6 +843,10 @@ async def ask_legal_stream(
     use_schema: bool = True,
     response_schema: Mapping[str, Any] | None = None,
     enable_web: bool | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_output_tokens: int | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Public wrapper that enables streaming responses through a callback."""
     return await _ask_legal_internal(
@@ -846,6 +858,10 @@ async def ask_legal_stream(
         use_schema=use_schema,
         response_schema=response_schema,
         enable_web=enable_web,
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens,
+        model_override=model,
     )
 
 
@@ -877,20 +893,24 @@ async def _ask_legal_internal(
     use_schema: bool = True,
     response_schema: Mapping[str, Any] | None = None,
     enable_web: bool | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_output_tokens: int | None = None,
+    model_override: str | None = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
     cfg = _settings_dict()
-    model = cfg["model"]
-    max_out = cfg["max_output_tokens"]
+    model_name = model_override or cfg["model"]
+    max_out = max_output_tokens if max_output_tokens is not None else cfg["max_output_tokens"]
     verb = cfg["verbosity"]
     effort = cfg["effort"]
-    temperature = cfg["temperature"]
-    top_p = cfg["top_p"]
+    temperature_value = cfg["temperature"] if temperature is None else temperature
+    top_p_value = cfg["top_p"] if top_p is None else top_p
 
     user_message = _build_user_message_content(user_text, attachments)
 
     base_core: dict[str, Any] = {
-        "model": model,
+        "model": model_name,
         "input": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -899,16 +919,23 @@ async def _ask_legal_internal(
         "reasoning": {"effort": effort},
         "max_output_tokens": max_out,
     }
-    sampling_payload = {"temperature": temperature, "top_p": top_p}
+    sampling_payload: dict[str, Any] = {}
+    if temperature_value is not None:
+        sampling_payload["temperature"] = temperature_value
+    if top_p_value is not None:
+        sampling_payload["top_p"] = top_p_value
 
     # model caps
-    caps = MODEL_CAPABILITIES.setdefault(model, {})
-    caps.update(_infer_model_caps(model))
-    include_sampling = caps.get("supports_sampling", True)
+    caps = MODEL_CAPABILITIES.setdefault(model_name, {})
+    caps.update(_infer_model_caps(model_name))
+    include_sampling = bool(sampling_payload) and caps.get("supports_sampling", True)
 
     # tools/web flag
     web_allowed_global = not cfg["disable_web"]
-    web_enabled = (bool(enable_web) if enable_web is not None else web_allowed_global) and web_allowed_global
+    if enable_web is None:
+        web_enabled = web_allowed_global
+    else:
+        web_enabled = bool(enable_web) and web_allowed_global
     if web_enabled:
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
@@ -920,26 +947,26 @@ async def _ask_legal_internal(
     if schema_requested and web_enabled:
         logger.debug(
             "Skipping JSON schema enforcement for %s because web search tool is enabled",
-            model,
+            model_name,
         )
         schema_supported = False
         schema_payload = None
 
     async with shared_openai_client() as oai:
         # лёгкая валидация модели (1–2 попытки)
-        if model not in _VALIDATED_MODELS and not cfg["skip_model_check"]:
+        if model_name not in _VALIDATED_MODELS and not cfg["skip_model_check"]:
             last_err = None
             for i in range(2):
                 try:
-                    await oai.models.retrieve(model)
+                    await oai.models.retrieve(model_name)
                     last_err = None
                     break
                 except Exception as e:
                     last_err = str(e)
                     if i == 1:
-                        return {"ok": False, "error": last_err}
+                        return {"ok": False, "error": last_err, "structured": None, "finish_reasons": []}
                     await asyncio.sleep(0.6)
-            _VALIDATED_MODELS.add(model)
+            _VALIDATED_MODELS.add(model_name)
 
         def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
             payload_base: dict[str, Any] = {**base_core}
@@ -954,7 +981,8 @@ async def _ask_legal_internal(
             # варианты: (с tools), (без tools), «boosted» на всякий случай
             with_tools = payload_base
             without_tools = {k: v for k, v in payload_base.items() if k != "tools" and k != "tool_choice"}
-            boosted = without_tools | {"max_output_tokens": max_out * 2}
+            boosted_max = min(max_out * 2, 8192)
+            boosted = without_tools | {"max_output_tokens": boosted_max}
             return [with_tools, without_tools, boosted] if "tools" in payload_base else [without_tools, boosted]
 
         attempts = build_attempts(schema_supported, include_sampling)
@@ -1045,6 +1073,7 @@ async def _ask_legal_internal(
                                     "text": formatted_final,
                                     "usage": usage_info,
                                     "structured": structured_payload,
+                                    "finish_reasons": finish_reasons,
                                 }
 
                             logger.warning("OpenAI stream returned no text; trying next payload option")
@@ -1092,6 +1121,7 @@ async def _ask_legal_internal(
                             "text": cleaned,
                             "usage": usage_info,
                             "structured": structured_out or structured_payload,
+                            "finish_reasons": finish_reasons,
                         }
 
                     # join chunks if no output_text
@@ -1130,6 +1160,7 @@ async def _ask_legal_internal(
                             "text": cleaned_joined,
                             "usage": usage_info,
                             "structured": structured_out or structured_payload,
+                            "finish_reasons": finish_reasons,
                         }
 
                     logger.warning("OpenAI response contained no text; trying next payload option")
@@ -1176,7 +1207,12 @@ async def _ask_legal_internal(
                 continue
             break
 
-        return {"ok": False, "error": last_err or "unknown_error", "structured": structured_payload}
+        return {
+            "ok": False,
+            "error": last_err or "unknown_error",
+            "structured": structured_payload,
+            "finish_reasons": [],
+        }
 
 
 __all__ = [

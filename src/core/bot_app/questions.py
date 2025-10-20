@@ -56,11 +56,18 @@ async def _noop_async_context():
     yield
 
 
-def _split_html_for_telegram(html: str, limit: int = TELEGRAM_HTML_SAFE_LIMIT) -> list[str]:
+def _split_html_for_telegram(
+    html: str,
+    limit: int = TELEGRAM_HTML_SAFE_LIMIT,
+    reserve: int = 0,
+) -> list[str]:
     """Split sanitized HTML into chunks that fit Telegram limits."""
     text = (html or "").strip()
     if not text:
-        return [" "]
+        return []
+
+    if reserve > 0:
+        limit = max(limit - reserve, 1)
 
     def _smart_cut(segment: str, max_len: int) -> tuple[str, str]:
         cut = min(max_len, len(segment))
@@ -121,7 +128,7 @@ def _split_html_for_telegram(html: str, limit: int = TELEGRAM_HTML_SAFE_LIMIT) -
 
     flush_buffer()
 
-    return chunks or [" "]
+    return chunks
 
 
 def _ensure_double_newlines(html: str) -> str:
@@ -830,7 +837,9 @@ async def process_question(
             clean_html = format_safe_html(raw_response_text)
             chunks = _split_html_for_telegram(clean_html, TELEGRAM_HTML_SAFE_LIMIT)
 
-            if len(chunks) == 1:
+            if not chunks:
+                logger.info("Skipping empty Telegram payload after formatting")
+            elif len(chunks) == 1:
                 formatted_chunk = _ensure_double_newlines(chunks[0])
                 try:
                     await message.answer(
@@ -860,44 +869,68 @@ async def process_question(
                         reply_to_message_id=message.message_id,
                     )
             else:
-                total = len(chunks)
-                idx = 0
-                try:
-                    for idx, chunk in enumerate(chunks, start=1):
-                        formatted_chunk = _ensure_double_newlines(chunk)
-                        prefix = f"<b>Часть {idx}/{total}</b>\n\n"
-                        await message.answer(
-                            prefix + formatted_chunk,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=_back_to_main_keyboard() if idx == total else None,
+                adjusted_chunks = chunks
+                seen_lengths: set[int] = set()
+                while True:
+                    total = len(adjusted_chunks)
+                    if total in seen_lengths:
+                        break
+                    seen_lengths.add(total)
+                    prefix_len = len(f"<b>Часть {total}/{total}</b>\n\n")
+                    recomputed = _split_html_for_telegram(
+                        clean_html,
+                        TELEGRAM_HTML_SAFE_LIMIT,
+                        reserve=prefix_len,
+                    )
+                    if not recomputed:
+                        adjusted_chunks = []
+                        break
+                    if len(recomputed) == total:
+                        adjusted_chunks = recomputed
+                        break
+                    adjusted_chunks = recomputed
+
+                if not adjusted_chunks:
+                    logger.info("Skipping multipart Telegram payload after prefix adjustment")
+                else:
+                    total = len(adjusted_chunks)
+                    idx = 0
+                    try:
+                        for idx, chunk in enumerate(adjusted_chunks, start=1):
+                            formatted_chunk = _ensure_double_newlines(chunk)
+                            prefix = f"<b>Часть {idx}/{total}</b>\n\n"
+                            await message.answer(
+                                prefix + formatted_chunk,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=_back_to_main_keyboard() if idx == total else None,
+                            )
+                        back_button_sent = True
+                    except TelegramBadRequest as exc:
+                        logger.warning(
+                            "Telegram rejected multipart HTML at part %s/%s: %s. Falling back to safe sender.",
+                            idx,
+                            total,
+                            exc,
                         )
-                    back_button_sent = True
-                except TelegramBadRequest as exc:
-                    logger.warning(
-                        "Telegram rejected multipart HTML at part %s/%s: %s. Falling back to safe sender.",
-                        idx,
-                        total,
-                        exc,
-                    )
-                    await send_html_text(
-                        message.bot,
-                        chat_id=message.chat.id,
-                        raw_text=raw_response_text,
-                        reply_to_message_id=message.message_id,
-                    )
-                except Exception as send_exc:
-                    logger.warning(
-                        "Failed to send multipart HTML (part %s/%s). Fallback to safe sender: %s",
-                        idx,
-                        total,
-                        send_exc,
-                    )
-                    await send_html_text(
-                        message.bot,
-                        chat_id=message.chat.id,
-                        raw_text=raw_response_text,
-                        reply_to_message_id=message.message_id,
-                    )
+                        await send_html_text(
+                            message.bot,
+                            chat_id=message.chat.id,
+                            raw_text=raw_response_text,
+                            reply_to_message_id=message.message_id,
+                        )
+                    except Exception as send_exc:
+                        logger.warning(
+                            "Failed to send multipart HTML (part %s/%s). Fallback to safe sender: %s",
+                            idx,
+                            total,
+                            send_exc,
+                        )
+                        await send_html_text(
+                            message.bot,
+                            chat_id=message.chat.id,
+                            raw_text=raw_response_text,
+                            reply_to_message_id=message.message_id,
+                        )
 
         if use_streaming and had_stream_content and stream_manager is not None:
             combined_stream_text = stream_final_text or ""

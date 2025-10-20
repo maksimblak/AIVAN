@@ -528,6 +528,7 @@ async def plan_document(openai_service, request_text: str) -> DraftPlan:
     response = await openai_service.ask_legal(
         system_prompt=DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
         user_text=user_prompt,
+        use_schema=False,
     )
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")
@@ -599,6 +600,7 @@ async def generate_document(
     response = await openai_service.ask_legal(
         system_prompt=DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
         user_text=user_prompt,
+        use_schema=False,
     )
     if not response.get("ok"):
         raise DocumentDraftingError(response.get("error") or "Не удалось получить ответ от модели")

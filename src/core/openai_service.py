@@ -38,11 +38,16 @@ async def _safe_fire_callback(
     if not cb:
         return
     try:
-        res = cb(delta, is_final)  # (delta, is_final)
-    except TypeError:
-        res = cb(delta)           # (delta)
-    if inspect.isawaitable(res):
-        await res
+        param_count = len(inspect.signature(cb).parameters)
+    except (TypeError, ValueError):
+        param_count = 0
+    try:
+        result = cb(delta, is_final) if param_count >= 2 else cb(delta)
+    except Exception:
+        logger.exception("Streaming callback failed")
+        return
+    if inspect.isawaitable(result):
+        await result
 
 
 class OpenAIService:
@@ -92,7 +97,11 @@ class OpenAIService:
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
         cache_params = {
             "schema": "legal_json_v2" if use_schema else "raw_json_v1",
-            "web": bool(enable_web),
+            "web": enable_web,
+            "model": model,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_output_tokens": max_output_tokens,
         }
 
         if use_cache:
@@ -117,7 +126,11 @@ class OpenAIService:
                 attachments=attachments,
                 use_schema=use_schema,
                 response_schema=response_schema,
-                enable_web=bool(enable_web),
+                enable_web=enable_web,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                top_p=top_p,
+                model=model,
             )
 
             if use_cache and response.get("ok") and response.get("text"):
@@ -174,7 +187,11 @@ class OpenAIService:
         use_cache = bool(self.cache and self.enable_cache and not force_refresh and not attachments)
         cache_params = {
             "schema": "legal_json_v2" if use_schema else "raw_json_v1",
-            "web": bool(enable_web),
+            "web": enable_web,
+            "model": model,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_output_tokens": max_output_tokens,
         }
         if use_cache:
             try:
@@ -209,26 +226,36 @@ class OpenAIService:
 
         # если в gateway есть стрим — пробуем
         if oai_ask_legal_stream:
+            stream_kwargs = {
+                "attachments": attachments,
+                "use_schema": use_schema,
+                "response_schema": response_schema,
+                "enable_web": enable_web,
+                "temperature": temperature,
+                "max_output_tokens": max_output_tokens,
+                "top_p": top_p,
+                "model": model,
+            }
             try:
-                candidate = oai_ask_legal_stream(
-                    system_prompt,
-                    user_text,
-                    on_delta,
-                    attachments=attachments,
-                    use_schema=use_schema,
-                    response_schema=response_schema,
-                    enable_web=bool(enable_web),
-                )  # type: ignore[misc]
+                candidate = oai_ask_legal_stream(  # type: ignore[misc]
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    callback=on_delta,
+                    **stream_kwargs,
+                )
             except TypeError:
                 if attachments:
                     raise
+                fallback_kwargs = {
+                    "attachments": attachments,
+                    "use_schema": use_schema,
+                    "response_schema": response_schema,
+                    "enable_web": enable_web,
+                }
                 candidate = oai_ask_legal_stream(  # type: ignore[misc]
                     system_prompt,
                     user_text,
-                    attachments=attachments,
-                    use_schema=use_schema,
-                    response_schema=response_schema,
-                    enable_web=bool(enable_web),
+                    **fallback_kwargs,
                 )
 
             try:
@@ -241,7 +268,7 @@ class OpenAIService:
                     await _safe_fire_callback(callback, "", True)
                     self.last_full_text = formatted_text
 
-                    resp = {"ok": True, "text": formatted_text}
+                    resp = {"ok": True, "text": formatted_text, "finish_reasons": []}
                     if self.cache and self.enable_cache and not attachments and text:
                         try:
                             await self.cache.cache_response(
@@ -267,7 +294,7 @@ class OpenAIService:
                 if isinstance(result, dict):
                     result["text"] = formatted_text
                 else:
-                    result = {"ok": True, "text": formatted_text}
+                    result = {"ok": True, "text": formatted_text, "finish_reasons": []}
 
                 if self.cache and self.enable_cache and not attachments and formatted_text:
                     try:
@@ -293,7 +320,11 @@ class OpenAIService:
                 attachments=attachments,
                 use_schema=use_schema,
                 response_schema=response_schema,
-                enable_web=bool(enable_web),
+                enable_web=enable_web,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                top_p=top_p,
+                model=model,
             )
             original_text = str(result.get("text", "") or "")
             formatted_text = format_legal_response_text(original_text)

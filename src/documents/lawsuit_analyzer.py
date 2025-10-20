@@ -738,10 +738,17 @@ class LawsuitAnalyzer(DocumentProcessor):
                 analysis_candidate["structured_payload_repaired"] = True
 
             missing_sections = _detect_missing_sections(analysis_candidate)
-            finish_reason = response.get("finish_reason") or ""
-            if attempt < 2 and (payload_repaired or missing_sections or finish_reason == "length"):
+            finish_raw = response.get("finish_reasons") or response.get("finish_reason") or []
+            if isinstance(finish_raw, str):
+                finish_list = [finish_raw]
+            elif isinstance(finish_raw, Iterable):
+                finish_list = [str(item) for item in finish_raw if item]
+            else:
+                finish_list = []
+            truncated = any(reason.lower() == "length" for reason in finish_list)
+            if attempt < 2 and (payload_repaired or missing_sections or truncated):
                 extra_instruction = _build_followup_instruction(
-                    missing_sections, payload_repaired or finish_reason == "length"
+                    missing_sections, payload_repaired or truncated
                 )
                 follow_up_used = True
                 continue
