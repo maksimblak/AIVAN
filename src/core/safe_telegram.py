@@ -184,6 +184,38 @@ def _plain(text: str) -> str:
     return plain or " "
 
 
+def _split_plain_text(text: str, limit: int = 3900) -> list[str]:
+    """Split plain text into Telegram-safe chunks preserving natural breaks."""
+    normalized = (text or "").replace("\r\n", "\n")
+    if not normalized:
+        return [" "]
+
+    chunks: list[str] = []
+    remaining = normalized
+
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+
+        cutoff = remaining.rfind("\n", 0, limit)
+        if cutoff == -1:
+            cutoff = remaining.rfind(" ", 0, limit)
+        if cutoff == -1 or cutoff < max(0, limit - 200):
+            cutoff = limit
+
+        chunk = remaining[:cutoff].rstrip("\n")
+        if not chunk:
+            chunk = remaining[:limit]
+            cutoff = len(chunk)
+
+        chunks.append(chunk)
+        remaining = remaining[cutoff:]
+        remaining = remaining.lstrip("\n")
+
+    return chunks or [" "]
+
+
 async def tg_edit_html(
     bot: Bot,
     chat_id: int,
@@ -219,13 +251,24 @@ async def tg_edit_html(
                     len(html),
                     e,
                 )
-                # plain fallback (всё равно ограничение по длине применяет Telegram)
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=_plain(html)[:3900] or " ",
-                    disable_web_page_preview=True,
-                )
+                plain_chunks = _split_plain_text(_plain(html))
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=plain_chunks[0],
+                        disable_web_page_preview=True,
+                    )
+                except TelegramBadRequest:
+                    raise
+
+                for extra_chunk in plain_chunks[1:]:
+                    with suppress(Exception):
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=extra_chunk,
+                            disable_web_page_preview=True,
+                        )
                 return
             if attempt == max_retries - 1:
                 raise
@@ -263,12 +306,14 @@ async def tg_send_html(
                     len(html),
                     e,
                 )
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=_plain(html)[:3900] or " ",
-                    disable_web_page_preview=True,
-                    reply_to_message_id=reply_to_message_id if attempt == 0 else None,
-                )
+                plain_chunks = _split_plain_text(_plain(html))
+                for idx, chunk in enumerate(plain_chunks):
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        disable_web_page_preview=True,
+                        reply_to_message_id=reply_to_message_id if idx == 0 and attempt == 0 else None,
+                    )
                 return
             if attempt == max_retries - 1:
                 raise

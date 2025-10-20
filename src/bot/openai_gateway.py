@@ -356,7 +356,7 @@ class _TelegramHTMLFormatter(HTMLParser):
         "del": "s",
         "strike": "s",
     }
-    _BULLET_SYMBOL = "• "
+    _BULLET_SYMBOL = "\u25ab "
     _INDENT_UNIT = "&nbsp;&nbsp;"
 
     def __init__(self) -> None:
@@ -913,9 +913,17 @@ async def _ask_legal_internal(
         base_core |= {"tools": [{"type": "web_search"}], "tool_choice": "auto"}
 
     # schema
-    schema_payload = response_schema or LEGAL_RESPONSE_SCHEMA
-    schema_requested = bool(use_schema and schema_payload)
+    schema_payload = (response_schema or LEGAL_RESPONSE_SCHEMA) if use_schema else None
+    schema_requested = bool(schema_payload)
     schema_supported = True if schema_requested else False
+
+    if schema_requested and web_enabled:
+        logger.debug(
+            "Skipping JSON schema enforcement for %s because web search tool is enabled",
+            model,
+        )
+        schema_supported = False
+        schema_payload = None
 
     async with shared_openai_client() as oai:
         # лёгкая валидация модели (1–2 попытки)

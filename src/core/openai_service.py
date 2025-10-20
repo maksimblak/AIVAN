@@ -355,6 +355,7 @@ class OpenAIService:
                 callback=stream_callback,
                 force_refresh=force_refresh,
                 attachments=attachments,
+                use_schema=False,
                 enable_web=True,
             )
 
@@ -363,6 +364,7 @@ class OpenAIService:
             user_text,
             attachments=attachments,
             force_refresh=force_refresh,
+            use_schema=False,
             enable_web=True,
         )
 
