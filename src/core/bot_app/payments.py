@@ -16,7 +16,16 @@ from aiogram.types import (
 )
 
 from src.bot.ui_components import Emoji
-from src.core.db_advanced import TransactionStatus
+try:
+    from src.core.db_advanced import TransactionStatus
+except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
+    from enum import Enum
+
+    class TransactionStatus(str, Enum):
+        PENDING = "pending"
+        COMPLETED = "completed"
+        FAILED = "failed"
+        CANCELLED = "cancelled"
 from src.core.payments import convert_rub_to_xtr
 from src.core.bot_app import context as ctx
 from src.core.subscription_payments import (
