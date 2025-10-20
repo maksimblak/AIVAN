@@ -38,7 +38,7 @@ def test_formatter_produces_telegram_safe_html():
 
     expected = (
         "<b>Plan</b><br><br>First paragraph<br>"
-        "\u25ab Alpha<br>\u25ab Beta<br><br>"
+        "\u2022 Alpha<br>\u2022 Beta<br><br>"
         "Afterbad<a href=\"https://valid\">ok</a><tg-spoiler>secret"
     )
 
