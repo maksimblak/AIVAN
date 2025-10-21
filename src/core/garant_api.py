@@ -87,7 +87,7 @@ class GarantAPIClient:
         base_url: str,
         token: str | None = None,
         timeout: float = 15.0,
-        default_kinds: Sequence[str] | None = None,
+        default_env: str | None = None,
         result_limit: int = 3,
         snippet_limit: int = 2,
         document_base_url: str | None = None,
@@ -99,7 +99,8 @@ class GarantAPIClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token.strip() if token else None
-        self._default_kinds = [kind for kind in (default_kinds or []) if kind]
+        env = (default_env or "").strip().lower()
+        self._default_env = env if env in {"internet", "arbitr"} else "internet"
         self._result_limit = max(1, result_limit)
         self._snippet_limit = max(0, snippet_limit)
         self._document_base_url = document_base_url
@@ -108,7 +109,7 @@ class GarantAPIClient:
         self._sutyazhnik_kinds = [kind for kind in (sutyazhnik_kinds or []) if kind]
         self._sutyazhnik_count = max(1, sutyazhnik_count)
         self._timeout = httpx.Timeout(timeout, connect=timeout, read=timeout)
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         self._client = httpx.AsyncClient(
@@ -137,8 +138,9 @@ class GarantAPIClient:
         self,
         query: str,
         *,
-        kinds: Sequence[str] | None = None,
+        env: str | None = None,
         count: int | None = None,
+        page: int | None = None,
         is_query: bool | None = None,
         sort: int = 0,
         sort_order: int = 0,
@@ -149,10 +151,19 @@ class GarantAPIClient:
         if not text:
             return []
 
+        requested_env = (env or self._default_env or "internet").strip().lower()
+        if requested_env not in {"internet", "arbitr"}:
+            requested_env = "internet"
+        page_number = page if isinstance(page, int) and page > 0 else 1
+        desired_count = count if isinstance(count, int) and count >= 0 else self._result_limit
+        if desired_count == 0:
+            return []
+        desired_count = min(desired_count, 50)
+
         payload: dict[str, Any] = {
             "text": text,
-            "count": max(1, min(count or self._result_limit, 50)),
-            "kind": list(kinds or self._default_kinds),
+            "env": requested_env,
+            "page": page_number,
             "sort": sort,
             "sortOrder": sort_order,
         }
@@ -160,7 +171,7 @@ class GarantAPIClient:
             payload["isQuery"] = True
 
         try:
-            response = await self._client.post("/v1/search", json=payload)
+            response = await self._client.post("/v2/search", json=payload)
             response.raise_for_status()
             data = response.json()
         except httpx.TimeoutException as exc:  # noqa: PERF203
@@ -181,7 +192,7 @@ class GarantAPIClient:
                 doc = self._parse_document(item)
                 if doc:
                     documents.append(doc)
-        return documents[: payload["count"]]
+        return documents[:desired_count]
 
     async def get_snippets(
         self,
@@ -203,7 +214,7 @@ class GarantAPIClient:
             payload.pop("correspondent")
 
         try:
-            response = await self._client.post("/v1/snippets", json=payload)
+            response = await self._client.post("/v2/snippets", json=payload)
             response.raise_for_status()
             data = response.json()
         except httpx.TimeoutException as exc:  # noqa: PERF203
@@ -234,11 +245,11 @@ class GarantAPIClient:
         self,
         query: str,
         *,
-        kinds: Sequence[str] | None = None,
+        env: str | None = None,
         count: int | None = None,
         snippet_limit: int | None = None,
     ) -> list[GarantSearchResult]:
-        documents = await self.search_documents(query, kinds=kinds, count=count)
+        documents = await self.search_documents(query, env=env, count=count)
         if not documents:
             return []
 
@@ -278,7 +289,7 @@ class GarantAPIClient:
         }
 
         try:
-            response = await self._client.post("/v1/sutyazhnik-search", json=payload)
+            response = await self._client.post("/v2/sutyazhnik-search", json=payload)
             response.raise_for_status()
             data = response.json()
         except httpx.TimeoutException as exc:  # noqa: PERF203

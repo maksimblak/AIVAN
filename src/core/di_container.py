@@ -211,7 +211,7 @@ def create_container(settings: AppSettings) -> DIContainer:
                 base_url=settings.garant_api_base_url,
                 token=settings.garant_api_token,
                 timeout=float(settings.garant_api_timeout),
-                default_kinds=settings.garant_api_default_kinds or None,
+                default_env=settings.garant_api_env,
                 result_limit=int(settings.garant_api_result_limit),
                 snippet_limit=int(settings.garant_api_snippet_limit),
                 document_base_url=settings.garant_document_base_url,
