@@ -23,6 +23,8 @@ logger = logging.getLogger("ai-ivan.simple.menus")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _PROFILE_HEADER_IMAGE_PATH = _PROJECT_ROOT / "images" / "my_profile.png"
+_LEGAL_QUESTION_IMAGE_PATH = _PROJECT_ROOT / "images" / "lawsuit_question.png"
+_SEARCH_PRACTICE_IMAGE_PATH = _PROJECT_ROOT / "images" / "search_analize_lawsuit.png"
 
 __all__ = [
     "register_menu_handlers",
@@ -36,13 +38,25 @@ HEAVY_DIVIDER = "━━━━━━━━━━━━"
 _USER_NAME_PLACEHOLDER = "__USER_NAME__"
 
 
-def _profile_header_media() -> FSInputFile | None:
+def _load_header_media(image_path: Path, log_hint: str) -> FSInputFile | None:
     try:
-        if _PROFILE_HEADER_IMAGE_PATH.is_file():
-            return FSInputFile(_PROFILE_HEADER_IMAGE_PATH)
+        if image_path.is_file():
+            return FSInputFile(image_path)
     except OSError as exc:
-        logger.debug("Profile header image is unavailable: %s", exc)
+        logger.debug("%s header image is unavailable: %s", log_hint, exc)
     return None
+
+
+def _profile_header_media() -> FSInputFile | None:
+    return _load_header_media(_PROFILE_HEADER_IMAGE_PATH, "Profile")
+
+
+def _legal_question_header_media() -> FSInputFile | None:
+    return _load_header_media(_LEGAL_QUESTION_IMAGE_PATH, "Legal question")
+
+
+def _search_practice_header_media() -> FSInputFile | None:
+    return _load_header_media(_SEARCH_PRACTICE_IMAGE_PATH, "Search practice")
 
 
 def _extract_start_payload(message: Message) -> str:
@@ -870,11 +884,74 @@ async def handle_legal_question_callback(callback: CallbackQuery) -> None:
             "   сообщением и получите ответ...</i>",
         ]
 
-        await callback.message.edit_text(
-            "\n".join(question_text_lines),
-            parse_mode=ParseMode.HTML,
-            reply_markup=instruction_keyboard,
-        )
+        question_text = "\n".join(question_text_lines)
+        reply_markup = instruction_keyboard
+        message = callback.message
+        bot = callback.bot
+        header_media = _legal_question_header_media()
+        message_handled = False
+
+        if header_media and bot:
+            chat_id = None
+            if message and message.chat:
+                chat_id = message.chat.id
+            elif callback.from_user:
+                chat_id = callback.from_user.id
+
+            if chat_id is not None:
+                try:
+                    if len(question_text) <= 1024:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption=question_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption="⚖️ <b>Юридический вопрос</b>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=question_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    message_handled = True
+
+                    if message:
+                        try:
+                            await message.delete()
+                        except TelegramBadRequest:
+                            try:
+                                await message.edit_reply_markup(reply_markup=None)
+                            except TelegramBadRequest:
+                                pass
+                except Exception as media_error:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to send legal question header image: %s",
+                        media_error,
+                        exc_info=True,
+                    )
+
+        if not message_handled:
+            if message:
+                await message.edit_text(
+                    question_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+            elif bot and callback.from_user:
+                await bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=question_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
 
         user_session = get_user_session(callback.from_user.id)
         setattr(user_session, "practice_search_mode", False)
@@ -931,11 +1008,74 @@ async def handle_search_practice_callback(callback: CallbackQuery) -> None:
             "✍️ <i>Напишите ваш юридический вопрос",
             "   следующим сообщением...</i>",
         ]
-        await callback.message.edit_text(
-            "\n".join(practice_text_lines),
-            parse_mode=ParseMode.HTML,
-            reply_markup=instruction_keyboard,
-        )
+        practice_text = "\n".join(practice_text_lines)
+        reply_markup = instruction_keyboard
+        message = callback.message
+        bot = callback.bot
+        header_media = _search_practice_header_media()
+        message_handled = False
+
+        if header_media and bot:
+            chat_id = None
+            if message and message.chat:
+                chat_id = message.chat.id
+            elif callback.from_user:
+                chat_id = callback.from_user.id
+
+            if chat_id is not None:
+                try:
+                    if len(practice_text) <= 1024:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption=practice_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption="🔍 <b>Поиск и анализ судебной практики</b>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=practice_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    message_handled = True
+
+                    if message:
+                        try:
+                            await message.delete()
+                        except TelegramBadRequest:
+                            try:
+                                await message.edit_reply_markup(reply_markup=None)
+                            except TelegramBadRequest:
+                                pass
+                except Exception as media_error:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to send search practice header image: %s",
+                        media_error,
+                        exc_info=True,
+                    )
+
+        if not message_handled:
+            if message:
+                await message.edit_text(
+                    practice_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+            elif bot and callback.from_user:
+                await bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=practice_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
 
         user_session = get_user_session(callback.from_user.id)
         if not hasattr(user_session, "practice_search_mode"):
