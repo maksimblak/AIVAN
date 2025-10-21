@@ -679,15 +679,11 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=f"{Emoji.BACK} Отмена", callback_data="doc_draft_cancel")]]
         )
-        message_text_to_send = intro_text
+        message_text_to_send: str | None = intro_text
         header_media = _document_drafter_header_media()
         bot = callback.bot
         if header_media and bot:
-            caption_line, _, remainder = intro_text.partition("\n")
-            caption_html = caption_line.strip() or "🧾 <b>Создание юридического документа</b>"
-            body_html = remainder.lstrip("\n")
-            if not body_html.strip():
-                body_html = intro_text
+            caption_html = intro_text
             chat_id = None
             if callback.message and callback.message.chat:
                 chat_id = callback.message.chat.id
@@ -695,30 +691,40 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
                 chat_id = callback.from_user.id
             if chat_id is not None:
                 try:
-                    await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=header_media,
-                        caption=caption_html,
-                        parse_mode=ParseMode.HTML,
-                    )
-                    message_text_to_send = body_html
+                    if len(caption_html) <= 1024:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption=caption_html,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=keyboard,
+                        )
+                        message_text_to_send = None
+                    else:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption="🧾 <b>Создание юридического документа</b>",
+                            parse_mode=ParseMode.HTML,
+                        )
                 except Exception as photo_error:  # noqa: BLE001
                     logger.warning(
                         "Failed to send document drafter header image: %s", photo_error, exc_info=True
                     )
-        if callback.message:
-            await callback.message.answer(
-                message_text_to_send,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
-        elif bot and callback.from_user:
-            await bot.send_message(
-                chat_id=callback.from_user.id,
-                text=message_text_to_send,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
+        if message_text_to_send:
+            if callback.message:
+                await callback.message.answer(
+                    message_text_to_send,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+            elif bot and callback.from_user:
+                await bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=message_text_to_send,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
         await callback.answer()
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось запустить конструктор документа: %s", exc, exc_info=True)
@@ -1853,15 +1859,11 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             ]
         )
 
-        message_text_to_send = message_text
+        message_text_to_send: str | None = message_text
         if operation == "lawsuit_analysis":
             header_media = _lawsuit_header_media()
             if header_media and callback.bot:
-                caption_line, _, remainder = message_text.partition("\n")
-                caption_html = caption_line.strip() or "⚖️ <b>Анализ искового заявления</b>"
-                body_html = remainder.lstrip("\n")
-                if not body_html.strip():
-                    body_html = message_text
+                caption_html = message_text
                 chat_id = None
                 if callback.message and callback.message.chat:
                     chat_id = callback.message.chat.id
@@ -1869,32 +1871,42 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
                     chat_id = callback.from_user.id
                 if chat_id is not None:
                     try:
-                        await callback.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=header_media,
-                            caption=caption_html,
-                            parse_mode=ParseMode.HTML,
-                        )
-                        message_text_to_send = body_html
+                        if len(caption_html) <= 1024:
+                            await callback.bot.send_photo(
+                                chat_id=chat_id,
+                                photo=header_media,
+                                caption=caption_html,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=reply_markup,
+                            )
+                            message_text_to_send = None
+                        else:
+                            await callback.bot.send_photo(
+                                chat_id=chat_id,
+                                photo=header_media,
+                                caption="⚖️ <b>Анализ искового заявления</b>",
+                                parse_mode=ParseMode.HTML,
+                            )
                     except Exception as photo_error:  # noqa: BLE001
                         logger.warning(
                             "Failed to send lawsuit analyzer header image: %s",
                             photo_error,
                             exc_info=True,
                         )
-        if callback.message:
-            await callback.message.answer(
-                message_text_to_send,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
-        elif callback.bot and callback.from_user:
-            await callback.bot.send_message(
-                chat_id=callback.from_user.id,
-                text=message_text_to_send,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
+        if message_text_to_send:
+            if callback.message:
+                await callback.message.answer(
+                    message_text_to_send,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+            elif callback.bot and callback.from_user:
+                await callback.bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=message_text_to_send,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
         await callback.answer()
 
         await state.set_state(DocumentProcessingStates.waiting_for_document)
