@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from html import escape as html_escape
+from pathlib import Path
 from typing import Any, Optional
 
 from aiogram import Dispatcher, F
@@ -20,6 +21,9 @@ from src.core.exceptions import DatabaseException, ErrorContext, ValidationExcep
 
 logger = logging.getLogger("ai-ivan.simple.menus")
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_PROFILE_HEADER_IMAGE_PATH = _PROJECT_ROOT / "images" / "my_profile.png"
+
 __all__ = [
     "register_menu_handlers",
     "cmd_start",
@@ -30,6 +34,15 @@ __all__ = [
 SECTION_DIVIDER = "<code>────────────────────</code>"
 HEAVY_DIVIDER = "━━━━━━━━━━━━"
 _USER_NAME_PLACEHOLDER = "__USER_NAME__"
+
+
+def _profile_header_media() -> FSInputFile | None:
+    try:
+        if _PROFILE_HEADER_IMAGE_PATH.is_file():
+            return FSInputFile(_PROFILE_HEADER_IMAGE_PATH)
+    except OSError as exc:
+        logger.debug("Profile header image is unavailable: %s", exc)
+    return None
 
 
 def _extract_start_payload(message: Message) -> str:
@@ -392,16 +405,60 @@ async def handle_my_profile_callback(callback: CallbackQuery) -> None:
             except Exception as profile_error:  # pragma: no cover
                 logger.debug("Failed to build profile header: %s", profile_error, exc_info=True)
 
-        await callback.message.edit_text(
-            _profile_menu_text(
-                callback.from_user,
-                status_text=status_text,
-                tariff_text=tariff_text,
-                hint_text=hint_text,
-            ),
-            parse_mode=ParseMode.HTML,
-            reply_markup=_profile_menu_keyboard(subscribe_label, has_subscription=has_subscription),
+        profile_text = _profile_menu_text(
+            callback.from_user,
+            status_text=status_text,
+            tariff_text=tariff_text,
+            hint_text=hint_text,
         )
+        reply_markup = _profile_menu_keyboard(subscribe_label, has_subscription=has_subscription)
+        message = callback.message
+        bot = callback.bot
+        profile_media = _profile_header_media()
+
+        if profile_media and bot:
+            chat_id = message.chat.id if message and message.chat else callback.from_user.id
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=profile_media,
+                    caption=profile_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+                if message:
+                    try:
+                        await message.delete()
+                    except TelegramBadRequest:
+                        logger.debug(
+                            "Failed to delete profile menu message %s", message.message_id
+                        )
+                        try:
+                            await message.edit_reply_markup(reply_markup=None)
+                        except TelegramBadRequest:
+                            logger.debug(
+                                "Failed to clear profile menu keyboard for message %s",
+                                message.message_id,
+                            )
+                return
+            except Exception as photo_error:  # noqa: BLE001
+                logger.warning(
+                    "Failed to send profile header image: %s", photo_error, exc_info=True
+                )
+
+        if message:
+            await message.edit_text(
+                profile_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+        elif bot:
+            await bot.send_message(
+                chat_id=callback.from_user.id,
+                text=profile_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
 
     except Exception as exc:
         logger.error("Error in handle_my_profile_callback: %s", exc)
