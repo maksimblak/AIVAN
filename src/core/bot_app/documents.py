@@ -58,6 +58,7 @@ logger = logging.getLogger("ai-ivan.simple.documents")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _LAWSUIT_ANALYZER_IMAGE_PATH = _PROJECT_ROOT / "images" / "lawsuit_analyzer.png"
 _DOCUMENT_DRAFTER_IMAGE_PATH = _PROJECT_ROOT / "images" / "document_drafter.png"
+_DOCUMENT_PROCESSING_IMAGE_PATH = _PROJECT_ROOT / "images" / "work_with_documetns.png"
 
 settings = simple_context.settings
 
@@ -186,6 +187,10 @@ def _lawsuit_header_media() -> FSInputFile | None:
 
 def _document_drafter_header_media() -> FSInputFile | None:
     return _load_header_media(_DOCUMENT_DRAFTER_IMAGE_PATH, "Document drafter")
+
+
+def _document_processing_header_media() -> FSInputFile | None:
+    return _load_header_media(_DOCUMENT_PROCESSING_IMAGE_PATH, "Document processing")
 
 
 def _get_openai_service() -> OpenAIService | None:
@@ -1717,11 +1722,57 @@ async def handle_document_processing(callback: CallbackQuery) -> None:
             "👇 Выберите нужную операцию:"
         )
 
-        await callback.message.answer(
-            message_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        )
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+        message_text_to_send: str | None = message_text
+        header_media = _document_processing_header_media()
+        bot = callback.bot
+
+        if header_media and bot:
+            chat_id = None
+            if callback.message and callback.message.chat:
+                chat_id = callback.message.chat.id
+            elif callback.from_user:
+                chat_id = callback.from_user.id
+
+            if chat_id is not None:
+                try:
+                    if len(message_text) <= 1024:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption=message_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                        message_text_to_send = None
+                    else:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption="🗂️ <b>Работа с документами</b>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                except Exception as media_error:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to send document processing header image: %s",
+                        media_error,
+                        exc_info=True,
+                    )
+
+        if message_text_to_send:
+            if callback.message:
+                await callback.message.answer(
+                    message_text_to_send,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+            elif bot and callback.from_user:
+                await bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=message_text_to_send,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
         await callback.answer()
 
     except Exception as exc:  # noqa: BLE001
