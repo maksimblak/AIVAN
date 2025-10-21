@@ -677,7 +677,9 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
         )
 
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text=f"{Emoji.BACK} Отмена", callback_data="doc_draft_cancel")]]
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"{Emoji.BACK} Назад к операциям", callback_data="doc_draft_cancel")]
+            ]
         )
         message_text_to_send: str | None = intro_text
         header_media = _document_drafter_header_media()
@@ -732,17 +734,18 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
 
 
 async def handle_doc_draft_cancel(callback: CallbackQuery, state: FSMContext) -> None:
-    """Отмена процесса создания документа."""
+    """Возврат к списку операций документов из конструктора."""
     await state.clear()
-    with suppress(Exception):
-        await callback.message.answer(
-            f"🚫 <b>Создание документа отменено</b>\n"
-            f"<code>{'─' * 30}</code>\n\n"
-            f"💡 Вы можете начать заново в любой момент",
-            parse_mode=ParseMode.HTML,
-        )
-    with suppress(Exception):
-        await callback.answer("Отменено")
+    message = callback.message
+    if message:
+        with suppress(TelegramBadRequest):
+            await message.edit_reply_markup(reply_markup=None)
+    try:
+        await handle_document_processing(callback)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Не удалось вернуться к операциям документов: %s", exc, exc_info=True)
+        with suppress(Exception):
+            await callback.answer("Не удалось открыть список операций", show_alert=True)
 
 
 async def handle_doc_draft_request(
