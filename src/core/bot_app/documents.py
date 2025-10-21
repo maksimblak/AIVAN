@@ -55,9 +55,12 @@ __all__ = [
 
 logger = logging.getLogger("ai-ivan.simple.documents")
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_LAWSUIT_ANALYZER_IMAGE_PATH = _PROJECT_ROOT / "images" / "lawsuit_analyzer.png"
+
 settings = simple_context.settings
 
-GENERIC_INTERNAL_ERROR_HTML = "<i>Произошла внутренняя ошибка. Попробуйте позже.</i>"
+GENERIC_INTERNAL_ERROR_HTML = "<i>Произошла внутренняя ошибка. Пожалуйста, повторите позже.</i>"
 GENERIC_INTERNAL_ERROR_TEXT = "Произошла внутренняя ошибка. Попробуйте позже."
 
 
@@ -165,6 +168,15 @@ DOCUMENT_OPERATION_REQUEST_TYPES: dict[str, str] = {
 
 def _get_document_manager() -> DocumentManager | None:
     return simple_context.document_manager
+
+
+def _lawsuit_header_media() -> FSInputFile | None:
+    try:
+        if _LAWSUIT_ANALYZER_IMAGE_PATH.is_file():
+            return FSInputFile(_LAWSUIT_ANALYZER_IMAGE_PATH)
+    except OSError as exc:
+        logger.debug("Lawsuit analyzer header image unavailable: %s", exc)
+    return None
 
 
 def _get_openai_service() -> OpenAIService | None:
@@ -1787,15 +1799,54 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
             "📎 <b>Загрузите документ для обработки</b>"
         )
 
-        await callback.message.answer(
-            message_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="◀️ Назад к операциям", callback_data="document_processing")]
-                ]
-            ),
+        reply_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад к операциям", callback_data="document_processing")]
+            ]
         )
+
+        message_text_to_send = message_text
+        if operation == "lawsuit_analysis":
+            header_media = _lawsuit_header_media()
+            if header_media and callback.bot:
+                caption_line, _, remainder = message_text.partition("\n")
+                caption_html = caption_line.strip() or "⚖️ <b>Анализ искового заявления</b>"
+                body_html = remainder.lstrip("\n")
+                if not body_html.strip():
+                    body_html = message_text
+                chat_id = None
+                if callback.message and callback.message.chat:
+                    chat_id = callback.message.chat.id
+                elif callback.from_user:
+                    chat_id = callback.from_user.id
+                if chat_id is not None:
+                    try:
+                        await callback.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=header_media,
+                            caption=caption_html,
+                            parse_mode=ParseMode.HTML,
+                        )
+                        message_text_to_send = body_html
+                    except Exception as photo_error:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to send lawsuit analyzer header image: %s",
+                            photo_error,
+                            exc_info=True,
+                        )
+        if callback.message:
+            await callback.message.answer(
+                message_text_to_send,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+        elif callback.bot and callback.from_user:
+            await callback.bot.send_message(
+                chat_id=callback.from_user.id,
+                text=message_text_to_send,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
         await callback.answer()
 
         await state.set_state(DocumentProcessingStates.waiting_for_document)
