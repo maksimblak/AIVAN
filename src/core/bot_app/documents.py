@@ -57,6 +57,7 @@ logger = logging.getLogger("ai-ivan.simple.documents")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _LAWSUIT_ANALYZER_IMAGE_PATH = _PROJECT_ROOT / "images" / "lawsuit_analyzer.png"
+_DOCUMENT_DRAFTER_IMAGE_PATH = _PROJECT_ROOT / "images" / "document_drafter.png"
 
 settings = simple_context.settings
 
@@ -170,13 +171,21 @@ def _get_document_manager() -> DocumentManager | None:
     return simple_context.document_manager
 
 
-def _lawsuit_header_media() -> FSInputFile | None:
+def _load_header_media(image_path: Path, log_hint: str) -> FSInputFile | None:
     try:
-        if _LAWSUIT_ANALYZER_IMAGE_PATH.is_file():
-            return FSInputFile(_LAWSUIT_ANALYZER_IMAGE_PATH)
+        if image_path.is_file():
+            return FSInputFile(image_path)
     except OSError as exc:
-        logger.debug("Lawsuit analyzer header image unavailable: %s", exc)
+        logger.debug("%s header image unavailable: %s", log_hint, exc)
     return None
+
+
+def _lawsuit_header_media() -> FSInputFile | None:
+    return _load_header_media(_LAWSUIT_ANALYZER_IMAGE_PATH, "Lawsuit analyzer")
+
+
+def _document_drafter_header_media() -> FSInputFile | None:
+    return _load_header_media(_DOCUMENT_DRAFTER_IMAGE_PATH, "Document drafter")
 
 
 def _get_openai_service() -> OpenAIService | None:
@@ -670,7 +679,46 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=f"{Emoji.BACK} Отмена", callback_data="doc_draft_cancel")]]
         )
-        await callback.message.answer(intro_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        message_text_to_send = intro_text
+        header_media = _document_drafter_header_media()
+        bot = callback.bot
+        if header_media and bot:
+            caption_line, _, remainder = intro_text.partition("\n")
+            caption_html = caption_line.strip() or "🧾 <b>Создание юридического документа</b>"
+            body_html = remainder.lstrip("\n")
+            if not body_html.strip():
+                body_html = intro_text
+            chat_id = None
+            if callback.message and callback.message.chat:
+                chat_id = callback.message.chat.id
+            elif callback.from_user:
+                chat_id = callback.from_user.id
+            if chat_id is not None:
+                try:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=header_media,
+                        caption=caption_html,
+                        parse_mode=ParseMode.HTML,
+                    )
+                    message_text_to_send = body_html
+                except Exception as photo_error:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to send document drafter header image: %s", photo_error, exc_info=True
+                    )
+        if callback.message:
+            await callback.message.answer(
+                message_text_to_send,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        elif bot and callback.from_user:
+            await bot.send_message(
+                chat_id=callback.from_user.id,
+                text=message_text_to_send,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
         await callback.answer()
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось запустить конструктор документа: %s", exc, exc_info=True)
