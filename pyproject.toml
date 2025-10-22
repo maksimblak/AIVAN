@@ -1,5 +1,5 @@
 [build-system]
-requires = ["poetry-core>=1.8.0"]
+requires = ["poetry-core>=2.0.0,<3.0.0"]   # ← обновили core под Poetry 2.x
 build-backend = "poetry.core.masonry.api"
 
 [project]
@@ -45,8 +45,7 @@ telegram-legal-bot = "telegram_legal_bot.main:main"
 [tool.poetry]
 package-mode = true
 packages = [
-  { include = "telegram_legal_bot", from = "src" },
-  { include = "src", from = "." }
+  { include = "telegram_legal_bot", from = "src" }   # ← убрал лишний include "src"
 ]
 
 [tool.poetry.group.dev.dependencies]
