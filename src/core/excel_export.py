@@ -65,6 +65,23 @@ def build_practice_excel(
     if structured and isinstance(structured.get("cases"), list):
         structured_cases = [c for c in structured["cases"] if isinstance(c, Mapping)]
 
+    fragment_index: dict[tuple[str, str], Mapping[str, Any]] = {}
+    if fragments:
+        for fragment in fragments:
+            match = getattr(fragment, "match", None)
+            metadata = getattr(match, "metadata", {}) if match else {}
+            if not isinstance(metadata, Mapping):
+                continue
+            title_key = str(metadata.get("title") or metadata.get("name") or getattr(fragment, "header", "") or "").strip().lower()
+            url_key = str(metadata.get("url") or metadata.get("link") or "").strip().lower()
+            if not title_key and not url_key:
+                continue
+            fragment_index[(url_key, title_key)] = metadata
+            if url_key:
+                fragment_index.setdefault((url_key, ""), metadata)
+            if title_key:
+                fragment_index.setdefault(("", title_key), metadata)
+
     if structured_cases:
         for item in structured_cases:
             title = str(item.get("title") or "").strip()
@@ -74,6 +91,27 @@ def build_practice_excel(
             holding = str(item.get("holding") or "").strip()
             norms = str(item.get("norms") or "").strip()
             applicability = str(item.get("applicability") or "").strip()
+
+            # Fallback to fragment metadata when fields are missing
+            lookup_key = (url.lower(), title.lower())
+            metadata = fragment_index.get(lookup_key)
+            if not metadata and url:
+                metadata = fragment_index.get((url.lower(), ""))
+            if not metadata and title:
+                metadata = fragment_index.get(("", title.lower()))
+            if metadata:
+                if not facts:
+                    facts = str(metadata.get("summary") or metadata.get("excerpt") or "").strip()
+                if not holding:
+                    holding = str(metadata.get("decision_summary") or "").strip()
+                if not norms:
+                    norms = str(metadata.get("norms_summary") or "").strip()
+                    if not norms:
+                        norm_names = metadata.get("norm_names")
+                        if isinstance(norm_names, Sequence):
+                            norms = "\n".join(str(n).strip() for n in norm_names if str(n).strip())
+                if not applicability:
+                    applicability = str(metadata.get("applicability") or "").strip()
 
             name_parts = [p for p in [title, case_number, url] if p]
             name_cell_value = "\n".join(name_parts)
