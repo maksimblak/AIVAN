@@ -27,7 +27,11 @@ from src.core.exceptions import (
     SystemException,
     ValidationException,
 )
-from src.core.safe_telegram import format_safe_html, send_html_text
+from src.core.safe_telegram import (
+    format_safe_html,
+    send_html_text,
+    split_html_for_telegram as safe_split_html,
+)
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.common import get_user_session, get_safe_db_method, ensure_valid_user_id
 from src.core.bot_app.feedback import (
@@ -61,74 +65,15 @@ def _split_html_for_telegram(
     limit: int = TELEGRAM_HTML_SAFE_LIMIT,
     reserve: int = 0,
 ) -> list[str]:
-    """Split sanitized HTML into chunks that fit Telegram limits."""
+    """Wrapper over safe splitter that preserves HTML tags across chunks.
+
+    Uses src.core.safe_telegram.split_html_for_telegram with an adjusted hard_limit.
+    """
     text = (html or "").strip()
     if not text:
         return []
-
-    if reserve > 0:
-        limit = max(limit - reserve, 1)
-
-    def _smart_cut(segment: str, max_len: int) -> tuple[str, str]:
-        cut = min(max_len, len(segment))
-        if cut <= 0:
-            return "", segment
-
-        lt = segment.rfind("<", 0, cut)
-        gt = segment.rfind(">", 0, cut)
-        if lt > gt:
-            cut = lt
-        for pattern in ("\n\n", "\n", " • ", " — ", ". ", "; ", ": ", ", ", " "):
-            pos = segment.rfind(pattern, 0, cut)
-            if pos >= 0 and pos >= cut - 200:
-                cut = pos + len(pattern)
-                break
-
-        if cut <= 0:
-            cut = min(max_len, len(segment))
-        head = segment[:cut].rstrip()
-        tail = segment[cut:]
-        if not head and tail:
-            head = tail[:max_len]
-            tail = tail[max_len:]
-        return head, tail
-
-    chunks: list[str] = []
-    buffer = ""
-
-    def flush_buffer() -> None:
-        nonlocal buffer
-        if buffer:
-            chunks.append(buffer)
-            buffer = ""
-
-    for paragraph in text.split("\n\n"):
-        segment = paragraph.strip()
-        if not segment:
-            continue
-
-        candidate = (buffer + ("\n\n" if buffer else "") + segment) if buffer else segment
-        if len(candidate) <= limit:
-            buffer = candidate
-            continue
-
-        flush_buffer()
-
-        remaining = segment
-        while len(remaining) > limit:
-            head, remaining = _smart_cut(remaining, limit)
-            if not head:
-                raw_slice = remaining[:limit]
-                fallback = raw_slice.rstrip() or raw_slice
-                chunks.append(fallback)
-                remaining = remaining[len(raw_slice):]
-                continue
-            chunks.append(head)
-        buffer = remaining
-
-    flush_buffer()
-
-    return chunks
+    hard_limit = max(1, int(limit) - int(reserve or 0))
+    return safe_split_html(text, hard_limit=hard_limit)
 
 
 def _ensure_double_newlines(html: str) -> str:
@@ -1120,4 +1065,3 @@ async def process_question(
 def register_question_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
-
