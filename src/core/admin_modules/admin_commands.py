@@ -69,7 +69,8 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
         garant_client = getattr(simple_context, "garant_client", None)
         if getattr(garant_client, "enabled", False):
             limits = await garant_client.get_limits()  # type: ignore[attr-defined]
-            formatted = garant_client.format_limits(limits, max_items=4) if limits else ""
+            # Показываем все доступные категории лимитов на главной панели
+            formatted = garant_client.format_limits(limits, max_items=0) if limits else ""
             if formatted:
                 garant_block = "\n\n" + formatted
     except Exception:
