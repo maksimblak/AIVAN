@@ -866,6 +866,8 @@ async def process_question(
                                 structured_payload = {}
                             structured_payload["cases"] = cases
                             summary_payload["structured"] = structured_payload
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug("Extracted %s practice cases from JSON (primary)", len(cases))
                     except Exception:
                         pass
 
@@ -883,6 +885,8 @@ async def process_question(
                                 "structured": {"cases": cases},
                                 "fragments": [],
                             }
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug("Extracted %s practice cases from JSON (fallback)", len(cases))
                     except Exception:
                         pass
 
@@ -1038,7 +1042,8 @@ async def process_question(
                 summary_html = summary_payload.get("summary_html", "")
                 rag_fragments = summary_payload.get("fragments") or []
                 structured_payload = summary_payload.get("structured", {})
-                excel_source = final_answer_text or raw_response_text or ""
+                # Убираем служебный JSON из источника для листа «Обзор», чтобы он не попадал в Excel
+                excel_source = _strip_fenced_json_blocks(final_answer_text or raw_response_text or "")
                 practice_excel_path = await asyncio.to_thread(
                     build_practice_excel,
                     summary_html=excel_source,
