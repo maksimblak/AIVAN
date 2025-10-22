@@ -148,6 +148,64 @@ def _relocate_json_blocks_to_end(text: str) -> str:
     return tail
 
 
+def _build_structured_cases_from_fragments(
+    fragments: Sequence[Any],
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Construct structured case dicts from fragment metadata for Excel fallbacks."""
+    cases: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for fragment in fragments:
+        if len(cases) >= limit:
+            break
+        match = getattr(fragment, "match", None)
+        metadata = getattr(match, "metadata", {}) if match else {}
+        if not isinstance(metadata, Mapping):
+            continue
+
+        title = str(metadata.get("title") or metadata.get("name") or getattr(fragment, "header", "") or "").strip()
+        url = str(metadata.get("url") or metadata.get("link") or "").strip()
+        case_number = str(metadata.get("case_number") or metadata.get("case") or "").strip()
+        facts = str(metadata.get("summary") or getattr(fragment, "excerpt", "") or "").strip()
+        holding = str(metadata.get("decision_summary") or "").strip()
+        applicability = str(metadata.get("applicability") or "").strip()
+
+        key = (title.lower(), url.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        def _or_default(value: str) -> str:
+            return value if value else "нет данных"
+
+        norms_list: list[str] = []
+        norms_summary = metadata.get("norms_summary")
+        if isinstance(norms_summary, str) and norms_summary.strip():
+            norms_list = [item.strip() for item in norms_summary.splitlines() if item.strip()]
+        if not norms_list:
+            norm_names = metadata.get("norm_names")
+            if isinstance(norm_names, Sequence):
+                norms_list = [str(item).strip() for item in norm_names if str(item).strip()]
+        if not norms_list:
+            norms_list = ["нет данных"]
+
+        cases.append(
+            {
+                "title": _or_default(title),
+                "case_number": _or_default(case_number),
+                "url": url or "нет данных",
+                "facts": _or_default(facts),
+                "holding": _or_default(holding),
+                "norms": norms_list,
+                "applicability": _or_default(applicability),
+            }
+        )
+
+    return cases
+
+
 def _back_to_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1100,6 +1158,21 @@ async def process_question(
                 summary_html = summary_payload.get("summary_html", "")
                 rag_fragments = summary_payload.get("fragments") or []
                 structured_payload = summary_payload.get("structured", {})
+                if not isinstance(structured_payload, Mapping):
+                    structured_payload = {}
+                cases_payload = structured_payload.get("cases")
+                if not cases_payload:
+                    generated_cases = _build_structured_cases_from_fragments(rag_fragments, limit=10)
+                    if generated_cases:
+                        structured_payload = dict(structured_payload)
+                        structured_payload["cases"] = generated_cases
+                        summary_payload["structured"] = structured_payload
+                        result["practice_summary"] = summary_payload
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "Generated %s structured cases from fragments (fallback)",
+                                len(generated_cases),
+                            )
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
                         logger.debug(
