@@ -89,9 +89,26 @@ def _ensure_double_newlines(html: str) -> str:
 
 
 def _strip_fenced_json_blocks(text: str) -> str:
-    """Remove fenced JSON code blocks (```json ... ```) from model output before sending to Telegram."""
+    """Remove fenced code blocks (esp. ```json … ```) from model output before sending to Telegram.
+
+    Handles:
+    - ```json ... ``` (any case)
+    - Unclosed ```json … (strip to end)
+    - Any generic ``` ... ``` if json tag is missing
+    """
     try:
-        return re.sub(r"```\s*json[\s\S]*?```", "", text or "", flags=re.IGNORECASE).strip()
+        cleaned = text or ""
+        # Remove explicit JSON fences first
+        cleaned = re.sub(r"```\s*json\b[\s\S]*?```", "", cleaned, flags=re.IGNORECASE)
+        # If unclosed JSON fence remains, cut to end
+        cleaned = re.sub(r"```\s*json\b[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
+        # Remove any remaining generic fenced code blocks
+        cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)
+        # And any trailing unclosed generic fence (safety)
+        cleaned = re.sub(r"```[\s\S]*$", "", cleaned)
+        # Normalize excessive empty lines after stripping
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
     except Exception:
         return text or ""
 
