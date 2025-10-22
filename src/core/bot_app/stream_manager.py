@@ -165,7 +165,8 @@ class StreamManager:
         formatted = format_safe_html(full_text) or "—"
 
         try:
-            chunks = split_html_for_telegram(formatted, hard_limit=3900)
+            # Согласуем лимит с остальными путями доставки
+            chunks = split_html_for_telegram(formatted, hard_limit=3000)
         except Exception as e:
             logger.warning("split_html_for_telegram failed: %s", e)
             chunks = [formatted[:3900] or "—"]

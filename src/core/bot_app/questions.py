@@ -52,7 +52,7 @@ __all__ = [
 
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
 LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
-TELEGRAM_HTML_SAFE_LIMIT = 3500
+TELEGRAM_HTML_SAFE_LIMIT = 3000
 
 
 @asynccontextmanager
@@ -779,13 +779,22 @@ async def process_question(
 
         raw_response_text = result.get("text") or stream_final_text or ""
         if raw_response_text:
-            clean_html = format_safe_html(raw_response_text)
+            # Важно: сначала нормализуем переносы строк, затем делим —
+            # чтобы пост-обработка не раздувала куски сверх лимита.
+            clean_html = _ensure_double_newlines(format_safe_html(raw_response_text))
             chunks = _split_html_for_telegram(clean_html, TELEGRAM_HTML_SAFE_LIMIT)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    lengths = ", ".join(str(len(c)) for c in chunks)
+                    logger.debug("Telegram payload split into %s parts: [%s]", len(chunks), lengths)
+                except Exception:
+                    logger.debug("Telegram payload split into %s parts", len(chunks))
 
             if not chunks:
                 logger.info("Skipping empty Telegram payload after formatting")
             elif len(chunks) == 1:
-                formatted_chunk = _ensure_double_newlines(chunks[0])
+                formatted_chunk = chunks[0]
                 try:
                     await message.answer(
                         formatted_chunk,
@@ -842,7 +851,7 @@ async def process_question(
                     idx = 0
                     try:
                         for idx, chunk in enumerate(adjusted_chunks, start=1):
-                            formatted_chunk = _ensure_double_newlines(chunk)
+                            formatted_chunk = chunk
                             prefix = f"<b>Часть {idx}/{total}</b>\n\n"
                             await message.answer(
                                 prefix + formatted_chunk,

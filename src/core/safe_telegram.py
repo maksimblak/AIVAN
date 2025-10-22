@@ -330,7 +330,8 @@ async def send_html_text(
     """
     formatted = format_safe_html(raw_text)
     try:
-        chunks = split_html_for_telegram(formatted, hard_limit=3900)
+        # Используем более консервативный предел, чтобы исключить edge-case ошибки Telegram
+        chunks = split_html_for_telegram(formatted, hard_limit=3000)
     except Exception as e:
         logger.warning("split_html_for_telegram failed: %s", e)
         chunks = [(formatted or "")[:3900] or "—"]
