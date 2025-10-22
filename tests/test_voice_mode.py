@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.core import main_simple as ms
+from aiogram.enums import ParseMode
+from src.core.bot_app import voice as voice_mod
+from src.core.bot_app import context as ctx
 
 
 class DummyAudioService:
@@ -68,9 +70,7 @@ class DummyMessage:
 
 @pytest.mark.asyncio
 async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
-    original_audio_service = getattr(ms, "audio_service", None)
-    original_config = ms.config
-    original_process_question = ms.process_question
+    original_audio_service = getattr(voice_mod.simple_context, "audio_service", None)
 
     tts_file = tmp_path / "response.ogg"
     dummy_service = DummyAudioService("Распознанный текст", tts_file)
@@ -83,12 +83,18 @@ async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
         return "Готовый ответ"
 
     try:
-        ms.audio_service = dummy_service
-        ms.config = SimpleNamespace(voice_mode_enabled=True)
-        monkeypatch.setattr(ms, "process_question", fake_process_question, raising=False)
+        # Подменяем контекст и настройку голосового режима
+        voice_mod.simple_context.audio_service = dummy_service
+        monkeypatch.setattr(
+            voice_mod.simple_context,
+            "settings",
+            lambda: SimpleNamespace(voice_mode_enabled=True),
+            raising=True,
+        )
+        handler = voice_mod._build_voice_handler(fake_process_question)
 
         message = DummyMessage()
-        await ms.process_voice_message(message)
+        await handler(message)
 
         # Проверяем, что распознанный текст был отправлен пользователю
         assert message._answers, "expected at least one text answer"
@@ -102,8 +108,8 @@ async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
         # Проверяем, что ответ озвучен
         assert message._voice_answers, "expected voice reply"
         fs_input, caption, parse_mode = message._voice_answers[0]
-        assert caption == ms.VOICE_REPLY_CAPTION
-        assert parse_mode == ms.ParseMode.HTML
+        assert caption == voice_mod.VOICE_REPLY_CAPTION
+        assert parse_mode == ParseMode.HTML
         assert Path(fs_input.path) == tts_file
 
         # Исходный voice временный файл должен быть удален
@@ -112,8 +118,5 @@ async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
 
         assert dummy_service.ensure_called
     finally:
-        ms.audio_service = original_audio_service
-        ms.config = original_config
-        ms.process_question = original_process_question
-
+        voice_mod.simple_context.audio_service = original_audio_service
 

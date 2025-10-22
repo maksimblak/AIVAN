@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.core import main_simple as ms
+from src.core.bot_app import menus as menus
+from src.core.bot_app import context as ctx
+from src.core.runtime import WelcomeMedia
 
 
 class DummyUser:
@@ -43,22 +45,22 @@ def _prepare_session_store():
 
 @pytest.mark.asyncio
 async def test_cmd_start_sends_welcome_photo(tmp_path):
-    original_session_store = ms.session_store
-    original_media = ms.WELCOME_MEDIA
+    original_session_store = ctx.session_store
+    original_media = ctx.WELCOME_MEDIA
 
-    ms.session_store = _prepare_session_store()
+    ctx.session_store = _prepare_session_store()
 
     card = tmp_path / "welcome.png"
     card.write_bytes(b"fake-image")
-    ms.WELCOME_MEDIA = ms.WelcomeMedia(card, "photo")
+    ctx.WELCOME_MEDIA = WelcomeMedia(media_type="photo", path=card)
 
     message = DummyMessage()
 
     try:
-        await ms.cmd_start(message)
+        await menus.cmd_start(message)
     finally:
-        ms.session_store = original_session_store
-        ms.WELCOME_MEDIA = original_media
+        ctx.session_store = original_session_store
+        ctx.WELCOME_MEDIA = original_media
 
     assert message._photos == [card]
     assert not message._videos
@@ -67,25 +69,24 @@ async def test_cmd_start_sends_welcome_photo(tmp_path):
 
 @pytest.mark.asyncio
 async def test_cmd_start_sends_welcome_video(tmp_path):
-    original_session_store = ms.session_store
-    original_media = ms.WELCOME_MEDIA
+    original_session_store = ctx.session_store
+    original_media = ctx.WELCOME_MEDIA
 
-    ms.session_store = _prepare_session_store()
+    ctx.session_store = _prepare_session_store()
 
     clip = tmp_path / "welcome.mp4"
     clip.write_bytes(b"fake-video")
-    ms.WELCOME_MEDIA = ms.WelcomeMedia(clip, "video")
+    ctx.WELCOME_MEDIA = WelcomeMedia(media_type="video", path=clip)
 
     message = DummyMessage()
 
     try:
-        await ms.cmd_start(message)
+        await menus.cmd_start(message)
     finally:
-        ms.session_store = original_session_store
-        ms.WELCOME_MEDIA = original_media
+        ctx.session_store = original_session_store
+        ctx.WELCOME_MEDIA = original_media
 
     assert message._videos == [clip]
     assert not message._photos
     assert message._texts, "welcome text should follow the media"
-
 
