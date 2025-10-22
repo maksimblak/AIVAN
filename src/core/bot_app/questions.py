@@ -88,6 +88,14 @@ def _ensure_double_newlines(html: str) -> str:
     return normalized
 
 
+def _strip_fenced_json_blocks(text: str) -> str:
+    """Remove fenced JSON code blocks (```json ... ```) from model output before sending to Telegram."""
+    try:
+        return re.sub(r"```\s*json[\s\S]*?```", "", text or "", flags=re.IGNORECASE).strip()
+    except Exception:
+        return text or ""
+
+
 def _back_to_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -836,7 +844,8 @@ async def process_question(
                             break
 
                     summary_payload["fragments"] = deduped_fragments
-                    summary_payload.setdefault("summary_html", result.get("text") or "")
+                    cleaned_summary_text = _strip_fenced_json_blocks(result.get("text") or "")
+                    summary_payload.setdefault("summary_html", cleaned_summary_text)
 
                     # Extract structured cases (if the model provided a JSON block)
                     try:
@@ -876,6 +885,8 @@ async def process_question(
 
         raw_response_text = result.get("text") or stream_final_text or ""
         if raw_response_text:
+            # Скрываем служебный JSON-блок для Excel из финального ответа в Telegram
+            raw_response_text = _strip_fenced_json_blocks(raw_response_text)
             # Важно: сначала нормализуем переносы строк, затем делим —
             # чтобы пост-обработка не раздувала куски сверх лимита.
             clean_html = _ensure_double_newlines(format_safe_html(raw_response_text))
@@ -984,7 +995,7 @@ async def process_question(
                         )
 
         if use_streaming and had_stream_content and stream_manager is not None:
-            combined_stream_text = stream_final_text or ""
+            combined_stream_text = _strip_fenced_json_blocks(stream_final_text or "")
             if combined_stream_text:
                 await stream_manager.finalize(combined_stream_text)
 
