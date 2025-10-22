@@ -74,6 +74,8 @@ class AlertConfig:
     # Technical alerts
     error_rate_threshold: float = 10.0  # % ошибок
     feature_success_rate_min: float = 80.0  # %
+    # Garant API limits
+    garant_min_remaining: int = 10  # Остаток вызовов, ниже которого шлём предупреждение
 
     # Cache
     alerts_cache_ttl_seconds: int = 60
@@ -351,6 +353,41 @@ class AutomatedAlerts:
                         action_required=f"Исправить {friction.friction_type} в {friction.location}",
                         timestamp=int(datetime.now().timestamp())
                     ))
+
+            # Garant API limits (diagnostics): предупреждать при низком остатке
+            try:
+                from src.core.bot_app import context as simple_context  # noqa: WPS433
+
+                garant_client = getattr(simple_context, "garant_client", None)
+                if getattr(garant_client, "enabled", False):
+                    limits = await garant_client.get_limits()  # type: ignore[attr-defined]
+                    warn_threshold = max(0, int(self.config.garant_min_remaining))
+                    for item in limits or []:
+                        # Если явный ноль — критично; если ниже порога — warning
+                        if item.value <= 0:
+                            alerts.append(Alert(
+                                severity="critical",
+                                category="technical",
+                                title="🔴 ГАРАНТ: исчерпан лимит",
+                                message=f"{item.title}: 0 оставшихся вызовов",
+                                metric_value=item.value,
+                                threshold=0,
+                                action_required="Приостановить сценарии, увеличить квоту или подождать новый месяц",
+                                timestamp=int(datetime.now().timestamp()),
+                            ))
+                        elif item.value <= warn_threshold:
+                            alerts.append(Alert(
+                                severity="warning",
+                                category="technical",
+                                title="⚠️ ГАРАНТ: низкий остаток",
+                                message=f"{item.title}: {item.value} вызовов осталось",
+                                metric_value=item.value,
+                                threshold=warn_threshold,
+                                action_required="Планировать экономию запросов или пополнить квоту",
+                                timestamp=int(datetime.now().timestamp()),
+                            ))
+            except Exception:
+                logger.debug("Garant limits check skipped", exc_info=True)
 
         except Exception:
             logger.exception("Error checking technical alerts")

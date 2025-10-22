@@ -62,6 +62,18 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     segments = await analytics.get_user_segments()
     conversion_metrics = await analytics.get_conversion_metrics()
     feature_usage = await analytics.get_feature_usage_stats(days=30)
+    # ГАРАНТ лимиты (диагностический блок)
+    garant_block = ""
+    try:
+        from src.core.bot_app import context as simple_context  # noqa: WPS433
+        garant_client = getattr(simple_context, "garant_client", None)
+        if getattr(garant_client, "enabled", False):
+            limits = await garant_client.get_limits()  # type: ignore[attr-defined]
+            formatted = garant_client.format_limits(limits, max_items=4) if limits else ""
+            if formatted:
+                garant_block = "\n\n" + formatted
+    except Exception:
+        logger.debug("Failed to fetch Garant limits for admin summary", exc_info=True)
 
     # Форматируем планы
     plan_lines = []
@@ -147,7 +159,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
 {conv_indicator} <b>Конверсия: {conversion_metrics.conversion_rate}%</b>
 ⏱ Среднее время: <b>{conversion_metrics.avg_time_to_conversion_days}</b> дн.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{garant_block}
 
 <i>📱 Выберите раздел для детального анализа</i>
 """
