@@ -3,6 +3,7 @@ Shared utilities для admin commands
 """
 
 import inspect
+import contextlib
 import logging
 
 from functools import wraps
@@ -115,7 +116,7 @@ async def edit_or_answer(
     target: Message | CallbackQuery,
     text: str,
     keyboard: InlineKeyboardMarkup | None = None,
-    parse_mode: str | None = "HTML"
+    parse_mode: str | None = "HTML",
 ) -> None:
     """Send a response or edit the original message depending on the target."""
     if isinstance(target, Message):
@@ -128,7 +129,18 @@ async def edit_or_answer(
             kwargs = {"reply_markup": keyboard}
             if parse_mode:
                 kwargs["parse_mode"] = parse_mode
-            await target.message.edit_text(text, **kwargs)
+            try:
+                await target.message.edit_text(text, **kwargs)
+            except Exception as exc:
+                # Телеграм возвращает ошибку, если контент и разметка не изменились.
+                # Игнорируем этот кейс, чтобы не падать хендлером.
+                low = str(exc).lower()
+                if "message is not modified" in low:
+                    # Сигнализируем пользователю, что изменений нет (без алерта)
+                    with contextlib.suppress(Exception):
+                        await target.answer("Без изменений")
+                    return
+                raise
         else:
             await target.answer(text, show_alert=True)
 
