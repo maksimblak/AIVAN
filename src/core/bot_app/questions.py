@@ -89,28 +89,9 @@ def _ensure_double_newlines(html: str) -> str:
 
 
 def _strip_fenced_json_blocks(text: str) -> str:
-    """Remove fenced code blocks (esp. ```json … ```) from model output before sending to Telegram.
+    """Temporary no-op: keep fenced JSON blocks intact."""
+    return text or ""
 
-    Handles:
-    - ```json ... ``` (any case)
-    - Unclosed ```json … (strip to end)
-    - Any generic ``` ... ``` if json tag is missing
-    """
-    try:
-        cleaned = text or ""
-        # Remove explicit JSON fences first
-        cleaned = re.sub(r"```\s*json\b[\s\S]*?```", "", cleaned, flags=re.IGNORECASE)
-        # If unclosed JSON fence remains, cut to end
-        cleaned = re.sub(r"```\s*json\b[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
-        # Remove any remaining generic fenced code blocks
-        cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)
-        # And any trailing unclosed generic fence (safety)
-        cleaned = re.sub(r"```[\s\S]*$", "", cleaned)
-        # Normalize excessive empty lines after stripping
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        return cleaned.strip()
-    except Exception:
-        return text or ""
 
 
 def _relocate_json_blocks_to_end(text: str) -> str:
@@ -146,6 +127,25 @@ def _relocate_json_blocks_to_end(text: str) -> str:
     if cleaned:
         return f"{cleaned}\n\n{tail}"
     return tail
+
+
+def _ensure_json_block_appended(
+    text: str | None,
+    structured_cases: Sequence[Mapping[str, Any]] | None,
+) -> str | None:
+    """Append ```json block with structured cases if it is absent in the text."""
+    if not structured_cases:
+        return text
+    current_text = text or ""
+    lowered = current_text.lower()
+    if "```json" in lowered:
+        return current_text
+    try:
+        block = json.dumps({"cases": structured_cases}, ensure_ascii=False, indent=2)
+    except Exception:
+        return current_text
+    suffix = f"\n\n```json\n{block}\n```"
+    return current_text + suffix
 
 
 def _build_structured_cases_from_fragments(
@@ -1000,6 +1000,45 @@ async def process_question(
                     except Exception:
                         pass
 
+        practice_summary = result.get("practice_summary")
+        structured_cases_for_append: list[Mapping[str, Any]] = []
+        if isinstance(practice_summary, Mapping):
+            structured_payload = practice_summary.get("structured")
+            fragments_for_fallback = practice_summary.get("fragments")
+            if isinstance(structured_payload, Mapping):
+                cases_payload = structured_payload.get("cases")
+                if isinstance(cases_payload, Sequence) and cases_payload:
+                    structured_cases_for_append = list(cases_payload)  # type: ignore[arg-type]
+                elif isinstance(fragments_for_fallback, Sequence):
+                    generated_cases = _build_structured_cases_from_fragments(
+                        fragments_for_fallback, limit=10
+                    )
+                    if generated_cases:
+                        structured_payload = dict(structured_payload)
+                        structured_payload["cases"] = generated_cases
+                        practice_summary = dict(practice_summary)
+                        practice_summary["structured"] = structured_payload
+                        structured_cases_for_append = generated_cases
+            elif isinstance(fragments_for_fallback, Sequence):
+                generated_cases = _build_structured_cases_from_fragments(
+                    fragments_for_fallback, limit=10
+                )
+                if generated_cases:
+                    structured_payload = {"cases": generated_cases}
+                    practice_summary = dict(practice_summary)
+                    practice_summary["structured"] = structured_payload
+                    structured_cases_for_append = generated_cases
+            if structured_cases_for_append:
+                result["practice_summary"] = practice_summary
+                final_answer_text = _ensure_json_block_appended(
+                    final_answer_text, structured_cases_for_append
+                )
+                stream_final_text = _ensure_json_block_appended(
+                    stream_final_text, structured_cases_for_append
+                )
+                if final_answer_text is not None:
+                    result["text"] = final_answer_text
+
         timer.stop()
 
         if status:
@@ -1335,3 +1374,8 @@ async def process_question(
 def register_question_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
+
+
+
+
+
