@@ -1100,6 +1100,14 @@ async def process_question(
                 summary_html = summary_payload.get("summary_html", "")
                 rag_fragments = summary_payload.get("fragments") or []
                 structured_payload = summary_payload.get("structured", {})
+                if logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        logger.debug(
+                            "Practice summary structured payload: %s",
+                            json.dumps(structured_payload, ensure_ascii=False),
+                        )
+                    except Exception:
+                        logger.debug("Practice summary structured payload: %s", structured_payload)
                 # Убираем служебный JSON из источника для листа «Обзор», чтобы он не попадал в Excel
                 excel_source = _strip_fenced_json_blocks(final_answer_text or raw_response_text or "")
                 practice_excel_path = await asyncio.to_thread(
