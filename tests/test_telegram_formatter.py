@@ -1,6 +1,6 @@
 ﻿import re
 
-from src.bot.openai_gateway import format_legal_response_text
+from core.bot_app.openai_gateway import format_legal_response_text
 
 
 _ALLOWED_TAG_REGEX = re.compile(

@@ -13,7 +13,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from src.bot.ui_components import Emoji
+from core.bot_app.ui_components import Emoji
 from src.core.admin_modules.admin_analytics import (
     AdminAnalytics,
     PLAN_SEGMENT_DEFS,

@@ -9,7 +9,7 @@ from src.core.settings import AppSettings
 from src.core.subscription_plans import SubscriptionPlan
 
 if False:  # pragma: no cover - hints only
-    from src.bot.stream_manager import StreamManager
+    from core.bot_app.stream_manager import StreamManager
     from src.core.audio_service import AudioService
     from src.core.cache import ResponseCache
     from src.core.access import AccessService
@@ -18,7 +18,7 @@ if False:  # pragma: no cover - hints only
     from src.core.openai_service import OpenAIService
     from src.core.session_store import SessionStore
     from src.documents.document_manager import DocumentManager
-    from src.bot.ratelimit import RateLimiter
+    from core.bot_app.ratelimit import RateLimiter
     from src.core.background_tasks import BackgroundTaskManager
     from src.core.health import HealthChecker
     from src.core.metrics import MetricsCollector

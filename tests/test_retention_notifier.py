@@ -23,7 +23,7 @@ async def test_imports():
     """Тест 1: Проверка импортов"""
     print("Test 1: Checking imports...")
     try:
-        from src.bot.retention_notifier import (
+        from core.bot_app.retention_notifier import (
             RetentionNotifier,
             NotificationTemplate,
             NOTIFICATION_SCENARIOS
@@ -42,7 +42,7 @@ async def test_notification_template():
     """Тест 2: Проверка NotificationTemplate"""
     print("\nTest 2: Testing NotificationTemplate...")
     try:
-        from src.bot.retention_notifier import NotificationTemplate
+        from core.bot_app.retention_notifier import NotificationTemplate
 
         template = NotificationTemplate(
             name="test_scenario",
@@ -68,7 +68,7 @@ async def test_sql_syntax():
     print("\nTest 3: Checking SQL queries...")
     try:
         # Проверяем что SQL не содержит очевидных ошибок
-        from src.bot.retention_notifier import RetentionNotifier
+        from core.bot_app.retention_notifier import RetentionNotifier
 
         # Проверяем наличие методов
         required_methods = [
@@ -92,7 +92,7 @@ async def test_scenarios_validity():
     """Тест 4: Проверка валидности сценариев"""
     print("\nTest 4: Validating notification scenarios...")
     try:
-        from src.bot.retention_notifier import NOTIFICATION_SCENARIOS
+        from core.bot_app.retention_notifier import NOTIFICATION_SCENARIOS
 
         for scenario in NOTIFICATION_SCENARIOS:
             # Проверяем обязательные поля

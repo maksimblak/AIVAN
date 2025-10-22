@@ -1,6 +1,4 @@
-import pytest
-
-from src.bot.ui_components import sanitize_telegram_html
+from core.bot_app.ui_components import sanitize_telegram_html
 
 
 

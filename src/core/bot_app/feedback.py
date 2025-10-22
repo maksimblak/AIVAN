@@ -14,7 +14,7 @@ from aiogram.types import (
     User,
 )
 
-from src.bot.ui_components import Emoji
+from core.bot_app.ui_components import Emoji
 from src.core.exceptions import ValidationException
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.common import ensure_valid_user_id, get_user_session, get_safe_db_method

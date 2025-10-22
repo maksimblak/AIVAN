@@ -9,8 +9,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 
-from src.bot.status_manager import register_progressbar
-from src.bot.ui_components import Emoji
+from core.bot_app.status_manager import register_progressbar
+from core.bot_app.ui_components import Emoji
 from src.core.exceptions import ErrorContext, ErrorHandler
 from src.core.metrics import set_system_status
 from src.core.bot_app import context as simple_context

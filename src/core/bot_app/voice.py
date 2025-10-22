@@ -13,8 +13,8 @@ from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile, Message
 
-from src.bot.typing_indicator import typing_action
-from src.bot.ui_components import Emoji
+from core.bot_app.typing_indicator import typing_action
+from core.bot_app.ui_components import Emoji
 from src.core.bot_app import context as simple_context
 
 if TYPE_CHECKING:

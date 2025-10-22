@@ -3,7 +3,7 @@ import json
 import logging
 from types import SimpleNamespace
 
-from src.bot.logging_setup import setup_logging
+from core.bot_app.logging_setup import setup_logging
 
 
 def _reset_logger_state(logger: logging.Logger, original_level: int, original_handlers: list[logging.Handler]) -> None:

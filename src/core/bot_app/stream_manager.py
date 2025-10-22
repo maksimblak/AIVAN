@@ -18,7 +18,7 @@ from src.core.safe_telegram import (
     tg_send_html,
 )
 
-from src.bot.ui_components import Emoji
+from core.bot_app.ui_components import Emoji
 
 logger = logging.getLogger(__name__)
 

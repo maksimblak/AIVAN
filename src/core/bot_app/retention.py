@@ -6,7 +6,7 @@ from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.types import CallbackQuery
 
-from src.bot.ui_components import Emoji
+from core.bot_app.ui_components import Emoji
 
 __all__ = [
     "register_retention_handlers",

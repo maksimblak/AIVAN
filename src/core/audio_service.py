@@ -14,7 +14,7 @@ from typing import Any, Optional
 from openai import APIStatusError, AsyncOpenAI
 
 try:  # pragma: no cover - optional dependency
-    from src.bot.openai_gateway import get_async_openai_client as _gateway_get_openai_client  # type: ignore
+    from core.bot_app.openai_gateway import get_async_openai_client as _gateway_get_openai_client  # type: ignore
 except Exception:  # noqa: BLE001 - gateway not available during some tests
     _gateway_get_openai_client = None
 

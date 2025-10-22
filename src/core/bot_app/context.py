@@ -7,8 +7,8 @@ from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing
 from src.core.settings import AppSettings
 
 if TYPE_CHECKING:
-    from src.bot.ratelimit import RateLimiter
-    from src.bot.stream_manager import StreamManager
+    from core.bot_app.ratelimit import RateLimiter
+    from core.bot_app.stream_manager import StreamManager
     from src.core.access import AccessService
     from src.core.audio_service import AudioService
     from src.core.background_tasks import BackgroundTaskManager

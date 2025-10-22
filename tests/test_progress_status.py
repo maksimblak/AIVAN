@@ -3,8 +3,6 @@ import asyncio
 import sys
 import types
 
-import pytest
-
 if 'aiogram' not in sys.modules:
     aiogram_module = types.ModuleType('aiogram')
     aiogram_module.Bot = object
@@ -26,7 +24,7 @@ if 'aiogram' not in sys.modules:
     types_module.Message = _FakeMessage
     sys.modules['aiogram.types'] = types_module
 
-from src.bot.status_manager import ProgressStatus
+from core.bot_app.status_manager import ProgressStatus
 
 
 class DummyMessage:

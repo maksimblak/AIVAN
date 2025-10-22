@@ -127,7 +127,7 @@ def create_container(settings: AppSettings) -> DIContainer:
     from src.core.session_store import SessionStore
     from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
     from src.core.rag.judicial_rag import JudicialPracticeRAG
-    from src.bot.ratelimit import RateLimiter
+    from core.bot_app.ratelimit import RateLimiter
     from src.core.garant_api import GarantAPIClient
 
     container.register_factory(

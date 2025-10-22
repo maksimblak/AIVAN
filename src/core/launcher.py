@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 
-from src.bot.logging_setup import setup_logging
+from core.bot_app.logging_setup import setup_logging
 from src.core.app_context import get_settings, set_settings
 from src.core.bootstrap import build_runtime
 from src.core.bot_app.app import refresh_runtime_globals, run_bot, set_runtime

@@ -11,7 +11,7 @@ from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
-from src.bot.ui_components import sanitize_telegram_html
+from core.bot_app.ui_components import sanitize_telegram_html
 
 logger = logging.getLogger(__name__)
 

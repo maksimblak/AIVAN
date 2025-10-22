@@ -7,17 +7,17 @@ from typing import Any, Mapping
 
 try:
     # базовый запрос (обязателен)
-    from src.bot.openai_gateway import ask_legal as oai_ask_legal
+    from core.bot_app.openai_gateway import ask_legal as oai_ask_legal
 except Exception as e:
     raise ImportError("Не найден src.bot.openai_gateway.ask_legal") from e
 
 # стриминговый запрос – может отсутствовать в gateway (обрабатываем это)
 try:
-    from src.bot.openai_gateway import ask_legal_stream as oai_ask_legal_stream  # type: ignore
+    from core.bot_app.openai_gateway import ask_legal_stream as oai_ask_legal_stream  # type: ignore
 except Exception:  # noqa: BLE001
     oai_ask_legal_stream = None  # type: ignore
 
-from src.bot.openai_gateway import (
+from core.bot_app.openai_gateway import (
     close_async_openai_client,
     format_legal_response_text,
 )
@@ -376,7 +376,7 @@ class OpenAIService:
         _ = user_id
 
         if not system_prompt:
-            from src.bot.promt import LEGAL_SYSTEM_PROMPT  # noqa: WPS433
+            from core.bot_app.promt import LEGAL_SYSTEM_PROMPT  # noqa: WPS433
             system_prompt = LEGAL_SYSTEM_PROMPT
 
         if stream_callback:

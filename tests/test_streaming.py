@@ -18,8 +18,8 @@ if os.getenv("RUN_FULL_TESTS") != "1":
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "core"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "src", "bot"))
 
-from src.bot.stream_manager import StreamingCallback, StreamManager
-from src.bot.openai_gateway import format_legal_response_text
+from core.bot_app.stream_manager import StreamingCallback, StreamManager
+from core.bot_app.openai_gateway import format_legal_response_text
 
 
 # Мок бот для тестирования

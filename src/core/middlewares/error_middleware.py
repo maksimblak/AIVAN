@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import CallbackQuery, Message, Update
 
 from src.core.exceptions import BaseCustomException, ErrorContext, ErrorHandler
-from src.bot.ui_components import sanitize_telegram_html
+from core.bot_app.ui_components import sanitize_telegram_html
 
 DEFAULT_ERROR_MESSAGE = (
     "\u26a0\ufe0f <b>Произошла ошибка обработки запроса</b>\n\n"

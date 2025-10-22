@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from src.bot.ui_components import Emoji, sanitize_telegram_html
+from core.bot_app.ui_components import Emoji, sanitize_telegram_html
 from src.core.bot_app import context as ctx
 from src.core.bot_app.common import ensure_valid_user_id, get_user_session
 from src.core.bot_app.payments import get_plan_pricing

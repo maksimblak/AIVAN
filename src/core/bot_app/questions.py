@@ -14,11 +14,11 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import FSInputFile, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
-from src.bot.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
-from src.bot.status_manager import ProgressStatus
-from src.bot.stream_manager import StreamManager, StreamingCallback
-from src.bot.typing_indicator import send_typing_once, typing_action
-from src.bot.ui_components import Emoji
+from core.bot_app.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
+from core.bot_app.status_manager import ProgressStatus
+from core.bot_app.stream_manager import StreamManager, StreamingCallback
+from core.bot_app.typing_indicator import send_typing_once, typing_action
+from core.bot_app.ui_components import Emoji
 from src.core.attachments import QuestionAttachment
 from src.core.exceptions import (
     ErrorContext,

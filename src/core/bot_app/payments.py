@@ -15,7 +15,7 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 
-from src.bot.ui_components import Emoji
+from core.bot_app.ui_components import Emoji
 try:
     from src.core.db_advanced import TransactionStatus
 except ModuleNotFoundError:  # pragma: no cover - optional dependency guard

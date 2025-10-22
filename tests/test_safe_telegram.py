@@ -37,7 +37,7 @@ if "aiogram" not in sys.modules:
     sys.modules["aiogram.exceptions"] = exceptions_module
 
 import src.core.safe_telegram as safe_telegram
-from src.bot.ui_components import sanitize_telegram_html
+from core.bot_app.ui_components import sanitize_telegram_html
 from src.core.safe_telegram import (
     _plain,
     format_safe_html,

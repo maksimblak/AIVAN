@@ -3,7 +3,7 @@
 import logging
 from typing import Iterable, Sequence
 
-from src.bot.openai_gateway import shared_openai_client
+from core.bot_app.openai_gateway import shared_openai_client
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from src.bot.ui_components import Emoji
+from core.bot_app.ui_components import Emoji
 from src.core.bot_app import context as ctx
 from src.core.bot_app.formatting import (
     _format_response_time,

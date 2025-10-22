@@ -25,9 +25,9 @@ from aiogram.types import (
     Message,
 )
 
-from src.bot.status_manager import ProgressStatus
-from src.bot.typing_indicator import send_typing_once, typing_action
-from src.bot.ui_components import Emoji
+from core.bot_app.status_manager import ProgressStatus
+from core.bot_app.typing_indicator import send_typing_once, typing_action
+from core.bot_app.ui_components import Emoji
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.formatting import _format_progress_extras, _split_plain_text
 from src.core.bot_app.menus import cmd_start

@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from aiogram import Bot, Dispatcher
 
-from src.bot.retention_notifier import RetentionNotifier
+from core.bot_app.retention_notifier import RetentionNotifier
 from src.core.access import AccessService
 from src.core.admin_modules.admin_commands import setup_admin_commands
 from src.core.audio_service import AudioService
@@ -38,7 +38,7 @@ from src.core.payments import CryptoPayProvider
 from src.core.scaling import LoadBalancer, ScalingManager, ServiceRegistry, SessionAffinity
 from src.core.session_store import SessionStore
 from src.core.bot_app import context as simple_context
-from src.bot.ratelimit import RateLimiter
+from core.bot_app.ratelimit import RateLimiter
 from src.documents.document_manager import DocumentManager
 
 __all__ = ["RuntimeBundle", "maybe_call", "setup_bot_runtime"]
