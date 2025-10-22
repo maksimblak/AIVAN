@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from contextlib import suppress, asynccontextmanager
+import json
 from html import escape as html_escape
 from typing import Any, Mapping, Sequence
 from types import SimpleNamespace
@@ -112,6 +113,73 @@ class ResponseTimer:
     def get_duration_text(self) -> str:
         seconds = int(self.duration)
         return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _extract_practice_cases_from_text(text: str) -> list[dict[str, str]]:
+    """Try to extract structured practice cases from a fenced JSON block in the model output.
+
+    Expected JSON example:
+    ```json
+    {
+      "cases": [
+        {
+          "title": "Определение ВС РФ ...",
+          "case_number": "305-ЭС24-...",
+          "url": "https://...",
+          "facts": "Коротко о фабуле",
+          "holding": "Вывод суда",
+          "norms": "ст. 807, 808 ГК РФ",
+          "applicability": "Почему применимо"
+        }
+      ]
+    }
+    ```
+    """
+    try:
+        raw = (text or "").strip()
+        if not raw:
+            return []
+        blocks = re.findall(r"```json\s*(\{.*?\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+        for payload in reversed(blocks or []):
+            try:
+                data = json.loads(payload)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            cases = data.get("cases") or data.get("practice_cases")
+            if not isinstance(cases, list) or not cases:
+                continue
+            out: list[dict[str, str]] = []
+            for item in cases:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or item.get("name") or "").strip()
+                case_number = str(item.get("case_number") or item.get("number") or "").strip()
+                url = str(item.get("url") or "").strip()
+                facts = str(item.get("facts") or item.get("summary") or "").strip()
+                holding = str(item.get("holding") or item.get("decision") or "").strip()
+                norms = item.get("norms")
+                if isinstance(norms, (list, tuple)):
+                    norms = ", ".join(str(x).strip() for x in norms if str(x).strip())
+                norms_text = str(norms or "").strip()
+                applicability = str(item.get("applicability") or item.get("applicable") or "").strip()
+                out.append(
+                    {
+                        "title": title,
+                        "case_number": case_number,
+                        "url": url,
+                        "facts": facts,
+                        "holding": holding,
+                        "norms": norms_text,
+                        "applicability": applicability,
+                    }
+                )
+            if out:
+                return out
+        return []
+    except Exception:
+        return []
 
 
 GARANT_KIND_LABELS = {
@@ -769,7 +837,36 @@ async def process_question(
 
                     summary_payload["fragments"] = deduped_fragments
                     summary_payload.setdefault("summary_html", result.get("text") or "")
+
+                    # Extract structured cases (if the model provided a JSON block)
+                    try:
+                        candidate_text = final_answer_text or stream_final_text or ""
+                        cases = _extract_practice_cases_from_text(candidate_text)
+                        if cases:
+                            structured_payload = summary_payload.get("structured")
+                            if not isinstance(structured_payload, dict):
+                                structured_payload = {}
+                            structured_payload["cases"] = cases
+                            summary_payload["structured"] = structured_payload
+                    except Exception:
+                        pass
+
                     result["practice_summary"] = summary_payload
+
+                # Если включён режим подбора практики, но из ГАРАНТ не пришло ничего,
+                # попробуем собрать таблицу из JSON-блока, который мог выдать LLM.
+                if practice_mode_used and not result.get("practice_summary"):
+                    try:
+                        candidate_text = final_answer_text or stream_final_text or ""
+                        cases = _extract_practice_cases_from_text(candidate_text)
+                        if cases:
+                            result["practice_summary"] = {
+                                "summary_html": result.get("text") or "",
+                                "structured": {"cases": cases},
+                                "fragments": [],
+                            }
+                    except Exception:
+                        pass
 
         timer.stop()
 

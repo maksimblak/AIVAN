@@ -60,7 +60,32 @@ def build_practice_excel(
         cell.font = header_font
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-    if fragments:
+    # Prefer structured cases from the model (if provided)
+    structured_cases = []
+    if structured and isinstance(structured.get("cases"), list):
+        structured_cases = [c for c in structured["cases"] if isinstance(c, Mapping)]
+
+    if structured_cases:
+        for item in structured_cases:
+            title = str(item.get("title") or "").strip()
+            case_number = str(item.get("case_number") or "").strip()
+            url = str(item.get("url") or "").strip()
+            facts = str(item.get("facts") or "").strip()
+            holding = str(item.get("holding") or "").strip()
+            norms = str(item.get("norms") or "").strip()
+            applicability = str(item.get("applicability") or "").strip()
+
+            name_parts = [p for p in [title, case_number, url] if p]
+            name_cell_value = "\n".join(name_parts)
+
+            ws_cases.append([name_cell_value, facts, holding, norms, applicability])
+            if url:
+                row_idx = ws_cases.max_row
+                link_cell = ws_cases.cell(row=row_idx, column=1)
+                link_cell.hyperlink = url
+                link_cell.style = "Hyperlink"
+
+    elif fragments:
         for fragment in fragments:
             match = getattr(fragment, "match", None)
             metadata = getattr(match, "metadata", {}) if match else {}
