@@ -322,16 +322,43 @@ class GarantAPIClient:
                     results.append(GarantAPIClient.LimitInfo(title=title, value=value, names=names))
         return results
 
-    def format_limits(self, limits: Sequence["GarantAPIClient.LimitInfo"], *, max_items: int = 6) -> str:
+    def format_limits(
+        self,
+        limits: Sequence["GarantAPIClient.LimitInfo"],
+        *,
+        max_items: int = 6,
+        warn_threshold: int = 20,
+    ) -> str:
+        """Красиво отформатировать лимиты для Telegram UI.
+
+        Показывает заголовок, разделитель и список с индикаторами статуса:
+        🔴 = 0, 🟡 = ≤ warn_threshold, 🟢 = остальное.
+        """
         if not limits:
             return ""
-        lines = ["[ГАРАНТ] Лимиты API (остаток в текущем месяце):"]
+
+        warn_threshold = max(0, int(warn_threshold))
+
+        lines: list[str] = []
+        lines.append("⚖️ <b>ГАРАНТ • Лимиты API</b>")
+        lines.append("<code>────────────────────</code>")
+        lines.append("")
+
         count = 0
         for item in limits:
-            lines.append(f"• {item.title}: {item.value}")
+            val = int(item.value)
+            if val <= 0:
+                badge = "🔴"
+            elif val <= warn_threshold:
+                badge = "🟡"
+            else:
+                badge = "🟢"
+            title = (item.title or "").strip()
+            lines.append(f"{badge} {title}: <b>{val}</b>")
             count += 1
             if max_items and count >= max_items:
                 break
+
         return "\n".join(lines)
 
     async def sutyazhnik_search(
