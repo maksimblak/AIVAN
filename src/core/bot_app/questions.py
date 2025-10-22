@@ -113,6 +113,41 @@ def _strip_fenced_json_blocks(text: str) -> str:
         return text or ""
 
 
+def _relocate_json_blocks_to_end(text: str) -> str:
+    """Ensure fenced ```json blocks are appended to the tail of the text."""
+    if not text:
+        return ""
+
+    json_blocks: list[str] = []
+
+    def _collect(match: re.Match) -> str:
+        block = match.group(0).strip()
+        if block:
+            json_blocks.append(block)
+        return ""
+
+    pattern = re.compile(r"```json\b[\s\S]*?```", flags=re.IGNORECASE)
+    cleaned = pattern.sub(_collect, text)
+
+    trailing_pattern = re.compile(r"```json\b[\s\S]*$", flags=re.IGNORECASE)
+    trailing_match = trailing_pattern.search(cleaned)
+    if trailing_match:
+        block = trailing_match.group(0).strip()
+        if block:
+            json_blocks.append(block)
+        cleaned = cleaned[: trailing_match.start()]
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    if not json_blocks:
+        return cleaned
+
+    tail = "\n\n".join(json_blocks)
+    if cleaned:
+        return f"{cleaned}\n\n{tail}"
+    return tail
+
+
 def _back_to_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -912,6 +947,12 @@ async def process_question(
         if status:
             await status.update_stage(percent=92)
             await status.complete()
+
+        if final_answer_text:
+            final_answer_text = _relocate_json_blocks_to_end(final_answer_text)
+            result["text"] = final_answer_text
+        if stream_final_text:
+            stream_final_text = _relocate_json_blocks_to_end(stream_final_text)
 
         raw_response_text = result.get("text") or stream_final_text or ""
         if raw_response_text:
