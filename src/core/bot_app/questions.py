@@ -269,11 +269,20 @@ def _prepare_garant_excel_fragments(
                     else getattr(ref, "url", None)
                 )
                 topic = getattr(ref, "topic", None)
-                norm_names = [
+                # Нормы: уникализируем и ограничиваем список, чтобы не раздувать ячейку
+                norm_names_raw = [
                     str(getattr(norm, "name", "") or "").strip()
                     for norm in getattr(item, "norms", []) or []
                     if str(getattr(norm, "name", "") or "").strip()
                 ]
+                seen_norms: set[str] = set()
+                norm_names: list[str] = []
+                for nm in norm_names_raw:
+                    if nm not in seen_norms:
+                        seen_norms.add(nm)
+                        norm_names.append(nm)
+                    if len(norm_names) >= 5:
+                        break
                 norms_text = "\n".join(norm_names)
                 key = ("sutyazhnik_court", kind_value, topic, url, title)
                 metadata_extra = {
@@ -293,10 +302,10 @@ def _prepare_garant_excel_fragments(
                     date=None,
                     region=None,
                     relevance=None,
-                    summary=f"Решение категории «{kind_label}»: {title}",
-                    decision=f"Решение суда ({kind_label}). Ознакомьтесь с выводами по ссылке.",
+                    summary=title,
+                    decision="",
                     norms=norms_text,
-                    applicability=f"Анализируйте применимость решения ({kind_label}) к вашему делу.",
+                    applicability="",
                 )
                 if len(fragments) >= max_items:
                     return fragments
@@ -332,10 +341,10 @@ def _prepare_garant_excel_fragments(
                 date=None,
                 region=None,
                 relevance=None,
-                summary=f"Нормативный акт для категории «{kind_label}».",
-                decision="Используйте норму при аргументации позиции.",
+                summary=title,
+                decision="",
                 norms=title,
-                applicability="Цитируйте при подготовке ответов и процессуальных документов.",
+                applicability="",
             )
             if len(fragments) >= max_items:
                 return fragments
@@ -370,14 +379,14 @@ def _prepare_garant_excel_fragments(
                 excerpt_parts.append(f"Блок {entry}")
             if path:
                 excerpt_parts.append(path)
-            excerpt = " — ".join(excerpt_parts) if excerpt_parts else "Документ из поиска ГАРАНТ"
+            excerpt = " — ".join(excerpt_parts) if excerpt_parts else title
             metadata_extra = {
                 "source": "search",
                 "topic": topic,
                 "entry": entry,
             }
         else:
-            excerpt = "Документ из поиска ГАРАНТ"
+            excerpt = title
             metadata_extra = {
                 "source": "search",
                 "topic": topic,
@@ -390,10 +399,10 @@ def _prepare_garant_excel_fragments(
             excerpt=excerpt,
             url=url,
             metadata_extra=metadata_extra,
-            summary=excerpt or f"Документ из поиска ГАРАНТ: {title}",
-            decision="Требуется изучить текст решения по ссылке.",
+            summary=excerpt or title,
+            decision="",
             norms="",
-            applicability="Используйте документ для расширения практики по теме.",
+            applicability="",
             date=None,
             region=None,
             relevance=relevance_value,
