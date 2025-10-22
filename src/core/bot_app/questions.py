@@ -220,6 +220,7 @@ def _prepare_garant_excel_fragments(
     *,
     document_base_url: str | None,
     max_items: int = 10,
+    snippet_summaries: Mapping[int, str] | None = None,
 ) -> list[Any]:
     if not max_items or max_items <= 0:
         return []
@@ -270,6 +271,7 @@ def _prepare_garant_excel_fragments(
     sutyazhnik_results = list(sutyazhnik_results or [])
 
     # 1) Приоритет — судебные решения из Сутяжника.
+    snippet_summaries = snippet_summaries or {}
     for priority_kind in ("301", "302", "303"):
         kind_label = GARANT_KIND_LABELS.get(priority_kind, "Суды")
         for item in sutyazhnik_results:
@@ -309,6 +311,11 @@ def _prepare_garant_excel_fragments(
                     "norm_names": norm_names,
                 }
                 excerpt = f"{kind_label}: {title}"
+                # Попробуем подставить краткую «суть/вывод» из сниппета, если есть
+                snippet_summary = ""
+                if isinstance(topic, int) and topic in snippet_summaries:
+                    snippet_summary = snippet_summaries.get(topic, "")
+
                 _add_fragment(
                     key,
                     title=title,
@@ -319,8 +326,8 @@ def _prepare_garant_excel_fragments(
                     date=None,
                     region=None,
                     relevance=None,
-                    summary=title,
-                    decision="",
+                    summary=snippet_summary or title,
+                    decision=snippet_summary or "",
                     norms=norms_text,
                     applicability="",
                 )
@@ -708,11 +715,37 @@ async def process_question(
                     logger.warning("Garant Sutyazhnik search failed: %s", garant_exc)
                 except Exception as garant_exc:  # noqa: BLE001
                     logger.error("Unexpected Garant Sutyazhnik failure: %s", garant_exc, exc_info=True)
+            # Подготовим краткие сниппеты (если доступны), чтобы заполнить «Суть/Вывод» в Excel
+            snippet_summaries: dict[int, str] = {}
+            try:
+                if garant_sutyazhnik_results and getattr(garant_client, "get_snippets", None):
+                    # Соберём уникальные topic первых N решений (до 12) и запросим по 1 сниппету
+                    topics: list[int] = []
+                    for item in garant_sutyazhnik_results:
+                        for ref in getattr(item, "courts", []) or []:
+                            t = getattr(ref, "topic", None)
+                            if isinstance(t, int) and t not in topics:
+                                topics.append(t)
+                            if len(topics) >= 12:
+                                break
+                        if len(topics) >= 12:
+                            break
+                    for t in topics:
+                        try:
+                            snips = await garant_client.get_snippets(topic=t, text=question_text, limit=1)
+                            if snips:
+                                snippet_summaries[t] = snips[0].formatted_path()
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
             practice_excel_fragments = _prepare_garant_excel_fragments(
                 garant_search_results,
                 garant_sutyazhnik_results,
                 document_base_url=getattr(garant_client, "document_base_url", None),
                 max_items=10,
+                snippet_summaries=snippet_summaries or None,
             )
         setattr(user_session, "practice_search_mode", False)
 
