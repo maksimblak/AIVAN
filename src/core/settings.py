@@ -136,6 +136,9 @@ class AppSettings(BaseModel):
     documents_s3_public_url: str | None = Field(default=None, alias="DOCUMENTS_S3_PUBLIC_URL")
     documents_s3_acl: str | None = Field(default=None, alias="DOCUMENTS_S3_ACL")
 
+    # Garant logging
+    garant_log_debug: bool = Field(default=False, alias="GARANT_LOG_DEBUG")
+
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_json: bool = Field(default=True, alias="LOG_JSON")
 

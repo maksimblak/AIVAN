@@ -220,6 +220,7 @@ def create_container(settings: AppSettings) -> DIContainer:
                 sutyazhnik_enabled=bool(settings.garant_api_sutyazhnik_enabled),
                 sutyazhnik_kinds=settings.garant_api_sutyazhnik_kinds or None,
                 sutyazhnik_count=int(settings.garant_api_sutyazhnik_count),
+                log_debug=bool(settings.garant_log_debug),
             ),
         )
 
@@ -254,6 +255,5 @@ def reset_container() -> None:
     """Reset cached container (used by tests)."""
     global _container
     _container = None
-
 
 

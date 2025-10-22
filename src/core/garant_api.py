@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
+import json
 
 import httpx
 
@@ -96,6 +97,7 @@ class GarantAPIClient:
         sutyazhnik_enabled: bool = True,
         sutyazhnik_kinds: Sequence[str] | None = None,
         sutyazhnik_count: int = 5,
+        log_debug: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token.strip() if token else None
@@ -109,6 +111,7 @@ class GarantAPIClient:
         self._sutyazhnik_kinds = [kind for kind in (sutyazhnik_kinds or []) if kind]
         self._sutyazhnik_count = max(1, sutyazhnik_count)
         self._timeout = httpx.Timeout(timeout, connect=timeout, read=timeout)
+        self._log_debug = bool(log_debug)
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
@@ -174,6 +177,12 @@ class GarantAPIClient:
             response = await self._client.post("/v2/search", json=payload)
             response.raise_for_status()
             data = response.json()
+            if self._log_debug:
+                try:
+                    logger.debug("[GARANT] /v2/search request: %s", json.dumps(payload, ensure_ascii=False))
+                    logger.debug("[GARANT] /v2/search response: %s", json.dumps(data, ensure_ascii=False))
+                except Exception:
+                    logger.debug("[GARANT] /v2/search response parsed (non-serializable)")
         except httpx.TimeoutException as exc:  # noqa: PERF203
             raise GarantAPIError(f"Garant search request timed out: {exc}") from exc
         except httpx.HTTPStatusError as exc:
@@ -217,6 +226,12 @@ class GarantAPIClient:
             response = await self._client.post("/v2/snippets", json=payload)
             response.raise_for_status()
             data = response.json()
+            if self._log_debug:
+                try:
+                    logger.debug("[GARANT] /v2/snippets request: %s", json.dumps(payload, ensure_ascii=False))
+                    logger.debug("[GARANT] /v2/snippets response: %s", json.dumps(data, ensure_ascii=False))
+                except Exception:
+                    logger.debug("[GARANT] /v2/snippets response parsed (non-serializable)")
         except httpx.TimeoutException as exc:  # noqa: PERF203
             raise GarantAPIError(f"Garant snippets request timed out: {exc}") from exc
         except httpx.HTTPStatusError as exc:
@@ -384,6 +399,12 @@ class GarantAPIClient:
             response = await self._client.post("/v2/sutyazhnik-search", json=payload)
             response.raise_for_status()
             data = response.json()
+            if self._log_debug:
+                try:
+                    logger.debug("[GARANT] /v2/sutyazhnik-search request: %s", json.dumps(payload, ensure_ascii=False))
+                    logger.debug("[GARANT] /v2/sutyazhnik-search response: %s", json.dumps(data, ensure_ascii=False))
+                except Exception:
+                    logger.debug("[GARANT] /v2/sutyazhnik-search response parsed (non-serializable)")
         except httpx.TimeoutException as exc:  # noqa: PERF203
             raise GarantAPIError(f"Garant sutyazhnik request timed out: {exc}") from exc
         except httpx.HTTPStatusError as exc:
