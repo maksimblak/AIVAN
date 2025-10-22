@@ -314,6 +314,19 @@ async def setup_bot_runtime(
 
     simple_context.refresh_runtime_globals()
 
+    # Optional: Log Garant API monthly limits (diagnostics)
+    try:
+        garant_client = getattr(simple_context, "garant_client", None)
+        if getattr(garant_client, "enabled", False):
+            limits = await garant_client.get_limits()  # type: ignore[attr-defined]
+            if limits:
+                summary = ", ".join(
+                    f"{item.title}: {item.value}" for item in limits[:5]
+                )
+                logger.info("Garant API limits: %s", summary)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to fetch Garant limits: %s", exc)
+
     return RuntimeBundle(
         metrics_collector=metrics_collector,
         cache_backend=cache_backend,
@@ -332,4 +345,3 @@ async def setup_bot_runtime(
         task_manager=task_manager,
         retention_notifier=retention_notifier,
     )
-

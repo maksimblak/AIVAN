@@ -269,6 +269,71 @@ class GarantAPIClient:
     def format_results(self, results: Sequence[GarantSearchResult]) -> str:
         return format_search_results(results, document_base_url=self._document_base_url)
 
+    @dataclass(slots=True)
+    class LimitInfo:
+        title: str
+        value: int
+        names: list[str] = field(default_factory=list)
+
+    async def get_limits(self) -> list["GarantAPIClient.LimitInfo"]:
+        """Fetch monthly API usage limits/remaining quotas from Garant.
+
+        Returns a list of LimitInfo(title, value, names) on success, or an empty list on error.
+        """
+        try:
+            response = await self._client.get("/v2/limits")
+            response.raise_for_status()
+            data = response.json()
+        except httpx.TimeoutException as exc:  # noqa: PERF203
+            logger.warning("Garant limits request timed out: %s", exc)
+            return []
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Garant limits failed with HTTP %s: %s",
+                getattr(exc.response, "status_code", "?"),
+                getattr(exc.response, "text", str(exc)),
+            )
+            return []
+        except httpx.RequestError as exc:
+            logger.warning("Garant limits request failed: %s", exc)
+            return []
+        except ValueError as exc:
+            logger.warning("Invalid JSON from Garant limits: %s", exc)
+            return []
+
+        results: list[GarantAPIClient.LimitInfo] = []
+        if isinstance(data, Iterable):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                value_raw = item.get("value")
+                try:
+                    value = int(value_raw)
+                except (TypeError, ValueError):
+                    value = 0
+                names_raw = item.get("names") or []
+                names: list[str] = []
+                if isinstance(names_raw, Iterable):
+                    for nm in names_raw:
+                        if isinstance(nm, str) and nm:
+                            names.append(nm)
+                if title:
+                    results.append(GarantAPIClient.LimitInfo(title=title, value=value, names=names))
+        return results
+
+    def format_limits(self, limits: Sequence["GarantAPIClient.LimitInfo"], *, max_items: int = 6) -> str:
+        if not limits:
+            return ""
+        lines = ["[ГАРАНТ] Лимиты API (остаток в текущем месяце):"]
+        count = 0
+        for item in limits:
+            lines.append(f"• {item.title}: {item.value}")
+            count += 1
+            if max_items and count >= max_items:
+                break
+        return "\n".join(lines)
+
     async def sutyazhnik_search(
         self,
         text: str,

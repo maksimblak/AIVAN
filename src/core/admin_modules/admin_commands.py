@@ -51,6 +51,7 @@ def create_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Аналитика", callback_data="admin_menu:analytics")],
+            [InlineKeyboardButton(text="⚖️ ГАРАНТ: лимиты", callback_data="admin_menu:garant_limits")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_menu:refresh")]
         ]
     )
@@ -218,6 +219,39 @@ async def handle_admin_menu_analytics(callback: CallbackQuery, db: DatabaseAdvan
 
     summary = await _build_admin_summary(db)
     await edit_or_answer(callback, summary, create_analytics_menu())
+
+
+@admin_router.callback_query(F.data == "admin_menu:garant_limits")
+@require_admin
+async def handle_admin_menu_garant_limits(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
+    """Показать остатки месячных лимитов API ГАРАНТ."""
+    try:
+        # Лениво импортируем контекст, чтобы не тянуть его глобально
+        from src.core.bot_app import context as simple_context  # noqa: WPS433
+
+        garant_client = getattr(simple_context, "garant_client", None)
+        if not getattr(garant_client, "enabled", False):
+            text = (
+                f"{Emoji.WARNING} <b>ГАРАНТ не настроен</b>\n\n"
+                "Проверьте переменные окружения (GARANT_API_ENABLED=1, GARANT_API_TOKEN, GARANT_API_BASE_URL)."
+            )
+            await edit_or_answer(callback, text, back_keyboard())
+            return
+
+        limits = await garant_client.get_limits()  # type: ignore[attr-defined]
+        formatted = garant_client.format_limits(limits) if limits else ""
+        if not formatted:
+            formatted = f"{Emoji.INFO} Лимиты недоступны или не возвращены сервисом."
+        await edit_or_answer(callback, formatted, back_keyboard())
+    except Exception as exc:  # noqa: BLE001
+        safe = html_escape(str(exc))
+        await edit_or_answer(
+            callback,
+            f"{Emoji.ERROR} Не удалось получить лимиты ГАРАНТ: {safe}",
+            back_keyboard(),
+        )
     await callback.answer()
 
 
