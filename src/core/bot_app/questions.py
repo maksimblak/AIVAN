@@ -911,7 +911,7 @@ async def process_question(
 
                 callback = StreamingCallback(stream_manager) if stream_manager else None
 
-                is_practice = bool(practice_search_mode)
+                is_practice = practice_mode_used
                 result = await openai_service.answer_question(
                     request_text,
                     system_prompt=system_prompt_override,
