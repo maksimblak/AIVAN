@@ -5,11 +5,15 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, Mapping, Optional
 
+logger = logging.getLogger(__name__)
+
+# ---- Импорт gateway ----
 try:
     # базовый запрос (обязателен)
     from core.bot_app.openai_gateway import ask_legal as oai_ask_legal
 except Exception as e:
-    raise ImportError("Не найден src.bot.openai_gateway.ask_legal") from e
+    # фиксируем корректный путь в сообщении
+    raise ImportError("Не найден core.bot_app.openai_gateway.ask_legal") from e
 
 # стриминговый запрос – может отсутствовать в gateway (обрабатываем это)
 try:
@@ -24,8 +28,6 @@ from core.bot_app.openai_gateway import (
 from src.core.attachments import QuestionAttachment
 
 from .cache import ResponseCache
-
-logger = logging.getLogger(__name__)
 
 # Колбэк принимает либо (delta: str), либо (delta: str, is_final: bool)
 StreamCallback = Callable[..., Awaitable[None]]
@@ -49,6 +51,22 @@ async def _safe_fire_callback(
         return
     if inspect.isawaitable(result):
         await result
+
+
+async def _call_gateway_with_fallback(func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any) -> Any:
+    """
+    Универсальный вызов gateway с фолбэком: если он не принимает новые параметры
+    (например, reasoning_effort / text_verbosity), повторяем без них.
+    """
+    try:
+        return await func(*args, **kwargs)
+    except TypeError as e:
+        logger.debug("Gateway call TypeError (%s). Retrying without optional params.", e)
+        safe_kwargs = dict(kwargs)
+        # вычищаем только новые "мягкие" параметры
+        for k in ("reasoning_effort", "text_verbosity"):
+            safe_kwargs.pop(k, None)
+        return await func(*args, **safe_kwargs)
 
 
 class OpenAIService:
@@ -85,12 +103,13 @@ class OpenAIService:
         use_schema: bool = True,
         response_schema: Mapping[str, Any] | None = None,
         enable_web: bool | None = None,
-        # ↓↓↓ принимаем «лишние» параметры, но НЕ пробрасываем их в gateway
+        # ↓↓↓ принимаем «лишние» параметры и пробрасываем их в gateway (с фолбэком)
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         top_p: float | None = None,
         model: str | None = None,
         reasoning_effort: Optional[ReasoningEffort] = None,
+        text_verbosity: Optional[Literal["low", "medium", "high"]] = None,
         **_: Any,
     ) -> dict[str, Any]:
         """Запрос к OpenAI с кэшированием и обработкой ошибок."""
@@ -105,6 +124,7 @@ class OpenAIService:
             "top_p": top_p,
             "max_output_tokens": max_output_tokens,
             "reasoning_effort": reasoning_effort,
+            "text_verbosity": text_verbosity,
         }
 
         if use_cache:
@@ -123,7 +143,8 @@ class OpenAIService:
 
         # сеть
         try:
-            response = await oai_ask_legal(
+            response = await _call_gateway_with_fallback(
+                oai_ask_legal,
                 system_prompt,
                 user_text,
                 attachments=attachments,
@@ -134,6 +155,8 @@ class OpenAIService:
                 max_output_tokens=max_output_tokens,
                 top_p=top_p,
                 model=model,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
             )
 
             if use_cache and response.get("ok") and response.get("text"):
@@ -168,11 +191,13 @@ class OpenAIService:
         use_schema: bool = True,
         response_schema: Mapping[str, Any] | None = None,
         enable_web: bool | None = None,
-        # ↓↓↓ принимаем и игнорируем, чтобы не падали внешние вызовы
+        # ↓↓↓ принимаем и пробрасываем, но терпимо относимся к несоответствию сигнатур
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         top_p: float | None = None,
         model: str | None = None,
+        reasoning_effort: Optional[ReasoningEffort] = None,
+        text_verbosity: Optional[Literal["low", "medium", "high"]] = None,
         **_: Any,
     ) -> dict[str, Any]:
         """
@@ -195,7 +220,10 @@ class OpenAIService:
             "temperature": temperature,
             "top_p": top_p,
             "max_output_tokens": max_output_tokens,
+            "reasoning_effort": reasoning_effort,
+            "text_verbosity": text_verbosity,
         }
+
         if use_cache:
             try:
                 cached = await self.cache.get_cached_response(
@@ -238,6 +266,8 @@ class OpenAIService:
                 "max_output_tokens": max_output_tokens,
                 "top_p": top_p,
                 "model": model,
+                "reasoning_effort": reasoning_effort,
+                "text_verbosity": text_verbosity,
             }
             try:
                 candidate = oai_ask_legal_stream(  # type: ignore[misc]
@@ -246,18 +276,23 @@ class OpenAIService:
                     callback=on_delta,
                     **stream_kwargs,
                 )
-            except TypeError:
-                if attachments:
-                    raise
+            except TypeError as e:
+                logger.debug("Gateway streaming signature mismatch (%s). Retrying with reduced kwargs.", e)
+                # минимальный набор для совместимости
                 fallback_kwargs = {
                     "attachments": attachments,
                     "use_schema": use_schema,
                     "response_schema": response_schema,
                     "enable_web": enable_web,
+                    "temperature": temperature,
+                    "max_output_tokens": max_output_tokens,
+                    "top_p": top_p,
+                    "model": model,
                 }
                 candidate = oai_ask_legal_stream(  # type: ignore[misc]
-                    system_prompt,
-                    user_text,
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    callback=on_delta,
                     **fallback_kwargs,
                 )
 
@@ -284,7 +319,7 @@ class OpenAIService:
                             logger.warning("Cache set failed (stream/gen): %s", e)
                     return resp
 
-                # режим «функция с колбэком»
+                # режим «функция с колбэком» (возврат dict)
                 result = await candidate  # type: ignore[misc]
                 text = (result or {}).get("text") if isinstance(result, dict) else None
                 if not text:
@@ -317,7 +352,8 @@ class OpenAIService:
 
         # фолбэк: обычный запрос + псевдострим кусками
         try:
-            result = await oai_ask_legal(
+            result = await _call_gateway_with_fallback(
+                oai_ask_legal,
                 system_prompt,
                 user_text,
                 attachments=attachments,
@@ -328,6 +364,8 @@ class OpenAIService:
                 max_output_tokens=max_output_tokens,
                 top_p=top_p,
                 model=model,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
             )
             original_text = str(result.get("text", "") or "")
             formatted_text = format_legal_response_text(original_text)
@@ -371,9 +409,11 @@ class OpenAIService:
         attachments: Sequence[QuestionAttachment] | None = None,
         stream_callback: StreamCallback | None = None,
         force_refresh: bool = False,
-        model: str | None = None,   # зарезервировано
-        user_id: int | None = None, # ���������������
+        model: str | None = None,    # зарезервировано
+        user_id: int | None = None,  # для метрик/трассировки (не используем здесь)
         max_output_tokens: int | None = None,
+        reasoning_effort: Optional[ReasoningEffort] = None,
+        text_verbosity: Optional[Literal["low", "medium", "high"]] = None,
     ) -> dict[str, Any]:
         """Высокоуровневый помощник для обработки пользовательского вопроса."""
         _ = model
@@ -393,6 +433,8 @@ class OpenAIService:
                 use_schema=False,
                 enable_web=True,
                 max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
             )
 
         return await self.ask_legal(
@@ -403,6 +445,8 @@ class OpenAIService:
             use_schema=False,
             enable_web=True,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            text_verbosity=text_verbosity,
         )
 
     # ------------------------ служебные методы ------------------------
@@ -433,5 +477,3 @@ class OpenAIService:
         if self.cache:
             await self.cache.close()
         await close_async_openai_client()
-
-
