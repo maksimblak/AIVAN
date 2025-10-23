@@ -53,7 +53,7 @@ __all__ = [
 
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
 LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
-TELEGRAM_HTML_SAFE_LIMIT = 3000
+TELEGRAM_HTML_SAFE_LIMIT = 3900
 
 
 @asynccontextmanager
