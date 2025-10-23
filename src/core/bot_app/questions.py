@@ -911,6 +911,7 @@ async def process_question(
 
                 callback = StreamingCallback(stream_manager) if stream_manager else None
 
+                is_practice = bool(practice_search_mode)
                 result = await openai_service.answer_question(
                     request_text,
                     system_prompt=system_prompt_override,
@@ -919,6 +920,7 @@ async def process_question(
                     model=model_to_use,
                     user_id=user_id,
                     max_output_tokens=9000 if practice_mode_used else None,
+                    reasoning_effort="low" if is_practice else None
                 )
                 final_answer_text = result.get("text")
 
