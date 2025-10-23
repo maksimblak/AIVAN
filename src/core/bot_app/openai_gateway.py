@@ -26,7 +26,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from html.parser import HTMLParser
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Optional, Sequence
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -37,6 +37,9 @@ from src.core.attachments import QuestionAttachment
 from src.core.settings import AppSettings
 
 logger = logging.getLogger(__name__)
+
+ReasoningEffort = Literal["minimal", "low", "medium", "high"]
+Verbosity = Literal["low", "medium", "high"]
 
 # --------------------------------------------------------------------------------------
 # Helpers: attachments → user message content
@@ -817,6 +820,8 @@ async def ask_legal(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     model: str | None = None,
+    reasoning_effort: Optional[ReasoningEffort] = None,
+    text_verbosity: Optional[Verbosity] = None,
 ) -> dict[str, Any]:
     """Public wrapper used by OpenAIService for non-streaming replies."""
     return await _ask_legal_internal(
@@ -831,6 +836,8 @@ async def ask_legal(
         top_p=top_p,
         max_output_tokens=max_output_tokens,
         model_override=model,
+        reasoning_effort=reasoning_effort,
+        text_verbosity=text_verbosity,
     )
 
 
@@ -847,6 +854,8 @@ async def ask_legal_stream(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     model: str | None = None,
+    reasoning_effort: Optional[ReasoningEffort] = None,
+    text_verbosity: Optional[Verbosity] = None,
 ) -> dict[str, Any]:
     """Public wrapper that enables streaming responses through a callback."""
     return await _ask_legal_internal(
@@ -862,6 +871,8 @@ async def ask_legal_stream(
         top_p=top_p,
         max_output_tokens=max_output_tokens,
         model_override=model,
+        reasoning_effort=reasoning_effort,
+        text_verbosity=text_verbosity,
     )
 
 
@@ -871,11 +882,13 @@ async def ask_legal_stream(
 
 def _settings_dict() -> dict[str, Any]:
     s = _settings()
+    verbosity = s.get_str("OPENAI_VERBOSITY")
+    effort = s.get_str("OPENAI_REASONING_EFFORT")
     return {
         "model": (s.get_str("OPENAI_MODEL") or "gpt-5").strip(),
         "max_output_tokens": s.get_int("MAX_OUTPUT_TOKENS", 4096),
-        "verbosity": (s.get_str("OPENAI_VERBOSITY") or "medium").lower(),
-        "effort": (s.get_str("OPENAI_REASONING_EFFORT") or "medium").lower(),
+        "verbosity": verbosity.lower() if verbosity else None,
+        "effort": effort.lower() if effort else None,
         "temperature": s.get_float("OPENAI_TEMPERATURE", 0.15),
         "top_p": s.get_float("OPENAI_TOP_P", 0.3),
         "disable_web": s.get_bool("DISABLE_WEB", False),
@@ -897,13 +910,15 @@ async def _ask_legal_internal(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     model_override: str | None = None,
+    reasoning_effort: Optional[ReasoningEffort] = None,
+    text_verbosity: Optional[Verbosity] = None,
 ) -> dict[str, Any]:
     """Unified Responses API invocation with optional streaming."""
     cfg = _settings_dict()
     model_name = model_override or cfg["model"]
     max_out = max_output_tokens if max_output_tokens is not None else cfg["max_output_tokens"]
-    verb = cfg["verbosity"]
-    effort = cfg["effort"]
+    verb = text_verbosity if text_verbosity is not None else cfg.get("verbosity")
+    effort = reasoning_effort if reasoning_effort is not None else cfg.get("effort")
     temperature_value = cfg["temperature"] if temperature is None else temperature
     top_p_value = cfg["top_p"] if top_p is None else top_p
 
@@ -915,10 +930,12 @@ async def _ask_legal_internal(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "text": {"verbosity": verb},
-        "reasoning": {"effort": effort},
         "max_output_tokens": max_out,
     }
+    if verb:
+        base_core["text"] = {"verbosity": verb}
+    if effort:
+        base_core["reasoning"] = {"effort": effort}
     sampling_payload: dict[str, Any] = {}
     if temperature_value is not None:
         sampling_payload["temperature"] = temperature_value
