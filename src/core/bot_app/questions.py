@@ -54,6 +54,7 @@ __all__ = [
 QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
 LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
 TELEGRAM_HTML_SAFE_LIMIT = 3900
+_JSON_BLOCK_RE = re.compile(r"```json[\s\S]*?```", re.IGNORECASE)
 
 
 @asynccontextmanager
@@ -89,8 +90,10 @@ def _ensure_double_newlines(html: str) -> str:
 
 
 def _strip_fenced_json_blocks(text: str) -> str:
-    """Temporary no-op: keep fenced JSON blocks intact."""
-    return text or ""
+    """Remove fenced ```json blocks before sending message chunks to Telegram."""
+    if not text:
+        return ""
+    return _JSON_BLOCK_RE.sub("", text).strip()
 
 
 
