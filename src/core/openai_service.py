@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import inspect
 import logging
@@ -369,7 +369,8 @@ class OpenAIService:
         stream_callback: StreamCallback | None = None,
         force_refresh: bool = False,
         model: str | None = None,   # зарезервировано
-        user_id: int | None = None, # зарезервировано
+        user_id: int | None = None, # ���������������
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Высокоуровневый помощник для обработки пользовательского вопроса."""
         _ = model
@@ -388,6 +389,7 @@ class OpenAIService:
                 attachments=attachments,
                 use_schema=False,
                 enable_web=True,
+                max_output_tokens=max_output_tokens,
             )
 
         return await self.ask_legal(
@@ -397,6 +399,7 @@ class OpenAIService:
             force_refresh=force_refresh,
             use_schema=False,
             enable_web=True,
+            max_output_tokens=max_output_tokens,
         )
 
     # ------------------------ служебные методы ------------------------
@@ -427,3 +430,5 @@ class OpenAIService:
         if self.cache:
             await self.cache.close()
         await close_async_openai_client()
+
+

@@ -915,6 +915,7 @@ async def process_question(
                     stream_callback=callback,
                     model=model_to_use,
                     user_id=user_id,
+                    max_output_tokens=9000 if practice_mode_used else None,
                 )
                 final_answer_text = result.get("text")
 
