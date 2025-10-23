@@ -3,7 +3,7 @@
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, Optional
 
 try:
     # базовый запрос (обязателен)
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Колбэк принимает либо (delta: str), либо (delta: str, is_final: bool)
 StreamCallback = Callable[..., Awaitable[None]]
+ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
 
 async def _safe_fire_callback(
@@ -89,6 +90,7 @@ class OpenAIService:
         max_output_tokens: int | None = None,
         top_p: float | None = None,
         model: str | None = None,
+        reasoning_effort: Optional[ReasoningEffort] = None,
         **_: Any,
     ) -> dict[str, Any]:
         """Запрос к OpenAI с кэшированием и обработкой ошибок."""
@@ -102,6 +104,7 @@ class OpenAIService:
             "temperature": temperature,
             "top_p": top_p,
             "max_output_tokens": max_output_tokens,
+            "reasoning_effort": reasoning_effort,
         }
 
         if use_cache:
