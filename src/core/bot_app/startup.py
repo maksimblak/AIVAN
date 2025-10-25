@@ -62,6 +62,8 @@ class RuntimeBundle:
     health_checker: HealthChecker
     task_manager: BackgroundTaskManager
     retention_notifier: RetentionNotifier
+    judicial_rag: Any | None = None
+    garant_client: Any | None = None
 
 
 async def maybe_call(coro_or_func: Any) -> Any:
@@ -342,4 +344,6 @@ async def setup_bot_runtime(
         health_checker=health_checker,
         task_manager=task_manager,
         retention_notifier=retention_notifier,
+        judicial_rag=ctx.get_dependency("judicial_rag"),
+        garant_client=ctx.get_dependency("garant_client"),
     )

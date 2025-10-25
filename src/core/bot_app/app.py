@@ -141,6 +141,8 @@ async def _graceful_shutdown(bot: Bot, runtime: RuntimeBundle) -> None:
     audio_service = runtime.audio_service
     response_cache = runtime.response_cache
     db = runtime.db
+    judicial_rag = getattr(runtime, "judicial_rag", None)
+    garant_client = getattr(runtime, "garant_client", None)
 
     if retention_notifier:
         try:
@@ -179,6 +181,14 @@ async def _graceful_shutdown(bot: Bot, runtime: RuntimeBundle) -> None:
         (
             "Response cache",
             lambda: getattr(response_cache, "close", None) and response_cache.close(),
+        ),
+        (
+            "Judicial RAG",
+            lambda: getattr(judicial_rag, "close", None) and judicial_rag.close(),
+        ),
+        (
+            "Garant API client",
+            lambda: getattr(garant_client, "close", None) and garant_client.close(),
         ),
     ]
 

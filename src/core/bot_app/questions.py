@@ -822,6 +822,32 @@ async def process_question(
                 document_base_url=getattr(garant_client, "document_base_url", None),
                 max_items=10,
             )
+            try:
+                if rag_service is not None:
+                    base_url = getattr(garant_client, "document_base_url", None)
+                    if garant_search_results:
+                        await rag_service.ingest_garant_search_results(
+                            garant_search_results,
+                            question_text,
+                            max_items=20,
+                            document_base_url=base_url,
+                        )
+                    if garant_sutyazhnik_results:
+                        await rag_service.ingest_sutyazhnik(
+                            garant_sutyazhnik_results,
+                            question_text,
+                            include_norms=False,
+                            max_items=50,
+                            document_base_url=base_url,
+                        )
+                    if practice_excel_fragments:
+                        await rag_service.ingest_garant_fragments(
+                            practice_excel_fragments,
+                            max_items=12,
+                            include_norms=False,
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RAG ingest from Garant skipped due to error: %s", exc)
         setattr(user_session, "practice_search_mode", False)
 
     request_blocks = [question_text]

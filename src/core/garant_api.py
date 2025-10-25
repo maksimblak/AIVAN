@@ -205,6 +205,20 @@ class GarantAPIClient:
                 doc = self._parse_document(item)
                 if doc:
                     documents.append(doc)
+        need_query_mode = is_query if is_query is not None else self._use_query_language
+        if not documents and need_query_mode:
+            try:
+                return await self.search_documents(
+                    query,
+                    env=env,
+                    count=count,
+                    page=page,
+                    is_query=False,
+                    sort=sort,
+                    sort_order=sort_order,
+                )
+            except Exception:
+                logger.debug("Garant search fallback (isQuery=False) failed", exc_info=True)
         return documents[:desired_count]
 
     async def get_snippets(

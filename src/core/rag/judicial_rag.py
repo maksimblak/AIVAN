@@ -1,9 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
+from urllib.parse import urljoin
 
 from src.core.settings import AppSettings
 
@@ -113,6 +115,291 @@ class JudicialPracticeRAG:
         combined_context = "\n\n".join(context_blocks)
         self._last_fragments = fragments
         return combined_context, fragments
+
+    # ---------------------------
+    # Garant/Sutyazhnik ingestion helpers
+    # ---------------------------
+
+    async def ingest_garant_fragments(
+        self,
+        fragments: Sequence[Any],
+        *,
+        max_items: int = 20,
+        include_norms: bool = False,
+    ) -> int:
+        """Ingest pre-normalized Garant fragments (e.g. Excel builder output)."""
+        if not self.enabled or not fragments or not max_items:
+            return 0
+
+        cap = max(0, int(max_items))
+        items: list[tuple[str, str, dict[str, Any]]] = []
+        seen_ids: set[str] = set()
+
+        for fragment in list(fragments)[:cap]:
+            match = getattr(fragment, "match", None)
+            metadata = dict(getattr(match, "metadata", {}) or {})
+            if not metadata:
+                continue
+            title = str(metadata.get("title") or metadata.get("name") or "").strip()
+            if not title:
+                continue
+            source = str(metadata.get("source") or "").strip()
+            if source == "sutyazhnik_norm" and not include_norms:
+                continue
+
+            topic = metadata.get("topic")
+            entry = metadata.get("entry")
+            url = str(metadata.get("url") or metadata.get("link") or "").strip()
+
+            if isinstance(topic, int):
+                point_id = f"garant:doc:{topic}"
+                if entry is not None:
+                    point_id += f":entry:{entry}"
+            else:
+                base = url or title
+                digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+                point_id = f"garant:hash:{digest}"
+
+            if point_id in seen_ids:
+                continue
+            seen_ids.add(point_id)
+
+            parts = [
+                title,
+                str(metadata.get("court") or "").strip(),
+                str(metadata.get("decision_date") or metadata.get("date") or "").strip(),
+                str(metadata.get("region") or "").strip(),
+                str(metadata.get("summary") or "").strip(),
+            ]
+            text = " | ".join(part for part in parts if part).strip() or title
+
+            payload = dict(metadata)
+            payload.setdefault("doc_type", "norm" if source == "sutyazhnik_norm" else "court")
+            payload.setdefault("source", source or "garant")
+            payload["text"] = text
+            items.append((point_id, text, payload))
+
+        if not items:
+            return 0
+        return await self._upsert_items(items)
+
+    async def ingest_sutyazhnik(
+        self,
+        results: Sequence[Any],
+        query: str,
+        *,
+        include_norms: bool = False,
+        max_items: int = 50,
+        document_base_url: Optional[str] = "https://d.garant.ru",
+    ) -> int:
+        """Ingest Sutyazhnik references (courts + optional norms)."""
+        if not self.enabled or not results or not max_items:
+            return 0
+
+        items: list[tuple[str, str, dict[str, Any]]] = []
+        seen_ids: set[str] = set()
+        court_cap = max(0, int(max_items))
+        norm_cap = court_cap
+
+        def _abs(url: str) -> str:
+            if not url:
+                return ""
+            if url.startswith(("http://", "https://")):
+                return url
+            return urljoin(document_base_url or "", url)
+
+        for block in results:
+            kind = str(getattr(block, "kind", "") or "")
+            norms_raw = [
+                {
+                    "topic": getattr(norm, "topic", None),
+                    "name": getattr(norm, "name", "") or "",
+                    "url": _abs(getattr(norm, "url", "") or ""),
+                }
+                for norm in (getattr(block, "norms", []) or [])
+            ]
+
+            for ref in (getattr(block, "courts", []) or [])[:court_cap]:
+                topic = getattr(ref, "topic", None)
+                name = str(getattr(ref, "name", "") or "").strip()
+                url = _abs(getattr(ref, "url", "") or "")
+                if topic is None or not name:
+                    continue
+
+                point_id = f"garant:doc:{int(topic)}"
+                if point_id in seen_ids:
+                    continue
+                seen_ids.add(point_id)
+
+                case_number, decision_date = self._parse_title_bits(name)
+                payload: dict[str, Any] = {
+                    "doc_type": "court",
+                    "source": "garant_sutyazhnik",
+                    "kind": kind,
+                    "title": name,
+                    "name": name,
+                    "topic": int(topic),
+                    "url": url,
+                    "query": (query or "").strip(),
+                    "case_number": case_number or "",
+                    "decision_date": decision_date or "",
+                    "sutyazhnik_norms": norms_raw,
+                }
+                text = " | ".join(
+                    part
+                    for part in [
+                        name,
+                        f"дело {case_number}" if case_number else "",
+                        decision_date or "",
+                    ]
+                    if part
+                )
+                payload["text"] = text or name
+                items.append((point_id, payload["text"], payload))
+
+            if include_norms:
+                for norm in (getattr(block, "norms", []) or [])[:norm_cap]:
+                    topic = getattr(norm, "topic", None)
+                    name = str(getattr(norm, "name", "") or "").strip()
+                    url = _abs(getattr(norm, "url", "") or "")
+                    if topic is None or not name:
+                        continue
+                    norm_id = f"garant:norm:{int(topic)}"
+                    if norm_id in seen_ids:
+                        continue
+                    seen_ids.add(norm_id)
+                    payload = {
+                        "doc_type": "norm",
+                        "source": "garant_sutyazhnik",
+                        "kind": kind,
+                        "title": name,
+                        "name": name,
+                        "topic": int(topic),
+                        "url": url,
+                        "query": (query or "").strip(),
+                        "text": name,
+                    }
+                    items.append((norm_id, name, payload))
+
+        if not items:
+            return 0
+        return await self._upsert_items(items)
+
+    async def ingest_garant_search_results(
+        self,
+        results: Sequence[Any],
+        query: str,
+        *,
+        max_items: int = 50,
+        document_base_url: Optional[str] = "https://d.garant.ru",
+    ) -> int:
+        """Ingest Garant /v2/search documents (with snippets) directly into Qdrant."""
+        if not self.enabled or not results or not max_items:
+            return 0
+
+        cap = max(0, int(max_items))
+        items: list[tuple[str, str, dict[str, Any]]] = []
+        seen_ids: set[str] = set()
+
+        def _abs(url: str) -> str:
+            if not url:
+                return ""
+            if url.startswith(("http://", "https://")):
+                return url
+            return urljoin(document_base_url or "", url)
+
+        for result in list(results)[:cap]:
+            document = getattr(result, "document", None)
+            if not document:
+                continue
+
+            topic = getattr(document, "topic", None)
+            name = str(getattr(document, "name", "") or "").strip()
+            url = _abs(getattr(document, "url", "") or "")
+            if topic is None or not name:
+                continue
+
+            point_id = f"garant:doc:{int(topic)}"
+            if point_id in seen_ids:
+                continue
+            seen_ids.add(point_id)
+
+            snippets = list(getattr(result, "snippets", []) or [])
+            entry = getattr(snippets[0], "entry", None) if snippets else None
+            case_number, decision_date = self._parse_title_bits(name)
+
+            payload: dict[str, Any] = {
+                "doc_type": "court",
+                "source": "garant_search",
+                "title": name,
+                "name": name,
+                "topic": int(topic),
+                "url": url,
+                "query": (query or "").strip(),
+                "case_number": case_number or "",
+                "decision_date": decision_date or "",
+            }
+            if entry is not None:
+                payload["entry"] = int(entry)
+
+            text = " | ".join(
+                part
+                for part in [
+                    name,
+                    f"entry {entry}" if entry is not None else "",
+                    f"дело {case_number}" if case_number else "",
+                    decision_date or "",
+                ]
+                if part
+            )
+            payload["text"] = text or name
+            items.append((point_id, payload["text"], payload))
+
+        if not items:
+            return 0
+        return await self._upsert_items(items)
+
+
+    def _parse_title_bits(self, name: str) -> tuple[str | None, str | None]:
+        if not name:
+            return None, None
+        case_match = re.search(r"по делу\s+N?\s*([A-Za-zА-Яа-я0-9\-/]+)", name, flags=re.IGNORECASE)
+        date_match = re.search(r"от\s+(\d{1,2}\s+\S+\s+\d{4})", name, flags=re.IGNORECASE)
+        return (
+            case_match.group(1) if case_match else None,
+            date_match.group(1) if date_match else None,
+        )
+
+    async def _upsert_items(self, items: list[tuple[str, str, dict[str, Any]]]) -> int:
+        assert self._embedding_service is not None
+        assert self._vector_store is not None
+
+        texts = [text for _, text, _ in items]
+        vectors = await self._embedding_service.embed(texts)
+        if not vectors:
+            return 0
+
+        if len(vectors) != len(items):
+            logger.warning(
+                "Vector count mismatch during Garant ingestion (expected %s, got %s)",
+                len(items),
+                len(vectors),
+            )
+            limit = min(len(vectors), len(items))
+            items = items[:limit]
+            vectors = vectors[:limit]
+            if not items or not vectors:
+                return 0
+
+        vector_size = len(vectors[0])
+        await self._vector_store.ensure_collection(vector_size)
+        await self._vector_store.upsert(
+            vectors=vectors,
+            payloads=[payload for _, _, payload in items],
+            ids=[point_id for point_id, _, _ in items],
+            batch_size=64,
+        )
+        return len(items)
 
     async def close(self) -> None:
         if self._vector_store is not None:
