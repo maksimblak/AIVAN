@@ -28,7 +28,7 @@ from src.core.bot_app.feedback import (
     handle_pending_feedback,
     send_rating_request,
 )
-from src.core.docx_export import build_practice_docx
+from src.core.docx_export import build_practice_docx, make_url
 from src.core.excel_export import build_practice_excel
 from src.core.exceptions import (
     ErrorContext,
@@ -266,19 +266,13 @@ def _normalize_case_links(
 ) -> None:
     if not cases:
         return
-    base = (base or "https://d.garant.ru").rstrip("/")
     for case in cases:
         if not isinstance(case, Mapping):
             continue
-        url = str(case.get("url") or "")
-        if url.startswith("/#/"):
-            abs_url = f"{base}{url}"
-            if isinstance(case, dict):
-                case["url"] = abs_url
-                case["link"] = abs_url
-        elif url.startswith("http"):
-            if isinstance(case, dict):
-                case.setdefault("link", url)
+        normalized = make_url(case.get("link") or case.get("url") or case.get("topic"))
+        if isinstance(case, dict):
+            case["url"] = normalized
+            case["link"] = normalized
 
 
 def _build_structured_cases_from_fragments(

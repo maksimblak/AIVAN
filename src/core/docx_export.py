@@ -9,6 +9,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+GARANT_WEB = "https://d.garant.ru"
+
 
 def _require_docx():
     try:
@@ -77,9 +79,12 @@ def _add_hyperlink(paragraph, text: str, url: str) -> None:
 
     run = OxmlElement("w:r")
     r_pr = OxmlElement("w:rPr")
-    r_style = OxmlElement("w:rStyle")
-    r_style.set(qn("w:val"), "Hyperlink")
-    r_pr.append(r_style)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0000EE")
+    r_pr.append(color)
     run.append(r_pr)
 
     text_elem = OxmlElement("w:t")
@@ -202,6 +207,31 @@ def _topic_from_url(url: str) -> int | None:
         return None
 
 
+def make_url(topic_or_href: Any) -> str:
+    """Normalize topic/id or raw href into a Garant public URL."""
+    value = topic_or_href
+    if isinstance(value, int):
+        return f"{GARANT_WEB}/document/{value}/"
+
+    s = str(value or "").strip()
+    if not s:
+        return f"{GARANT_WEB}/"
+
+    match = re.search(r"/document/(\d+)", s)
+    if match:
+        return f"{GARANT_WEB}/document/{match.group(1)}/"
+
+    match = re.search(r"(?:#?/)?document/(\d+)", s)
+    if match:
+        return f"{GARANT_WEB}/document/{match.group(1)}/"
+
+    match = re.search(r"\d{5,}", s)
+    if match:
+        return f"{GARANT_WEB}/document/{match.group(0)}/"
+
+    return f"{GARANT_WEB}/"
+
+
 def build_practice_docx(
     *,
     summary_html: str,
@@ -259,7 +289,10 @@ def build_practice_docx(
         for idx, case in enumerate(cases, start=1):
             title = str(case.get("title") or "").strip()
             case_number = str(case.get("case_number") or "").strip()
-            url = str(case.get("link") or case.get("url") or "").strip()
+            url = make_url(case.get("link") or case.get("url") or case.get("topic"))
+            if isinstance(case, dict):
+                case["url"] = url
+                case["link"] = url
             facts = str(case.get("facts") or "").strip()
             holding = str(case.get("holding") or "").strip()
             norms_raw = case.get("norms")
@@ -282,7 +315,8 @@ def build_practice_docx(
             if case_number:
                 doc.add_paragraph(f"Номер дела: {case_number}")
             if url:
-                paragraph = doc.add_paragraph("Ссылка: ")
+                paragraph = doc.add_paragraph()
+                paragraph.add_run("Ссылка: ")
                 _add_hyperlink(paragraph, "перейти", url)
             if facts:
                 doc.add_paragraph("Выдержка", style="Heading 3")
