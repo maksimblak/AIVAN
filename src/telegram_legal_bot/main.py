@@ -5,7 +5,6 @@ import logging
 from src.core.app_context import get_settings
 from src.core.launcher import main as _launcher_main
 
-
 PLACEHOLDER_PREFIXES = ("__REQUIRED", "changeme", "<REPLACE", "REPLACE_ME")
 
 

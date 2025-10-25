@@ -18,7 +18,7 @@ def format_trend(trend: str) -> str:
         "stable": "➡️ Стабильно",
         "declining": "📉 Ухудшается",
         "insufficient_data": "❓ Недостаточно данных",
-        "no_data": "❌ Нет данных"
+        "no_data": "❌ Нет данных",
     }
     return emoji_map.get(trend, trend)
 
@@ -145,13 +145,9 @@ def pmf_rating_emoji(rating: str) -> str:
     Returns:
         Emoji
     """
-    emoji_map = {
-        "strong": "🌟",
-        "moderate": "✅",
-        "weak": "⚠️",
-        "kill": "🗑️"
-    }
+    emoji_map = {"strong": "🌟", "moderate": "✅", "weak": "⚠️", "kill": "🗑️"}
     return emoji_map.get(rating, "")
+
 
 __all__ = (
     "nps_emoji",

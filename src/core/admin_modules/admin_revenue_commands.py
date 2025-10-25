@@ -7,9 +7,13 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.core.admin_modules.admin_formatters import growth_emoji, ltv_cac_status, quick_ratio_status
-from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, render_dashboard, require_admin
+from src.core.admin_modules.admin_utils import (
+    back_keyboard,
+    edit_or_answer,
+    render_dashboard,
+    require_admin,
+)
 from src.core.admin_modules.revenue_analytics import RevenueAnalytics
-
 
 revenue_router = Router(name="revenue_admin")
 
@@ -229,14 +233,14 @@ async def cmd_runway(message: Message, db, admin_ids: list[int]):
         "",
     ]
 
-    if runway.get('months_to_breakeven'):
+    if runway.get("months_to_breakeven"):
         lines.append(f"<b>⏳ Месяцев до безубыточности:</b> {runway['months_to_breakeven']}")
         lines.append("")
-        if runway['months_to_breakeven'] < runway['runway_months']:
+        if runway["months_to_breakeven"] < runway["runway_months"]:
             lines.append("✅ <b>Достигнете безубыточности раньше, чем закончится кеш!</b>")
         else:
             lines.append("🔴 <b>Внимание: средства закончатся до безубыточности</b>")
-            deficit = runway['months_to_breakeven'] - runway['runway_months']
+            deficit = runway["months_to_breakeven"] - runway["runway_months"]
             lines.append(f"Нужно ещё {deficit} мес. runway")
     else:
         lines.append("⚠️ При текущем темпе роста до безубыточности не дойдём")

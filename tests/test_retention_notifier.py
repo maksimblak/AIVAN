@@ -1,9 +1,11 @@
 """
 Тестовый скрипт для проверки RetentionNotifier
 """
+
 import asyncio
-import sys
 import os
+import sys
+
 import pytest
 
 if os.getenv("RUN_FULL_TESTS") != "1":
@@ -24,10 +26,11 @@ async def test_imports():
     print("Test 1: Checking imports...")
     try:
         from core.bot_app.retention_notifier import (
-            RetentionNotifier,
+            NOTIFICATION_SCENARIOS,
             NotificationTemplate,
-            NOTIFICATION_SCENARIOS
+            RetentionNotifier,
         )
+
         print("✅ Imports successful")
         print(f"   - Found {len(NOTIFICATION_SCENARIOS)} notification scenarios")
         for scenario in NOTIFICATION_SCENARIOS:
@@ -45,10 +48,7 @@ async def test_notification_template():
         from core.bot_app.retention_notifier import NotificationTemplate
 
         template = NotificationTemplate(
-            name="test_scenario",
-            delay_hours=24,
-            message="Test message",
-            show_buttons=True
+            name="test_scenario", delay_hours=24, message="Test message", show_buttons=True
         )
 
         assert template.name == "test_scenario"
@@ -72,10 +72,16 @@ async def test_sql_syntax():
 
         # Проверяем наличие методов
         required_methods = [
-            'start', 'stop', '_notification_loop', '_process_scenario',
-            '_get_users_for_scenario', '_send_notification',
-            '_mark_notification_sent', '_mark_user_blocked',
-            'send_manual_notification', 'get_notification_stats'
+            "start",
+            "stop",
+            "_notification_loop",
+            "_process_scenario",
+            "_get_users_for_scenario",
+            "_send_notification",
+            "_mark_notification_sent",
+            "_mark_user_blocked",
+            "send_manual_notification",
+            "get_notification_stats",
         ]
 
         for method in required_methods:
@@ -102,8 +108,9 @@ async def test_scenarios_validity():
             assert len(scenario.message) < 4096, f"Message too long for {scenario.name}"
 
             # Проверяем HTML разметку
-            assert "<b>" in scenario.message or "•" in scenario.message, \
-                f"Message should have formatting for {scenario.name}"
+            assert (
+                "<b>" in scenario.message or "•" in scenario.message
+            ), f"Message should have formatting for {scenario.name}"
 
         print("✅ All scenarios are valid")
         print(f"   - Total scenarios: {len(NOTIFICATION_SCENARIOS)}")
@@ -121,28 +128,25 @@ async def test_integration():
             content = f.read()
 
         # Проверяем наличие импорта
-        assert "from src.bot.retention_notifier import RetentionNotifier" in content, \
-            "Missing import in main_simple.py"
+        assert (
+            "from src.bot.retention_notifier import RetentionNotifier" in content
+        ), "Missing import in main_simple.py"
 
         # Проверяем наличие глобальной переменной
-        assert "retention_notifier = None" in content, \
-            "Missing global variable declaration"
+        assert "retention_notifier = None" in content, "Missing global variable declaration"
 
         # Проверяем запуск
-        assert "retention_notifier = RetentionNotifier(bot, db)" in content, \
-            "Missing initialization"
-        assert "await retention_notifier.start()" in content, \
-            "Missing start() call"
+        assert (
+            "retention_notifier = RetentionNotifier(bot, db)" in content
+        ), "Missing initialization"
+        assert "await retention_notifier.start()" in content, "Missing start() call"
 
         # Проверяем остановку
-        assert "await retention_notifier.stop()" in content, \
-            "Missing stop() call"
+        assert "await retention_notifier.stop()" in content, "Missing stop() call"
 
         # Проверяем обработчики кнопок
-        assert "handle_retention_quick_question" in content, \
-            "Missing quick_question handler"
-        assert "handle_retention_show_features" in content, \
-            "Missing show_features handler"
+        assert "handle_retention_quick_question" in content, "Missing quick_question handler"
+        assert "handle_retention_show_features" in content, "Missing show_features handler"
 
         print("✅ Integration with main_simple.py is correct")
         return True

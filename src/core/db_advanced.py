@@ -537,8 +537,8 @@ class DatabaseAdvanced:
                         logger.debug(f"Migration skipped: {migration_error}")
 
                 # Проставляем значения по умолчанию в user_journey_events, если новые колонки добавлены
-                existing_journey_cols = await self._get_table_columns(conn, 'user_journey_events')
-                if {'event_type', 'event_data', 'timestamp'}.intersection(existing_journey_cols):
+                existing_journey_cols = await self._get_table_columns(conn, "user_journey_events")
+                if {"event_type", "event_data", "timestamp"}.intersection(existing_journey_cols):
                     await conn.execute(
                         """
                         UPDATE user_journey_events
@@ -624,25 +624,31 @@ class DatabaseAdvanced:
     async def _get_table_columns(self, conn, table: str) -> set[str]:
         """Получение списка колонок таблицы с проверкой имени таблицы"""
         # Whitelist допустимых таблиц для защиты от SQL injection
-        ALLOWED_TABLES = frozenset([
-            "users", "transactions", "payments", "requests", "ratings",
-            "nps_surveys", "behavior_events", "user_journey_events"
-        ])
+        ALLOWED_TABLES = frozenset(
+            [
+                "users",
+                "transactions",
+                "payments",
+                "requests",
+                "ratings",
+                "nps_surveys",
+                "behavior_events",
+                "user_journey_events",
+            ]
+        )
 
         if table not in ALLOWED_TABLES:
             # Попытка записать метрику, но не падать если metrics недоступны
             try:
                 from src.core.metrics import get_metrics_collector
+
                 metrics = get_metrics_collector()
                 if metrics:
                     metrics.record_sql_injection_attempt(
-                        pattern_type="invalid_table_name",
-                        source="database_layer"
+                        pattern_type="invalid_table_name", source="database_layer"
                     )
                     metrics.record_security_violation(
-                        violation_type="sql_injection",
-                        severity="warning",
-                        source="database_layer"
+                        violation_type="sql_injection", severity="warning", source="database_layer"
                     )
             except Exception as e:
                 logger.debug(f"Failed to record metrics for invalid table access: {e}")
@@ -650,21 +656,21 @@ class DatabaseAdvanced:
             logger.warning(f"Attempted table access with invalid name: {table}")
             raise ValueError(f"Invalid table name: {table}")
 
-        cursor = await conn.execute(f'PRAGMA table_info({table})')
+        cursor = await conn.execute(f"PRAGMA table_info({table})")
         rows = await cursor.fetchall()
         await cursor.close()
         return {row[1] for row in rows}
 
     async def _ensure_referral_columns(self, conn) -> None:
         required_columns = {
-            'referred_by': "ALTER TABLE users ADD COLUMN referred_by INTEGER;",
-            'referral_code': "ALTER TABLE users ADD COLUMN referral_code TEXT;",
-            'referrals_count': "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
-            'referral_bonus_days': "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
-            'subscription_cancelled': "ALTER TABLE users ADD COLUMN subscription_cancelled INTEGER NOT NULL DEFAULT 0;",
-            'welcome_shown': "ALTER TABLE users ADD COLUMN welcome_shown INTEGER NOT NULL DEFAULT 0;",
+            "referred_by": "ALTER TABLE users ADD COLUMN referred_by INTEGER;",
+            "referral_code": "ALTER TABLE users ADD COLUMN referral_code TEXT;",
+            "referrals_count": "ALTER TABLE users ADD COLUMN referrals_count INTEGER NOT NULL DEFAULT 0;",
+            "referral_bonus_days": "ALTER TABLE users ADD COLUMN referral_bonus_days INTEGER NOT NULL DEFAULT 0;",
+            "subscription_cancelled": "ALTER TABLE users ADD COLUMN subscription_cancelled INTEGER NOT NULL DEFAULT 0;",
+            "welcome_shown": "ALTER TABLE users ADD COLUMN welcome_shown INTEGER NOT NULL DEFAULT 0;",
         }
-        existing = await self._get_table_columns(conn, 'users')
+        existing = await self._get_table_columns(conn, "users")
         applied = False
         index_applied = False
         for column_name, ddl in required_columns.items():
@@ -672,21 +678,21 @@ class DatabaseAdvanced:
                 try:
                     await conn.execute(ddl)
                     applied = True
-                    logger.info(f'Applied late migration for users: {ddl}')
+                    logger.info(f"Applied late migration for users: {ddl}")
                 except Exception as migration_error:
-                    logger.error(f'Failed to apply late migration {ddl}: {migration_error}')
+                    logger.error(f"Failed to apply late migration {ddl}: {migration_error}")
         cursor = await conn.execute("PRAGMA index_list(users)")
         indexes = {row[1] for row in await cursor.fetchall()}
         await cursor.close()
-        if 'idx_users_referral_code' not in indexes:
+        if "idx_users_referral_code" not in indexes:
             try:
                 await conn.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL;"
                 )
                 index_applied = True
-                logger.info('Ensured unique index for users.referral_code')
+                logger.info("Ensured unique index for users.referral_code")
             except Exception as index_error:
-                logger.warning(f'Failed to ensure referral_code unique index: {index_error}')
+                logger.warning(f"Failed to ensure referral_code unique index: {index_error}")
         if applied or index_applied:
             await conn.commit()
 
@@ -887,7 +893,6 @@ class DatabaseAdvanced:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in cancel_subscription: {str(e)}")
 
-
     async def extend_subscription_days(self, user_id: int, days: int) -> None:
         """Продление подписки"""
         async with self.pool.acquire() as conn:
@@ -962,7 +967,6 @@ class DatabaseAdvanced:
             except Exception as e:
                 self.error_count += 1 if self.enable_metrics else 0
                 raise DatabaseException(f"Database error in apply_subscription_purchase: {str(e)}")
-
 
     async def record_transaction(
         self,
@@ -1056,7 +1060,9 @@ class DatabaseAdvanced:
                     logger.warning(
                         f"UNIQUE constraint failed for charge_id {telegram_payment_charge_id}, checking existing transaction"
                     )
-                    if await self.transaction_exists_by_telegram_charge_id(telegram_payment_charge_id):
+                    if await self.transaction_exists_by_telegram_charge_id(
+                        telegram_payment_charge_id
+                    ):
                         # Возвращаем ID существующей транзакции
                         cursor = await conn.execute(
                             "SELECT id FROM transactions WHERE telegram_payment_charge_id = ?",
@@ -1072,7 +1078,6 @@ class DatabaseAdvanced:
                             return row[0]
 
                 raise DatabaseException(f"Database error in record_transaction: {str(e)}")
-
 
     async def transaction_exists_by_telegram_charge_id(self, charge_id: str) -> bool:
         """Проверка существования транзакции по Telegram charge_id"""
@@ -1600,14 +1605,18 @@ class DatabaseAdvanced:
                     }
 
                 # Обработка популярных функций
-                feature_stats = [
-                    {
-                        "feature": row[0],
-                        "count": int(row[1]),
-                        "last_used": int(row[2]) if row[2] else 0
-                    }
-                    for row in features_rows
-                ] if features_rows else []
+                feature_stats = (
+                    [
+                        {
+                            "feature": row[0],
+                            "count": int(row[1]),
+                            "last_used": int(row[2]) if row[2] else 0,
+                        }
+                        for row in features_rows
+                    ]
+                    if features_rows
+                    else []
+                )
 
                 # Обработка ежедневной активности для графика
                 daily_activity = [int(row[1]) for row in daily_rows] if daily_rows else []
@@ -1651,11 +1660,6 @@ class DatabaseAdvanced:
                 raise DatabaseException(f"Database error in get_user_statistics: {str(e)}")
 
     # ============ Методы для работы с рейтингами ============
-
-
-
-
-
 
     async def get_stats(self) -> dict[str, Any]:
         """Получение статистики базы данных"""
@@ -1710,7 +1714,9 @@ class DatabaseAdvanced:
                 current_row = await cursor.fetchone()
                 await cursor.close()
                 if not current_row:
-                    raise DatabaseException(f"User {user_id} not found while applying referral code")
+                    raise DatabaseException(
+                        f"User {user_id} not found while applying referral code"
+                    )
 
                 existing_referrer = current_row[0]
                 if existing_referrer:
@@ -1761,7 +1767,7 @@ class DatabaseAdvanced:
             try:
                 await self._ensure_referral_columns(conn)
                 for attempt in range(max_attempts):
-                    code = ''.join(
+                    code = "".join(
                         secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8)
                     )
                     try:
@@ -1778,9 +1784,7 @@ class DatabaseAdvanced:
                             user_id,
                             attempt + 1,
                         )
-                error_message = (
-                    f"Failed to generate unique referral code for user {user_id} after several attempts"
-                )
+                error_message = f"Failed to generate unique referral code for user {user_id} after several attempts"
                 logger.error(error_message)
                 raise DatabaseException(error_message)
             except DatabaseException:
@@ -1788,10 +1792,6 @@ class DatabaseAdvanced:
             except Exception as e:
                 logger.error(f"Database error in generate_referral_code: {e}")
                 raise DatabaseException(f"Error generating referral code: {e}")
-
-
-
-
 
     async def get_user_referrals(self, user_id: int) -> list[dict[str, Any]]:
         """Получение списка рефералов пользователя"""
@@ -1809,14 +1809,13 @@ class DatabaseAdvanced:
                     {
                         "user_id": row[0],
                         "joined_at": row[1],
-                        "has_active_subscription": bool(row[2])
+                        "has_active_subscription": bool(row[2]),
                     }
                     for row in rows
                 ]
             except Exception as e:
                 logger.error(f"Database error in get_user_referrals: {e}")
                 return []
-
 
     async def get_user_transactions(self, user_id: int, limit: int = 20) -> list[TransactionRecord]:
         """Получение истории транзакций пользователя"""
@@ -1961,6 +1960,7 @@ class DatabaseAdvanced:
 
         await self.pool.close()
         logger.info("Advanced database closed")
+
 
 # Hints for static analyzers
 _UNUSED_USER_RECORD_FIELDS = (

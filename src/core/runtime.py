@@ -9,20 +9,20 @@ from src.core.settings import AppSettings
 from src.core.subscription_plans import SubscriptionPlan
 
 if False:  # pragma: no cover - hints only
+    from core.bot_app.ratelimit import RateLimiter
     from core.bot_app.stream_manager import StreamManager
-    from src.core.audio_service import AudioService
-    from src.core.cache import ResponseCache
     from src.core.access import AccessService
+    from src.core.audio_service import AudioService
+    from src.core.background_tasks import BackgroundTaskManager
+    from src.core.cache import ResponseCache
     from src.core.db_advanced import DatabaseAdvanced
     from src.core.exceptions import ErrorHandler
-    from src.core.openai_service import OpenAIService
-    from src.core.session_store import SessionStore
-    from src.documents.document_manager import DocumentManager
-    from core.bot_app.ratelimit import RateLimiter
-    from src.core.background_tasks import BackgroundTaskManager
     from src.core.health import HealthChecker
     from src.core.metrics import MetricsCollector
+    from src.core.openai_service import OpenAIService
     from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
+    from src.core.session_store import SessionStore
+    from src.documents.document_manager import DocumentManager
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,6 @@ class WelcomeMedia:
     file_id: str | None = None
 
 
-
 @dataclass(frozen=True)
 class SubscriptionPlanPricing:
     """Runtime view of a subscription plan with calculated prices."""
@@ -40,7 +39,6 @@ class SubscriptionPlanPricing:
     plan: SubscriptionPlan
     price_rub_kopeks: int
     price_stars: int
-
 
 
 @dataclass

@@ -14,18 +14,23 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from core.bot_app.ui_components import Emoji
+from src.core.admin_modules.admin_alerts_commands import alerts_router
 from src.core.admin_modules.admin_analytics import (
-    AdminAnalytics,
     PLAN_SEGMENT_DEFS,
     PLAN_SEGMENT_ORDER,
+    AdminAnalytics,
 )
-from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, require_admin, set_admin_ids
-from src.core.admin_modules.admin_alerts_commands import alerts_router
 from src.core.admin_modules.admin_behavior_commands import behavior_router
 from src.core.admin_modules.admin_cohort_commands import cohort_router
 from src.core.admin_modules.admin_pmf_commands import pmf_router
 from src.core.admin_modules.admin_retention_commands import retention_router
 from src.core.admin_modules.admin_revenue_commands import revenue_router
+from src.core.admin_modules.admin_utils import (
+    back_keyboard,
+    edit_or_answer,
+    require_admin,
+    set_admin_ids,
+)
 from src.core.safe_telegram import send_html_text
 
 if TYPE_CHECKING:
@@ -35,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 
 _GLOBAL_DB: DatabaseAdvanced | None = None
-
 
 
 def _resolve_db(db: DatabaseAdvanced | None) -> DatabaseAdvanced:
@@ -51,8 +55,12 @@ def create_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Аналитика", callback_data="admin_menu:analytics")],
-            [InlineKeyboardButton(text="⚖️ ГАРАНТ: лимиты", callback_data="admin_menu:garant_limits")],
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_menu:refresh")]
+            [
+                InlineKeyboardButton(
+                    text="⚖️ ГАРАНТ: лимиты", callback_data="admin_menu:garant_limits"
+                )
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_menu:refresh")],
         ]
     )
 
@@ -66,6 +74,7 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     garant_block = ""
     try:
         from src.core.bot_app import context as simple_context  # noqa: WPS433
+
         garant_client = getattr(simple_context, "garant_client", None)
         if getattr(garant_client, "enabled", False):
             limits = await garant_client.get_limits()  # type: ignore[attr-defined]
@@ -80,10 +89,12 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
     plan_lines = []
     total_paid = 0
     for plan_id in PLAN_SEGMENT_ORDER:
-        segment = segments.get(f'plan_{plan_id}')
+        segment = segments.get(f"plan_{plan_id}")
         if segment:
             total_paid += segment.user_count
-            plan_lines.append(f"  {PLAN_SEGMENT_DEFS[plan_id]['button']} <b>{segment.user_count}</b>")
+            plan_lines.append(
+                f"  {PLAN_SEGMENT_DEFS[plan_id]['button']} <b>{segment.user_count}</b>"
+            )
 
     plan_block = ""
     if plan_lines:
@@ -170,27 +181,34 @@ async def _build_admin_summary(db: DatabaseAdvanced | None = None) -> str:
 admin_router = Router()
 
 
-
 def create_analytics_menu() -> InlineKeyboardMarkup:
     """Создание главного меню аналитики"""
     rows = [
         [
-            InlineKeyboardButton(text="⚡ Суперактивные", callback_data="admin_segment:power_users"),
+            InlineKeyboardButton(
+                text="⚡ Суперактивные", callback_data="admin_segment:power_users"
+            ),
             InlineKeyboardButton(text="⚠️ Группа риска", callback_data="admin_segment:at_risk"),
         ],
         [
             InlineKeyboardButton(text="📉 Отток", callback_data="admin_segment:churned"),
-            InlineKeyboardButton(text="💰 Переходы в оплату", callback_data="admin_segment:trial_converters"),
+            InlineKeyboardButton(
+                text="💰 Переходы в оплату", callback_data="admin_segment:trial_converters"
+            ),
         ],
         [
-            InlineKeyboardButton(text="🚫 Только бесплатные", callback_data="admin_segment:freeloaders"),
-            InlineKeyboardButton(text="🆕 Новые пользователи", callback_data="admin_segment:new_users"),
+            InlineKeyboardButton(
+                text="🚫 Только бесплатные", callback_data="admin_segment:freeloaders"
+            ),
+            InlineKeyboardButton(
+                text="🆕 Новые пользователи", callback_data="admin_segment:new_users"
+            ),
         ],
     ]
 
     plan_buttons = [
         InlineKeyboardButton(
-            text=PLAN_SEGMENT_DEFS[plan_id]['button'],
+            text=PLAN_SEGMENT_DEFS[plan_id]["button"],
             callback_data=f"admin_segment:plan_{plan_id}",
         )
         for plan_id in PLAN_SEGMENT_ORDER
@@ -201,8 +219,12 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
     rows.extend(
         [
             [
-                InlineKeyboardButton(text="📊 Аналитика конверсии", callback_data="admin_stats:conversion"),
-                InlineKeyboardButton(text="📈 Ежедневная статистика", callback_data="admin_stats:daily"),
+                InlineKeyboardButton(
+                    text="📊 Аналитика конверсии", callback_data="admin_stats:conversion"
+                ),
+                InlineKeyboardButton(
+                    text="📈 Ежедневная статистика", callback_data="admin_stats:daily"
+                ),
             ],
             [
                 InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh"),
@@ -218,7 +240,9 @@ def create_analytics_menu() -> InlineKeyboardMarkup:
 
 @admin_router.message(Command("admin"))
 @require_admin
-async def cmd_admin(message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def cmd_admin(
+    message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Главная команда админ-панели"""
 
     summary = await _build_admin_summary(db)
@@ -227,7 +251,9 @@ async def cmd_admin(message: Message, db: DatabaseAdvanced | None = None, admin_
 
 @admin_router.callback_query(F.data == "admin_menu:analytics")
 @require_admin
-async def handle_admin_menu_analytics(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_admin_menu_analytics(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Показать раздел аналитики из главного меню."""
 
     summary = await _build_admin_summary(db)
@@ -270,7 +296,9 @@ async def handle_admin_menu_garant_limits(
 
 @admin_router.callback_query(F.data == "admin_menu:refresh")
 @require_admin
-async def handle_admin_menu_refresh(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_admin_menu_refresh(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Обновить данные на главном экране."""
 
     summary = await _build_admin_summary(db)
@@ -282,7 +310,9 @@ async def handle_admin_menu_refresh(callback: CallbackQuery, db: DatabaseAdvance
 
 @admin_router.callback_query(F.data == "admin_menu:back")
 @require_admin
-async def handle_admin_menu_back(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_admin_menu_back(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Вернуться в главное меню админ-панели."""
 
     summary = await _build_admin_summary(db)
@@ -292,7 +322,9 @@ async def handle_admin_menu_back(callback: CallbackQuery, db: DatabaseAdvanced |
 
 @admin_router.callback_query(F.data.startswith("admin_segment:"))
 @require_admin
-async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_segment_view(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Просмотр детальной информации по сегменту"""
 
     if not callback.data:
@@ -322,7 +354,9 @@ async def handle_segment_view(callback: CallbackQuery, db: DatabaseAdvanced | No
 
 @admin_router.callback_query(F.data == "admin_stats:conversion")
 @require_admin
-async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_conversion_stats(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Детальная статистика конверсии"""
 
     analytics = AdminAnalytics(_resolve_db(db))
@@ -356,7 +390,13 @@ async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced 
     if conversion.avg_time_to_conversion_days > 7:
         output += "⚠️ Долгая конверсия — добавить стимулирующие акции для быстрой покупки\n"
 
-    if not any([conversion.conversion_rate < 10, churn.retention_rate < 50, conversion.avg_time_to_conversion_days > 7]):
+    if not any(
+        [
+            conversion.conversion_rate < 10,
+            churn.retention_rate < 50,
+            conversion.avg_time_to_conversion_days > 7,
+        ]
+    ):
         output += "✅ Показатели в норме!\n"
 
     keyboard = back_keyboard("admin_refresh")
@@ -367,7 +407,9 @@ async def handle_conversion_stats(callback: CallbackQuery, db: DatabaseAdvanced 
 
 @admin_router.callback_query(F.data == "admin_stats:daily")
 @require_admin
-async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_daily_stats(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Ежедневная статистика"""
 
     analytics = AdminAnalytics(_resolve_db(db))
@@ -387,8 +429,10 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced | Non
         latest = daily_stats[0]
         prev = daily_stats[1] if len(daily_stats) > 1 else latest
 
-        requests_change = ((latest['requests'] - prev['requests']) / max(prev['requests'], 1)) * 100
-        users_change = ((latest['active_users'] - prev['active_users']) / max(prev['active_users'], 1)) * 100
+        requests_change = ((latest["requests"] - prev["requests"]) / max(prev["requests"], 1)) * 100
+        users_change = (
+            (latest["active_users"] - prev["active_users"]) / max(prev["active_users"], 1)
+        ) * 100
 
         output += "<b>📊 Тренды (день к дню):</b>\n"
         output += f"  • Запросы: {requests_change:+.1f}%\n"
@@ -402,7 +446,9 @@ async def handle_daily_stats(callback: CallbackQuery, db: DatabaseAdvanced | Non
 
 @admin_router.callback_query(F.data == "admin_refresh")
 @require_admin
-async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_refresh(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Обновление раздела аналитики"""
 
     summary = await _build_admin_summary(db)
@@ -414,7 +460,9 @@ async def handle_refresh(callback: CallbackQuery, db: DatabaseAdvanced | None = 
 
 @admin_router.message(Command("export_users"))
 @require_admin
-async def cmd_export_users(message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def cmd_export_users(
+    message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Экспорт списка пользователей определенного сегмента"""
 
     # Парсим аргументы команды: /export_users <segment>
@@ -437,16 +485,16 @@ async def cmd_export_users(message: Message, db: DatabaseAdvanced | None = None,
     csv_lines = ["user_id,всего_запросов,последняя_активность,доп_инфо"]
 
     for user in segment.users:
-        user_id = user.get('user_id', 'н/д')
-        total_requests = user.get('total_requests', 0)
-        last_active = user.get('last_active', user.get('registered_at', 'н/д'))
+        user_id = user.get("user_id", "н/д")
+        total_requests = user.get("total_requests", 0)
+        last_active = user.get("last_active", user.get("registered_at", "н/д"))
 
         # Дополнительная информация зависит от сегмента
-        if segment_id == 'power_users':
+        if segment_id == "power_users":
             additional = f"{user.get('avg_requests_per_day', 0)} запр./день"
-        elif segment_id == 'at_risk':
+        elif segment_id == "at_risk":
             additional = f"истекает через {user.get('days_until_expiry', 0)} дн."
-        elif segment_id == 'churned':
+        elif segment_id == "churned":
             additional = f"LTV: {user.get('ltv', 0)} ₽"
         else:
             additional = ""
@@ -457,22 +505,25 @@ async def cmd_export_users(message: Message, db: DatabaseAdvanced | None = None,
 
     # Отправляем как файл
     from io import BytesIO
+
     from aiogram.types import BufferedInputFile
 
-    file_bytes = BytesIO(csv_content.encode('utf-8'))
+    file_bytes = BytesIO(csv_content.encode("utf-8"))
     file = BufferedInputFile(file_bytes.getvalue(), filename=f"{segment_id}_export.csv")
 
     await message.answer_document(
         file,
         caption=f"📊 Экспорт сегмента: <b>{segment.name}</b>\n"
-                f"Пользователей: {segment.user_count}",
-        parse_mode=ParseMode.HTML
+        f"Пользователей: {segment.user_count}",
+        parse_mode=ParseMode.HTML,
     )
 
 
 @admin_router.message(Command("broadcast"))
 @require_admin
-async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def cmd_broadcast(
+    message: Message, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """
     Отправка сообщения группе пользователей
     Использование: /broadcast <segment> <сообщение>
@@ -492,7 +543,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, ad
             f"• freeloaders\n"
             f"• new_users\n"
             f"• vip",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -507,7 +558,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, ad
         return
 
     segment = segments[segment_id]
-    user_ids = [user['user_id'] for user in segment.users]
+    user_ids = [user["user_id"] for user in segment.users]
 
     # Подтверждение
     confirm_keyboard = InlineKeyboardMarkup(
@@ -515,7 +566,7 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, ad
             [
                 InlineKeyboardButton(
                     text=f"✅ Отправить {len(user_ids)} польз.",
-                    callback_data=f"broadcast_confirm:{segment_id}"
+                    callback_data=f"broadcast_confirm:{segment_id}",
                 ),
                 InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel"),
             ]
@@ -524,14 +575,14 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, ad
 
     # Сохраняем сообщение в сессии (в реальности нужна БД или кеш)
     # Для простоты используем message.bot.data
-    if not hasattr(message.bot, '_broadcast_cache'):
+    if not hasattr(message.bot, "_broadcast_cache"):
         message.bot._broadcast_cache = {}  # type: ignore
 
     cache_key = f"{message.from_user.id}:{segment_id}"
     message.bot._broadcast_cache[cache_key] = {  # type: ignore
-        'user_ids': user_ids,
-        'message': broadcast_message,
-        'segment_name': segment.name,
+        "user_ids": user_ids,
+        "message": broadcast_message,
+        "segment_name": segment.name,
     }
 
     await message.answer(
@@ -541,14 +592,15 @@ async def cmd_broadcast(message: Message, db: DatabaseAdvanced | None = None, ad
         f"<b>Сообщение:</b>\n{html_escape(broadcast_message)}\n\n"
         f"Подтвердите отправку:",
         parse_mode=ParseMode.HTML,
-        reply_markup=confirm_keyboard
+        reply_markup=confirm_keyboard,
     )
-
 
 
 @admin_router.callback_query(F.data.startswith("broadcast_confirm:"))
 @require_admin
-async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_broadcast_confirm(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Trigger broadcast delivery after admin confirmation."""
 
     data = callback.data or ""
@@ -563,9 +615,9 @@ async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced
             await edit_or_answer(callback, "<b>Broadcast payload not found.</b>", None)
         return
 
-    user_ids = payload.get('user_ids') or []
-    message_text = payload.get('message') or ""
-    segment_label = payload.get('segment_name') or segment_id or 'unknown'
+    user_ids = payload.get("user_ids") or []
+    message_text = payload.get("message") or ""
+    segment_label = payload.get("segment_name") or segment_id or "unknown"
 
     sent = 0
     failed = []
@@ -595,7 +647,7 @@ async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced
     await callback.answer("Done")
     logger.info(
         "Admin %s broadcasted to %s: sent=%s failed=%s",
-        callback.from_user.id if callback.from_user else 'unknown',
+        callback.from_user.id if callback.from_user else "unknown",
         segment_id,
         sent,
         len(failed),
@@ -604,7 +656,9 @@ async def handle_broadcast_confirm(callback: CallbackQuery, db: DatabaseAdvanced
 
 @admin_router.callback_query(F.data.startswith("broadcast_cancel:"))
 @require_admin
-async def handle_broadcast_cancel(callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None):
+async def handle_broadcast_cancel(
+    callback: CallbackQuery, db: DatabaseAdvanced | None = None, admin_ids: set[int] | None = None
+):
     """Cancel a prepared broadcast."""
 
     data = callback.data or ""
@@ -619,7 +673,7 @@ async def handle_broadcast_cancel(callback: CallbackQuery, db: DatabaseAdvanced 
     await callback.answer("Cancelled")
     logger.info(
         "Admin %s cancelled broadcast for %s",
-        callback.from_user.id if callback.from_user else 'unknown',
+        callback.from_user.id if callback.from_user else "unknown",
         segment_id,
     )
 
@@ -646,19 +700,21 @@ def setup_admin_commands(dp, db: DatabaseAdvanced, admin_ids: set[int]):
     ]
 
     for router in routers:
-        router.message.filter(lambda msg, _admins=admin_ids: msg.from_user and msg.from_user.id in _admins)
+        router.message.filter(
+            lambda msg, _admins=admin_ids: msg.from_user and msg.from_user.id in _admins
+        )
 
-        message_observer = router.observers.get('message')
+        message_observer = router.observers.get("message")
         if message_observer is not None:
-            for handler in getattr(message_observer, 'handlers', []):
-                handler.callback.__globals__['db'] = db
-                handler.callback.__globals__['admin_ids'] = admin_ids
+            for handler in getattr(message_observer, "handlers", []):
+                handler.callback.__globals__["db"] = db
+                handler.callback.__globals__["admin_ids"] = admin_ids
 
-        callback_observer = router.observers.get('callback_query')
+        callback_observer = router.observers.get("callback_query")
         if callback_observer is not None:
-            for handler in getattr(callback_observer, 'handlers', []):
-                handler.callback.__globals__['db'] = db
-                handler.callback.__globals__['admin_ids'] = admin_ids
+            for handler in getattr(callback_observer, "handlers", []):
+                handler.callback.__globals__["db"] = db
+                handler.callback.__globals__["admin_ids"] = admin_ids
 
         dp.include_router(router)
 

@@ -16,17 +16,17 @@ logger = logging.getLogger(__name__)
 
 # Типы действий в Telegram
 ChatAction = Literal[
-    "typing",           # Печатает текст
-    "upload_photo",     # Отправляет фото
-    "record_video",     # Записывает видео
-    "upload_video",     # Отправляет видео
-    "record_voice",     # Записывает голосовое
-    "upload_voice",     # Отправляет голосовое
+    "typing",  # Печатает текст
+    "upload_photo",  # Отправляет фото
+    "record_video",  # Записывает видео
+    "upload_video",  # Отправляет видео
+    "record_voice",  # Записывает голосовое
+    "upload_voice",  # Отправляет голосовое
     "upload_document",  # Отправляет документ
-    "choose_sticker",   # Выбирает стикер
-    "find_location",    # Находит локацию
-    "record_video_note", # Записывает видеосообщение
-    "upload_video_note", # Отправляет видеосообщение
+    "choose_sticker",  # Выбирает стикер
+    "find_location",  # Находит локацию
+    "record_video_note",  # Записывает видеосообщение
+    "upload_video_note",  # Отправляет видеосообщение
 ]
 
 

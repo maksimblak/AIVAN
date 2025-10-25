@@ -12,13 +12,13 @@ if TYPE_CHECKING:
     from src.core.access import AccessService
     from src.core.audio_service import AudioService
     from src.core.background_tasks import BackgroundTaskManager
+    from src.core.cache import ResponseCache
     from src.core.db_advanced import DatabaseAdvanced
     from src.core.exceptions import ErrorHandler
     from src.core.health import HealthChecker
     from src.core.metrics import MetricsCollector
     from src.core.openai_service import OpenAIService
     from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
-    from src.core.cache import ResponseCache
     from src.core.session_store import SessionStore
 
     ServiceRegistry = Any

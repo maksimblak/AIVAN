@@ -7,7 +7,7 @@ import tempfile
 from contextlib import suppress
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, Sequence
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
@@ -32,13 +32,11 @@ class ProcessQuestionHandler(Protocol):
         *,
         text_override: str | None = None,
         attachments: Sequence[Any] | None = None,
-    ) -> str | None:
-        ...
+    ) -> str | None: ...
 
 
 VOICE_REPLY_CAPTION = (
-    f"{Emoji.MICROPHONE} <b>Голосовой ответ готов</b>"
-    f"\n{Emoji.INFO} Нажмите, чтобы прослушать."
+    f"{Emoji.MICROPHONE} <b>Голосовой ответ готов</b>" f"\n{Emoji.INFO} Нажмите, чтобы прослушать."
 )
 
 
@@ -176,4 +174,3 @@ def _create_temp_file_path(suffix: str) -> Path:
 def _write_stream_to_path(stream: Any, target: Path) -> None:
     with target.open("wb") as destination:
         shutil.copyfileobj(stream, destination, length=128 * 1024)
-

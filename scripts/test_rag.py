@@ -27,8 +27,8 @@ if str(project_root) not in sys.path:
 
 from pydantic import ValidationError
 
-from src.core.settings import AppSettings
 from src.core.rag.judicial_rag import JudicialPracticeRAG
+from src.core.settings import AppSettings
 
 
 async def test_rag(query: str) -> None:
@@ -82,7 +82,7 @@ async def test_rag(query: str) -> None:
             print(f"    Score: {fragment.match.score:.4f}")
             print(f"    ID: {fragment.match.id}")
             print(f"    Excerpt: {fragment.excerpt[:200]}...")
-            if fragment.match.metadata.get('url'):
+            if fragment.match.metadata.get("url"):
                 print(f"    URL: {fragment.match.metadata['url']}")
 
         print(f"\n{'='*60}")
@@ -94,6 +94,7 @@ async def test_rag(query: str) -> None:
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         await rag.close()
@@ -101,7 +102,7 @@ async def test_rag(query: str) -> None:
 
 async def main() -> None:
     if len(sys.argv) < 2:
-        print("Использование: python scripts/test_rag.py \"ваш запрос\"")
+        print('Использование: python scripts/test_rag.py "ваш запрос"')
         print("\nПримеры:")
         print('  python scripts/test_rag.py "неустойка с застройщика"')
         print('  python scripts/test_rag.py "отказ администрации в согласовании"')
@@ -112,5 +113,5 @@ async def main() -> None:
     await test_rag(query)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())

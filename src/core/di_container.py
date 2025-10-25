@@ -4,8 +4,8 @@ import inspect
 import logging
 from typing import Any, Callable, Dict, Optional, Type, TypeVar, get_type_hints
 
-from src.core.settings import AppSettings
 from src.core.app_context import set_settings
+from src.core.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,9 @@ class DIContainer:
                 kwargs[name] = dependency
             except Exception as exc:
                 if parameter.default is inspect.Parameter.empty:
-                    logger.warning("Cannot resolve dependency %s for %s: %s", hinted_type, func, exc)
+                    logger.warning(
+                        "Cannot resolve dependency %s for %s: %s", hinted_type, func, exc
+                    )
                     config_value = self.get_config(name)
                     if config_value is not None:
                         kwargs[name] = config_value
@@ -120,15 +122,15 @@ def create_container(settings: AppSettings) -> DIContainer:
     set_settings(settings)
     container.register_singleton(AppSettings, settings)
 
-    from src.core.db_advanced import DatabaseAdvanced
+    from core.bot_app.ratelimit import RateLimiter
     from src.core.access import AccessService
-    from src.core.openai_service import OpenAIService
     from src.core.audio_service import AudioService
-    from src.core.session_store import SessionStore
+    from src.core.db_advanced import DatabaseAdvanced
+    from src.core.garant_api import GarantAPIClient
+    from src.core.openai_service import OpenAIService
     from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
     from src.core.rag.judicial_rag import JudicialPracticeRAG
-    from core.bot_app.ratelimit import RateLimiter
-    from src.core.garant_api import GarantAPIClient
+    from src.core.session_store import SessionStore
 
     container.register_factory(
         DatabaseAdvanced,
@@ -255,5 +257,3 @@ def reset_container() -> None:
     """Reset cached container (used by tests)."""
     global _container
     _container = None
-
-

@@ -42,7 +42,9 @@ class JudicialPracticeRAG:
             logger.info("Judicial RAG disabled via settings")
         else:
             try:
-                self._embedding_service = EmbeddingService(embedding_model or "text-embedding-3-large")
+                self._embedding_service = EmbeddingService(
+                    embedding_model or "text-embedding-3-large"
+                )
                 self._vector_store = self._build_vector_store(settings)
             except Exception as exc:  # noqa: BLE001
                 logger.error("Failed to initialize judicial RAG: %s", exc, exc_info=True)
@@ -52,7 +54,9 @@ class JudicialPracticeRAG:
 
     @property
     def enabled(self) -> bool:
-        return self._enabled and self._embedding_service is not None and self._vector_store is not None
+        return (
+            self._enabled and self._embedding_service is not None and self._vector_store is not None
+        )
 
     @property
     def last_fragments(self) -> list[PracticeFragment]:

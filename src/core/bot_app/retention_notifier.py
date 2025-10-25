@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aiogram import Bot
+
     from src.core.db_advanced import DatabaseAdvanced
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class NotificationTemplate:
     """Шаблон уведомления для разных сценариев"""
+
     name: str
     delay_hours: int
     message: str
@@ -41,7 +43,7 @@ NOTIFICATION_SCENARIOS = [
             "• Какие есть права у арендатора?\n\n"
             "У тебя есть <b>10 бесплатных вопросов</b> — воспользуйся ими! 🎁"
         ),
-        show_buttons=True
+        show_buttons=True,
     ),
     NotificationTemplate(
         name="inactive_3days",
@@ -56,7 +58,7 @@ NOTIFICATION_SCENARIOS = [
             "• Голосовые ответы\n\n"
             "Возвращайся, если нужна помощь! 💼"
         ),
-        show_buttons=True
+        show_buttons=True,
     ),
     NotificationTemplate(
         name="inactive_7days",
@@ -70,7 +72,7 @@ NOTIFICATION_SCENARIOS = [
             "• Работа с голосовыми сообщениями\n\n"
             "У тебя всё ещё есть бесплатные запросы — используй их! 🚀"
         ),
-        show_buttons=True
+        show_buttons=True,
     ),
 ]
 
@@ -190,7 +192,8 @@ class RetentionNotifier:
         async with self.db.pool.acquire() as conn:
             if scenario.name == "registered_no_request":
                 # Зарегистрировались, но не задали ни одного вопроса
-                cursor = await conn.execute("""
+                cursor = await conn.execute(
+                    """
                     SELECT u.user_id
                     FROM users u
                     WHERE u.total_requests = 0
@@ -206,11 +209,14 @@ class RetentionNotifier:
                           WHERE bu.user_id = u.user_id
                       )
                     LIMIT 100
-                """, (now - delay_seconds, now - (delay_seconds + 3600), scenario.name))
+                """,
+                    (now - delay_seconds, now - (delay_seconds + 3600), scenario.name),
+                )
 
             elif scenario.name.startswith("inactive_"):
                 # Были активны, но сейчас неактивны N дней
-                cursor = await conn.execute("""
+                cursor = await conn.execute(
+                    """
                     SELECT u.user_id
                     FROM users u
                     WHERE u.total_requests > 0
@@ -227,12 +233,14 @@ class RetentionNotifier:
                           WHERE bu.user_id = u.user_id
                       )
                     LIMIT 100
-                """, (
-                    now - delay_seconds,
-                    now - (delay_seconds + 3600),
-                    scenario.name,
-                    now - delay_seconds  # Не отправляем повторно в этом периоде
-                ))
+                """,
+                    (
+                        now - delay_seconds,
+                        now - (delay_seconds + 3600),
+                        scenario.name,
+                        now - delay_seconds,  # Не отправляем повторно в этом периоде
+                    ),
+                )
 
             else:
                 logger.warning(f"Unknown scenario: {scenario.name}")
@@ -251,30 +259,29 @@ class RetentionNotifier:
 
             if scenario.show_buttons:
                 # Можно добавить inline кнопки для быстрого действия
-                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="💬 Задать вопрос",
-                        callback_data="quick_question"
-                    )],
-                    [InlineKeyboardButton(
-                        text="📚 Все возможности",
-                        callback_data="show_features"
-                    )]
-                ])
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="💬 Задать вопрос", callback_data="quick_question"
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="📚 Все возможности", callback_data="show_features"
+                            )
+                        ],
+                    ]
+                )
 
                 await self.bot.send_message(
-                    chat_id=user_id,
-                    text=scenario.message,
-                    parse_mode="HTML",
-                    reply_markup=keyboard
+                    chat_id=user_id, text=scenario.message, parse_mode="HTML", reply_markup=keyboard
                 )
             else:
                 await self.bot.send_message(
-                    chat_id=user_id,
-                    text=scenario.message,
-                    parse_mode="HTML"
+                    chat_id=user_id, text=scenario.message, parse_mode="HTML"
                 )
 
             logger.info(f"Sent '{scenario.name}' notification to user {user_id}")
@@ -351,10 +358,7 @@ class RetentionNotifier:
     # ==================== Ручные методы ====================
 
     async def send_manual_notification(
-        self,
-        user_ids: list[int],
-        message: str,
-        with_buttons: bool = False
+        self, user_ids: list[int], message: str, with_buttons: bool = False
     ) -> dict[str, int]:
         """
         Отправить ручное уведомление списку пользователей
@@ -372,27 +376,23 @@ class RetentionNotifier:
         for user_id in user_ids:
             try:
                 if with_buttons:
-                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(
-                            text="💬 Задать вопрос",
-                            callback_data="quick_question"
-                        )]
-                    ])
+                    keyboard = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="💬 Задать вопрос", callback_data="quick_question"
+                                )
+                            ]
+                        ]
+                    )
 
                     await self.bot.send_message(
-                        chat_id=user_id,
-                        text=message,
-                        parse_mode="HTML",
-                        reply_markup=keyboard
+                        chat_id=user_id, text=message, parse_mode="HTML", reply_markup=keyboard
                     )
                 else:
-                    await self.bot.send_message(
-                        chat_id=user_id,
-                        text=message,
-                        parse_mode="HTML"
-                    )
+                    await self.bot.send_message(chat_id=user_id, text=message, parse_mode="HTML")
 
                 stats["sent"] += 1
                 await asyncio.sleep(0.5)  # Rate limiting
@@ -412,26 +412,32 @@ class RetentionNotifier:
         await self._ensure_aux_tables()
         async with self.db.pool.acquire() as conn:
             # Общее количество отправленных
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM retention_notifications
-            """)
+            """
+            )
             total_sent = (await cursor.fetchone())[0]
             await cursor.close()
 
             # По сценариям
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT scenario, COUNT(*) as count
                 FROM retention_notifications
                 GROUP BY scenario
                 ORDER BY count DESC
-            """)
+            """
+            )
             by_scenario = {row[0]: row[1] for row in await cursor.fetchall()}
             await cursor.close()
 
             # Заблокированные пользователи
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM blocked_users
-            """)
+            """
+            )
             blocked_row = await cursor.fetchone()
             blocked_count = blocked_row[0] if blocked_row else 0
             await cursor.close()
@@ -439,7 +445,7 @@ class RetentionNotifier:
             return {
                 "total_sent": total_sent,
                 "by_scenario": by_scenario,
-                "blocked_users": blocked_count
+                "blocked_users": blocked_count,
             }
 
 

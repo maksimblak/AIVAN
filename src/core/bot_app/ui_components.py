@@ -4,8 +4,10 @@ UI компоненты для Telegram бота ИИ-Иван
 """
 
 from __future__ import annotations
+
 import re
 from html import escape as html_escape
+
 # ============ ЭМОДЗИ КОНСТАНТЫ ============
 
 
@@ -45,6 +47,7 @@ class Emoji:
     DOWNLOAD = "📥"
     CLOCK = "🕒"
     CALENDAR = "📅"
+
 
 # ============ ШАБЛОНЫ СООБЩЕНИЙ (MarkdownV2) ============
 
@@ -158,7 +161,23 @@ def escape_markdown_v2(text: str) -> str:
 # ============ HTML ФОРМАТИРОВАНИЕ ДЛЯ STREAMING ============
 
 # --- Telegram HTML sanitizer (allowlist) ---
-ALLOWED_TAGS = {"b","strong","i","em","u","ins","s","strike","del","code","pre","a","br","tg-spoiler","blockquote"}
+ALLOWED_TAGS = {
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "ins",
+    "s",
+    "strike",
+    "del",
+    "code",
+    "pre",
+    "a",
+    "br",
+    "tg-spoiler",
+    "blockquote",
+}
 _TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>", re.IGNORECASE)
 _HREF_RE = re.compile(
     r"href\s*=\s*(\"([^\"]*)\"|'([^']*)'|([^\s\"'=`<>]+))",
@@ -183,7 +202,6 @@ _SIMPLE_TAGS = frozenset(
 )
 
 
-
 def sanitize_telegram_html(html: str) -> str:
     """Sanitize Telegram HTML while keeping allowed markup balanced."""
     if not html:
@@ -199,8 +217,7 @@ def sanitize_telegram_html(html: str) -> str:
             parts.append(html_escape(segment))
 
     def _escape_tag(token: str) -> str:
-        return token.replace('&', '&amp;').replace('<', '&lt;')
-
+        return token.replace("&", "&amp;").replace("<", "&lt;")
 
     for match in _TAG_RE.finditer(html):
         start_pos, end_pos = match.span()
@@ -266,4 +283,3 @@ def sanitize_telegram_html(html: str) -> str:
         parts.append(f"</{open_stack.pop()}>")
 
     return "".join(parts)
-

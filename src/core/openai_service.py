@@ -21,10 +21,7 @@ try:
 except Exception:  # noqa: BLE001
     oai_ask_legal_stream = None  # type: ignore
 
-from core.bot_app.openai_gateway import (
-    close_async_openai_client,
-    format_legal_response_text,
-)
+from core.bot_app.openai_gateway import close_async_openai_client, format_legal_response_text
 from src.core.attachments import QuestionAttachment
 
 from .cache import ResponseCache
@@ -53,7 +50,9 @@ async def _safe_fire_callback(
         await result
 
 
-async def _call_gateway_with_fallback(func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any) -> Any:
+async def _call_gateway_with_fallback(
+    func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
+) -> Any:
     """
     Универсальный вызов gateway с фолбэком: если он не принимает новые параметры
     (например, reasoning_effort / text_verbosity), повторяем без них.
@@ -240,7 +239,9 @@ class OpenAIService:
                             await _safe_fire_callback(callback, formatted_text, True)
                         else:
                             for i in range(0, len(formatted_text), pseudo_chunk):
-                                await _safe_fire_callback(callback, formatted_text[i : i + pseudo_chunk], False)
+                                await _safe_fire_callback(
+                                    callback, formatted_text[i : i + pseudo_chunk], False
+                                )
                             await _safe_fire_callback(callback, "", True)
                     self.last_full_text = formatted_text
                     cached = dict(cached)
@@ -277,7 +278,9 @@ class OpenAIService:
                     **stream_kwargs,
                 )
             except TypeError as e:
-                logger.debug("Gateway streaming signature mismatch (%s). Retrying with reduced kwargs.", e)
+                logger.debug(
+                    "Gateway streaming signature mismatch (%s). Retrying with reduced kwargs.", e
+                )
                 # минимальный набор для совместимости
                 fallback_kwargs = {
                     "attachments": attachments,
@@ -375,7 +378,9 @@ class OpenAIService:
                     await _safe_fire_callback(callback, formatted_text, True)
                 else:
                     for i in range(0, len(formatted_text), pseudo_chunk):
-                        await _safe_fire_callback(callback, formatted_text[i : i + pseudo_chunk], False)
+                        await _safe_fire_callback(
+                            callback, formatted_text[i : i + pseudo_chunk], False
+                        )
                     await _safe_fire_callback(callback, "", True)
 
             self.last_full_text = formatted_text
@@ -383,7 +388,13 @@ class OpenAIService:
             if isinstance(result, dict):
                 result["text"] = formatted_text
 
-            if self.cache and self.enable_cache and not attachments and result.get("ok") and result.get("text"):
+            if (
+                self.cache
+                and self.enable_cache
+                and not attachments
+                and result.get("ok")
+                and result.get("text")
+            ):
                 try:
                     await self.cache.cache_response(
                         system_prompt,
@@ -409,7 +420,7 @@ class OpenAIService:
         attachments: Sequence[QuestionAttachment] | None = None,
         stream_callback: StreamCallback | None = None,
         force_refresh: bool = False,
-        model: str | None = None,    # зарезервировано
+        model: str | None = None,  # зарезервировано
         user_id: int | None = None,  # для метрик/трассировки (не используем здесь)
         max_output_tokens: int | None = None,
         reasoning_effort: Optional[ReasoningEffort] = None,
@@ -421,6 +432,7 @@ class OpenAIService:
 
         if not system_prompt:
             from core.bot_app.promt import LEGAL_SYSTEM_PROMPT  # noqa: WPS433
+
             system_prompt = LEGAL_SYSTEM_PROMPT
 
         if stream_callback:

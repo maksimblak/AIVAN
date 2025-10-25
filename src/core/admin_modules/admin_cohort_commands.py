@@ -2,14 +2,13 @@
 Админ-команды для когортного анализа
 """
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from src.core.admin_modules.admin_formatters import format_trend
 from src.core.admin_modules.admin_utils import FEATURE_KEYS, edit_or_answer, require_admin
 from src.core.admin_modules.cohort_analytics import CohortAnalytics
-from src.core.admin_modules.admin_formatters import format_trend
-
 
 cohort_router = Router(name="cohort_admin")
 
@@ -41,19 +40,30 @@ async def cmd_cohort(message: Message, db, admin_ids: list[int]):
     for cohort in comparison.cohorts_data[:6]:
         text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} пользователей)\n"
         text += f"  День 1: {cohort.day_1_retention:.1f}% | День 7: {cohort.day_7_retention:.1f}%\n"
-        text += f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        text += (
+            f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        )
         text += f"  Конверсия: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
 
     # Кнопки
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🎯 Использование функций", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="📈 Кривые удержания", callback_data="cohort:retention_curves")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
+            [
+                InlineKeyboardButton(
+                    text="🎯 Использование функций", callback_data="cohort:feature_adoption"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📈 Кривые удержания", callback_data="cohort:retention_curves"
+                )
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")],
+        ]
+    )
 
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-
 
 
 @cohort_router.callback_query(F.data == "cohort:refresh")
@@ -80,15 +90,27 @@ async def handle_cohort_refresh(callback: CallbackQuery, db, admin_ids: list[int
     for cohort in comparison.cohorts_data[:6]:
         text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} пользователей)\n"
         text += f"  День 1: {cohort.day_1_retention:.1f}% | День 7: {cohort.day_7_retention:.1f}%\n"
-        text += f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        text += (
+            f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        )
         text += f"  Конверсия: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🎯 Использование функций", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="📈 Кривые удержания", callback_data="cohort:retention_curves")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
+            [
+                InlineKeyboardButton(
+                    text="🎯 Использование функций", callback_data="cohort:feature_adoption"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📈 Кривые удержания", callback_data="cohort:retention_curves"
+                )
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
 
@@ -103,12 +125,14 @@ async def handle_select_month(callback: CallbackQuery, db, admin_ids: list[int])
     # Создать кнопки для выбора когорты
     buttons = []
     for cohort in comparison.cohorts_data[:6]:
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{cohort.cohort_month} ({cohort.cohort_size} пользователей)",
-                callback_data=f"cohort:details:{cohort.cohort_month}"
-            )
-        ])
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{cohort.cohort_month} ({cohort.cohort_size} пользователей)",
+                    callback_data=f"cohort:details:{cohort.cohort_month}",
+                )
+            ]
+        )
 
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="cohort:back")])
 
@@ -159,10 +183,12 @@ async def handle_cohort_details(callback: CallbackQuery, db, admin_ids: list[int
     if cohort.avg_days_to_churn:
         text += f"  Среднее число дней до оттока: {cohort.avg_days_to_churn:.1f}\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="cohort:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="cohort:select_month")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="cohort:back")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -177,18 +203,22 @@ async def handle_feature_adoption(callback: CallbackQuery, db, admin_ids: list[i
 
     buttons = []
     for feature in features:
-        buttons.append([
-            InlineKeyboardButton(
-                text=feature.replace("_", " ").title(),
-                callback_data=f"cohort:feature:{feature}"
-            )
-        ])
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=feature.replace("_", " ").title(),
+                    callback_data=f"cohort:feature:{feature}",
+                )
+            ]
+        )
 
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="cohort:back")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await edit_or_answer(callback, "🎯 <b>Выберите фичу для анализа использования по когортам:</b>", keyboard)
+    await edit_or_answer(
+        callback, "🎯 <b>Выберите фичу для анализа использования по когортам:</b>", keyboard
+    )
     await callback.answer()
 
 
@@ -223,10 +253,12 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
     else:
         text += "⚠️ Фича не улучшает удержание — возможно стоит переработать\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад к фичам", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="cohort:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад к фичам", callback_data="cohort:feature_adoption")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="cohort:back")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -261,9 +293,9 @@ async def handle_retention_curves(callback: CallbackQuery, db, admin_ids: list[i
         text += f"  Д30: {day_30_bar} {cohort.day_30_retention:.0f}%\n"
         text += f"  Д90: {day_90_bar} {cohort.day_90_retention:.0f}%\n\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="cohort:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="cohort:back")]]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -290,15 +322,27 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
     for cohort in comparison.cohorts_data[:6]:
         text += f"<b>{cohort.cohort_month}</b> ({cohort.cohort_size} пользователей)\n"
         text += f"  День 1: {cohort.day_1_retention:.1f}% | День 7: {cohort.day_7_retention:.1f}%\n"
-        text += f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        text += (
+            f"  День 30: {cohort.day_30_retention:.1f}% | День 90: {cohort.day_90_retention:.1f}%\n"
+        )
         text += f"  Конверсия: {cohort.conversion_rate:.1f}% | ARPU: {cohort.arpu:.0f}₽\n\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
-        [InlineKeyboardButton(text="🎯 Использование функций", callback_data="cohort:feature_adoption")],
-        [InlineKeyboardButton(text="📈 Кривые удержания", callback_data="cohort:retention_curves")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Детали когорты", callback_data="cohort:select_month")],
+            [
+                InlineKeyboardButton(
+                    text="🎯 Использование функций", callback_data="cohort:feature_adoption"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📈 Кривые удержания", callback_data="cohort:retention_curves"
+                )
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="cohort:refresh")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()

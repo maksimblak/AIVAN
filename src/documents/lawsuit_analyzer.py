@@ -1,4 +1,3 @@
-
 import json
 import logging
 import re
@@ -57,7 +56,6 @@ LAWSUIT_RESPONSE_SCHEMA: dict[str, Any] = {
             "demands": {"type": "array", "items": {"type": "string"}},
             "legal_basis": {"type": "array", "items": {"type": "string"}},
             "evidence": {"type": "array", "items": {"type": "string"}},
-
             # ниже — НЕ обязательные поля (пусть модель их заполняет, но валидатор не валится)
             "strengths": {"type": "array", "items": {"type": "string"}},
             "risks": {"type": "array", "items": {"type": "string"}},
@@ -349,9 +347,11 @@ LAWSUIT_ANALYSIS_USER_PROMPT = """
 
 # ---------------- JSON извлечение ----------------
 
+
 def _strip_markup(s: Any) -> str:
     s = "" if s is None else str(s)
     return _TAG_RE.sub("", s).strip()
+
 
 def _repair_truncated_json(payload: str) -> str | None:
     if not payload:
@@ -387,6 +387,7 @@ def _repair_truncated_json(payload: str) -> str | None:
     fixed = "".join(res)
     return fixed if fixed != payload else None
 
+
 def _iter_json_blocks(text: str) -> Iterable[str]:
     s = text or ""
     n = len(s)
@@ -420,6 +421,7 @@ def _iter_json_blocks(text: str) -> Iterable[str]:
                 j += 1
         i += 1
 
+
 def _score_payload(obj: Mapping[str, Any]) -> int:
     score = 0
     for k in EXPECTED_TOP_KEYS:
@@ -432,6 +434,7 @@ def _score_payload(obj: Mapping[str, Any]) -> int:
     if isinstance(obj.get("case_law"), (list, tuple)):
         score += 1
     return score
+
 
 def _extract_best_json(payload: str) -> tuple[dict[str, Any], bool]:
     """Просканировать все JSON-блоки и взять наиболее «похожий на целевой»."""
@@ -467,7 +470,9 @@ def _extract_best_json(payload: str) -> tuple[dict[str, Any], bool]:
         raise ProcessingError("Не удалось разобрать JSON из ответа модели", "PARSE_ERROR")
     return best, repaired_used
 
+
 # ---------------- Нормализация ----------------
+
 
 def _clean_list(items: Any) -> list[str]:
     cleaned: list[str] = []
@@ -481,6 +486,7 @@ def _clean_list(items: Any) -> list[str]:
         if text:
             cleaned.append(text)
     return cleaned
+
 
 def _normalize_case_law(items: Any) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
@@ -502,6 +508,7 @@ def _normalize_case_law(items: Any) -> list[dict[str, str]]:
         normalized.append({"court": court, "year": year, "link": link, "summary": summary})
     return normalized
 
+
 def _analysis_has_content(analysis: Mapping[str, Any]) -> bool:
     for value in analysis.values():
         if isinstance(value, str):
@@ -520,6 +527,7 @@ def _analysis_has_content(analysis: Mapping[str, Any]) -> bool:
                         return True
     return False
 
+
 def _is_empty_block(value: Any) -> bool:
     if value is None:
         return True
@@ -530,6 +538,7 @@ def _is_empty_block(value: Any) -> bool:
     if isinstance(value, (list, tuple, set)):
         return all(_is_empty_block(v) for v in value)
     return False
+
 
 _REQUIRED_SECTIONS = [
     "summary",
@@ -545,6 +554,7 @@ _REQUIRED_SECTIONS = [
     "improvement_steps",
 ]
 
+
 def _detect_missing_sections(analysis: Mapping[str, Any]) -> list[str]:
     missing: list[str] = []
     for key in _REQUIRED_SECTIONS:
@@ -552,7 +562,9 @@ def _detect_missing_sections(analysis: Mapping[str, Any]) -> list[str]:
             missing.append(key)
 
     strategy = analysis.get("strategy") or {}
-    if _is_empty_block(strategy.get("success_probability")) or _is_empty_block(strategy.get("actions")):
+    if _is_empty_block(strategy.get("success_probability")) or _is_empty_block(
+        strategy.get("actions")
+    ):
         missing.append("strategy")
 
     parties = analysis.get("parties") or {}
@@ -563,6 +575,7 @@ def _detect_missing_sections(analysis: Mapping[str, Any]) -> list[str]:
         missing.append("case_law")
 
     return sorted(set(missing))
+
 
 def _build_followup_instruction(missing_sections: list[str], was_truncated: bool) -> str:
     parts = [
@@ -577,6 +590,7 @@ def _build_followup_instruction(missing_sections: list[str], was_truncated: bool
         parts.append("Пиши короче, но не пропускай поля.")
     parts.append("Верни один валидный JSON-объект, без пояснений.")
     return "\n".join(parts)
+
 
 def _build_fallback_markdown(raw_text: str) -> str:
     """
@@ -614,7 +628,9 @@ def _build_fallback_markdown(raw_text: str) -> str:
     lines = ["# Анализ искового заявления", "", "## Ответ модели", cleaned.strip(), ""]
     return "\n".join(lines).strip()
 
+
 # ---------------- Основной процессор ----------------
+
 
 class LawsuitAnalyzer(DocumentProcessor):
     """Анализирует исковые заявления: требования, доказательства, риски и рекомендации."""
@@ -661,7 +677,11 @@ class LawsuitAnalyzer(DocumentProcessor):
             excerpt += "\n\n[Текст усечён для анализа из-за ограничения по объёму]"
 
         user_prompt = LAWSUIT_ANALYSIS_USER_PROMPT.format(
-            truncated_hint="Документ передан частично, отметь недостающие элементы." if truncated else "Документ передан полностью.",
+            truncated_hint=(
+                "Документ передан частично, отметь недостающие элементы."
+                if truncated
+                else "Документ передан полностью."
+            ),
             document_excerpt=excerpt,
         )
 
@@ -678,8 +698,12 @@ class LawsuitAnalyzer(DocumentProcessor):
 
         # Основной заход + один follow-up (компактный)
         for attempt in range(1, 3):
-            prompt_body = user_prompt if not extra_instruction else (
-                f"{user_prompt}\n\n=== ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ ===\n{extra_instruction.strip()}"
+            prompt_body = (
+                user_prompt
+                if not extra_instruction
+                else (
+                    f"{user_prompt}\n\n=== ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ ===\n{extra_instruction.strip()}"
+                )
             )
 
             response = await self.openai_service.ask_legal(
@@ -688,12 +712,14 @@ class LawsuitAnalyzer(DocumentProcessor):
                 force_refresh=(attempt > 1),
                 use_schema=True,
                 response_schema=LAWSUIT_RESPONSE_SCHEMA,
-                enable_web=False,            # web-tools жёстко отключены
+                enable_web=False,  # web-tools жёстко отключены
                 temperature=0.3,
                 max_output_tokens=3800,
             )
             if not response.get("ok"):
-                raise ProcessingError(response.get("error") or "Не удалось получить ответ от модели", "OPENAI_ERROR")
+                raise ProcessingError(
+                    response.get("error") or "Не удалось получить ответ от модели", "OPENAI_ERROR"
+                )
 
             structured_payload = response.get("structured")
             raw_text = (response.get("text") or "").strip()
@@ -712,8 +738,12 @@ class LawsuitAnalyzer(DocumentProcessor):
             analysis_candidate = {
                 "summary": _strip_markup(payload.get("summary") or ""),
                 "parties": {
-                    "plaintiff": _strip_markup((payload.get("parties") or {}).get("plaintiff") or ""),
-                    "defendant": _strip_markup((payload.get("parties") or {}).get("defendant") or ""),
+                    "plaintiff": _strip_markup(
+                        (payload.get("parties") or {}).get("plaintiff") or ""
+                    ),
+                    "defendant": _strip_markup(
+                        (payload.get("parties") or {}).get("defendant") or ""
+                    ),
                     "other": _clean_list((payload.get("parties") or {}).get("other")),
                 },
                 "demands": _clean_list(payload.get("demands")),
@@ -728,7 +758,9 @@ class LawsuitAnalyzer(DocumentProcessor):
                 "overall_assessment": _strip_markup(payload.get("overall_assessment") or ""),
                 "risk_highlights": _clean_list(payload.get("risk_highlights")),
                 "strategy": {
-                    "success_probability": _strip_markup(strategy_payload.get("success_probability") or ""),
+                    "success_probability": _strip_markup(
+                        strategy_payload.get("success_probability") or ""
+                    ),
                     "actions": _clean_list(strategy_payload.get("actions")),
                 },
                 "case_law": _normalize_case_law(payload.get("case_law")),
@@ -773,8 +805,12 @@ class LawsuitAnalyzer(DocumentProcessor):
                     analysis2 = {
                         "summary": str(payload2.get("summary") or "").strip(),
                         "parties": {
-                            "plaintiff": str((payload2.get("parties") or {}).get("plaintiff") or "").strip(),
-                            "defendant": str((payload2.get("parties") or {}).get("defendant") or "").strip(),
+                            "plaintiff": str(
+                                (payload2.get("parties") or {}).get("plaintiff") or ""
+                            ).strip(),
+                            "defendant": str(
+                                (payload2.get("parties") or {}).get("defendant") or ""
+                            ).strip(),
                             "other": _clean_list((payload2.get("parties") or {}).get("other")),
                         },
                         "demands": _clean_list(payload2.get("demands")),
@@ -789,7 +825,9 @@ class LawsuitAnalyzer(DocumentProcessor):
                         "overall_assessment": str(payload2.get("overall_assessment") or "").strip(),
                         "risk_highlights": _clean_list(payload2.get("risk_highlights")),
                         "strategy": {
-                            "success_probability": str(strategy2.get("success_probability") or "").strip(),
+                            "success_probability": str(
+                                strategy2.get("success_probability") or ""
+                            ).strip(),
                             "actions": _clean_list(strategy2.get("actions")),
                         },
                         "case_law": _normalize_case_law(payload2.get("case_law")),
@@ -817,7 +855,9 @@ class LawsuitAnalyzer(DocumentProcessor):
             else:
                 cleaned_fallback = TextProcessor.clean_text(raw_trim)
                 if not cleaned_fallback:
-                    raise ProcessingError("Модель вернула пустой ответ, повторите запрос позднее.", "EMPTY_ANALYSIS")
+                    raise ProcessingError(
+                        "Модель вернула пустой ответ, повторите запрос позднее.", "EMPTY_ANALYSIS"
+                    )
                 analysis["summary"] = cleaned_fallback[:600]
                 analysis["fallback_raw_text"] = cleaned_fallback
                 fallback_markdown = _build_fallback_markdown(raw_trim)
@@ -827,7 +867,9 @@ class LawsuitAnalyzer(DocumentProcessor):
         if payload_repaired:
             raw_response_for_storage = f"{raw_text}\n\n[truncated]"
         if follow_up_used:
-            analysis.setdefault("meta_notes", []).append("Выполнен повторный запрос из-за неполного ответа модели.")
+            analysis.setdefault("meta_notes", []).append(
+                "Выполнен повторный запрос из-за неполного ответа модели."
+            )
 
         confidence_label = analysis.get("confidence")
         if confidence_label:
@@ -835,7 +877,11 @@ class LawsuitAnalyzer(DocumentProcessor):
         else:
             await _notify("analysis_ready", 85.0)
 
-        markdown_report = fallback_markdown if (fallback_used and fallback_markdown) else self._build_markdown_report(analysis)
+        markdown_report = (
+            fallback_markdown
+            if (fallback_used and fallback_markdown)
+            else self._build_markdown_report(analysis)
+        )
 
         await _notify("completed", 100.0)
 

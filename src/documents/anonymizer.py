@@ -15,23 +15,23 @@
 from __future__ import annotations
 
 import base64 as _b64
-import json
-import hmac
 import hashlib as _hash
+import hmac
+import json
 import logging
-from src.core.settings import AppSettings
-
 import re
 import tempfile
-from datetime import datetime
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Awaitable, Callable, Dict, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List
+
+from src.core.settings import AppSettings
 
 try:
     from docx import Document
-    from docx.table import _Cell, Table
+    from docx.table import Table, _Cell
     from docx.text.paragraph import Paragraph
 
     _HAS_DOCX = True
@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------- ВАЛИДАЦИИ / УТИЛИТЫ ----------------------------
+
 
 def _digits(s: str) -> str:
     return "".join(ch for ch in s if ch.isdigit())
@@ -104,11 +105,10 @@ def _inn_ok(inn: str) -> bool:
         return c1 == int(d[10]) and c2 == int(d[11])
     return False
 
+
 def _is_passport(doc: str) -> bool:
     digits = _digits(doc)
     return len(digits) == 10
-
-
 
 
 def _iban_ok(iban: str) -> bool:
@@ -126,7 +126,7 @@ def _iban_ok(iban: str) -> bool:
     n = "".join(num)
     rem = 0
     for i in range(0, len(n), 9):
-        rem = int(str(rem) + n[i:i + 9]) % 97
+        rem = int(str(rem) + n[i : i + 9]) % 97
     return rem == 1
 
 
@@ -180,6 +180,7 @@ def _pseudo_id(kind: str, original: str, secret: bytes) -> str:
 
 # ------------------------------- ПАТТЕРНЫ -------------------------------
 
+
 @dataclass
 class PatternSpec:
     kind: str
@@ -190,7 +191,8 @@ class PatternSpec:
 
 # ------------------------------ ОСНОВНОЙ КЛАСС ------------------------------
 
-_AI_SYSTEM_PROMPT = dedent("""
+_AI_SYSTEM_PROMPT = dedent(
+    """
 
     Ты – специализированный эксперт по полной анонимизации юридических документов. Твоя единственная цель – 
     удалить все персонально идентифицирующие данные (PII), сохраняя при этом АБСОЛЮТНО ВСЕ: юридическую значимость, 
@@ -459,7 +461,10 @@ class DocumentAnonymizer(DocumentProcessor):
         # Набор паттернов с минимизацией фолс-позитивов
         self._specs: List[PatternSpec] = [
             # ФИО: 2–3 слова, каждое ≥2 символов (отсечь «И.П.»)
-            PatternSpec("names", r"\b[А-ЯЁ][а-яё]+(?:ов|ев|ёв|ин|ын|кий|цкий|ская|цкая|ова|ева|ёва|ина|ына|ский|ской)\b\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b"),
+            PatternSpec(
+                "names",
+                r"\b[А-ЯЁ][а-яё]+(?:ов|ев|ёв|ин|ын|кий|цкий|ская|цкая|ова|ева|ёва|ина|ына|ский|ской)\b\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b",
+            ),
             # Телефоны: международные/локальные, суммарно 10–15 цифр
             PatternSpec(
                 "phones",
@@ -478,9 +483,7 @@ class DocumentAnonymizer(DocumentProcessor):
             PatternSpec(
                 "documents",
                 r"\b(?:(?:серия\s*)?\d{4}(?:\s*№\s*|\s+)?\d{6}|\d{3}-?\d{3}-?\d{3}\s?\d{2}|\d{10}|\d{12})\b",
-                validate=lambda s: (
-                    _snils_ok(s) or _inn_ok(s) or _is_passport(s)
-                ),
+                validate=lambda s: (_snils_ok(s) or _inn_ok(s) or _is_passport(s)),
             ),
             # Банковские реквизиты: р/с 20, БИК 9, карты 13–19 (Luhn)
             PatternSpec(
@@ -512,21 +515,35 @@ class DocumentAnonymizer(DocumentProcessor):
             if spec.label is None and spec.kind in label_overrides:
                 spec.label = label_overrides[spec.kind]
 
-        self._specs.extend([
-            PatternSpec("badge_numbers", r"\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\d{3,10}\b", label="Табельный номер"),
-            PatternSpec("registration_numbers", r"\b(?:огрн(?:ип)?|грн|рег\.?\s*№?|окпо|оквэд|свид\.?|гос\.?рег\.?№?)\s*[:№-]*[a-z0-9\-]{5,25}\b", label="Регистрационный номер"),
-            PatternSpec("domains", r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b", label="Домен"),
-            PatternSpec("urls", r"\bhttps?://[^\s<'\"]+", label="Ссылка"),
-        ])
+        self._specs.extend(
+            [
+                PatternSpec(
+                    "badge_numbers",
+                    r"\b(?:таб\.?|табельный)\s*(?:номер|№)\s*\d{3,10}\b",
+                    label="Табельный номер",
+                ),
+                PatternSpec(
+                    "registration_numbers",
+                    r"\b(?:огрн(?:ип)?|грн|рег\.?\s*№?|окпо|оквэд|свид\.?|гос\.?рег\.?№?)\s*[:№-]*[a-z0-9\-]{5,25}\b",
+                    label="Регистрационный номер",
+                ),
+                PatternSpec(
+                    "domains",
+                    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b",
+                    label="Домен",
+                ),
+                PatternSpec("urls", r"\bhttps?://[^\s<'\"]+", label="Ссылка"),
+            ]
+        )
 
         self._base_specs: List[PatternSpec] = list(self._specs)
 
     @staticmethod
     def _normalize_pattern(pattern: str) -> str:
-        match = re.match(r'^\(\?([aiLmsux]+)\)(.*)$', pattern, flags=re.DOTALL)
+        match = re.match(r"^\(\?([aiLmsux]+)\)(.*)$", pattern, flags=re.DOTALL)
         if match:
             flags, rest = match.groups()
-            return f'(?{flags}:{rest})'
+            return f"(?{flags}:{rest})"
         return pattern
 
     # --------------------------------- API ---------------------------------
@@ -543,6 +560,7 @@ class DocumentAnonymizer(DocumentProcessor):
         """
         Обезличивание документа.
         """
+
         async def _notify(stage: str, percent: float, **payload: Any) -> None:
             if not progress_callback:
                 return
@@ -605,7 +623,10 @@ class DocumentAnonymizer(DocumentProcessor):
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AI anonymization failed, using rule-based fallback: %s", exc)
-                report = {"engine": "fallback", "notes": ["AI anonymization failed; rule-based fallback applied"]}
+                report = {
+                    "engine": "fallback",
+                    "notes": ["AI anonymization failed; rule-based fallback applied"],
+                }
                 use_ai = False
         if not use_ai:
             await _notify("pattern_prepare", 35, excluded=len(exclude_set))
@@ -977,7 +998,13 @@ class DocumentAnonymizer(DocumentProcessor):
                 self._apply_matches_to_runs(runs, matches)
             if progress_callback:
                 percent = 40 + (index / max(1, total)) * 40
-                await progress_callback({"stage": "anonymizing", "percent": percent, "masked": len(self.anonymization_map)})
+                await progress_callback(
+                    {
+                        "stage": "anonymizing",
+                        "percent": percent,
+                        "masked": len(self.anonymization_map),
+                    }
+                )
 
         output_path = self._build_temp_docx_path(file_path, "анонимизация")
         doc.save(str(output_path))
@@ -990,7 +1017,10 @@ class DocumentAnonymizer(DocumentProcessor):
             "excluded_types": sorted(exclude_set) if exclude_set else [],
         }
         if custom_specs:
-            report["custom_patterns"] = [{"kind": spec.kind, "label": label_map.get(spec.kind, spec.label)} for spec in custom_specs]
+            report["custom_patterns"] = [
+                {"kind": spec.kind, "label": label_map.get(spec.kind, spec.label)}
+                for spec in custom_specs
+            ]
 
         anonymized_text = "\n\n".join(part for part in plain_parts if part is not None)
 
@@ -1311,7 +1341,9 @@ class DocumentAnonymizer(DocumentProcessor):
                 try:
                     return json.loads(snippet)
                 except json.JSONDecodeError:  # noqa: PERF203
-                    logger.debug("Failed to parse AI anonymization JSON snippet: %s", snippet, exc_info=True)
+                    logger.debug(
+                        "Failed to parse AI anonymization JSON snippet: %s", snippet, exc_info=True
+                    )
                     return None
             logger.debug("Failed to parse AI anonymization JSON: %s", cleaned, exc_info=True)
             return None

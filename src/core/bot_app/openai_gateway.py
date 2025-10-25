@@ -45,6 +45,7 @@ Verbosity = Literal["low", "medium", "high"]
 # Helpers: attachments → user message content
 # --------------------------------------------------------------------------------------
 
+
 def _get_env_non_negative_int(name: str, default: int) -> int:
     settings = _settings()
     raw = settings.get_str(name)
@@ -96,7 +97,9 @@ def _build_user_message_content(
                 encoded = base64.b64encode(data_bytes).decode("ascii")
                 chunk = f"{details}Base64 contents:\n{encoded}"
             elif inline_limit and size_bytes > inline_limit:
-                chunk = f"{details}Contents omitted: size exceeds inline limit of {inline_limit} bytes."
+                chunk = (
+                    f"{details}Contents omitted: size exceeds inline limit of {inline_limit} bytes."
+                )
             else:
                 chunk = f"{details}Contents omitted: inline attachments are disabled."
             content.append({"type": "text", "text": chunk})
@@ -183,6 +186,7 @@ def _settings() -> AppSettings:
 # Structured → simple text (для LEGAL_RESPONSE_SCHEMA; остаётся как fallback)
 # --------------------------------------------------------------------------------------
 
+
 def _normalise_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
     def _convert(value: Any) -> Any:
         if isinstance(value, Mapping):
@@ -190,6 +194,7 @@ def _normalise_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(value, list):
             return [_convert(item) for item in value]
         return value
+
     return {str(key): _convert(val) for key, val in data.items()}
 
 
@@ -276,7 +281,12 @@ def _extract_text_from_content(
     structured_sink: list[Mapping[str, Any]] | None = None,
 ) -> str | None:
     def _store(candidate: Mapping[str, Any] | None) -> None:
-        if candidate and structured_sink is not None and not structured_sink and not _is_noise_mapping(candidate):
+        if (
+            candidate
+            and structured_sink is not None
+            and not structured_sink
+            and not _is_noise_mapping(candidate)
+        ):
             structured_sink.append(_normalise_mapping(candidate))
 
     if hasattr(content, "model_dump"):
@@ -348,6 +358,7 @@ def _extract_text_from_content(
 # --------------------------------------------------------------------------------------
 # Telegram HTML formatter
 # --------------------------------------------------------------------------------------
+
 
 class _TelegramHTMLFormatter(HTMLParser):
     """Convert model output into Telegram-compatible HTML."""
@@ -606,6 +617,7 @@ def format_legal_response_text(raw: str) -> str:
 # --------------------------------------------------------------------------------------
 # OpenAI Async client (shared)
 # --------------------------------------------------------------------------------------
+
 
 def _get_env_float(name: str, default: float) -> float:
     settings = _settings()
@@ -880,6 +892,7 @@ async def ask_legal_stream(
 # Core invocation (Responses API)
 # --------------------------------------------------------------------------------------
 
+
 def _settings_dict() -> dict[str, Any]:
     s = _settings()
     verbosity = s.get_str("OPENAI_VERBOSITY")
@@ -981,11 +994,18 @@ async def _ask_legal_internal(
                 except Exception as e:
                     last_err = str(e)
                     if i == 1:
-                        return {"ok": False, "error": last_err, "structured": None, "finish_reasons": []}
+                        return {
+                            "ok": False,
+                            "error": last_err,
+                            "structured": None,
+                            "finish_reasons": [],
+                        }
                     await asyncio.sleep(0.6)
             _VALIDATED_MODELS.add(model_name)
 
-        def build_attempts(include_schema: bool, include_sampling_params: bool) -> list[dict[str, Any]]:
+        def build_attempts(
+            include_schema: bool, include_sampling_params: bool
+        ) -> list[dict[str, Any]]:
             payload_base: dict[str, Any] = {**base_core}
             # response_format — В КОРНЕ payload
             if include_schema and schema_payload:
@@ -997,10 +1017,16 @@ async def _ask_legal_internal(
                 payload_base |= sampling_payload
             # варианты: (с tools), (без tools), «boosted» на всякий случай
             with_tools = payload_base
-            without_tools = {k: v for k, v in payload_base.items() if k != "tools" and k != "tool_choice"}
+            without_tools = {
+                k: v for k, v in payload_base.items() if k != "tools" and k != "tool_choice"
+            }
             boosted_max = min(max_out * 2, 8192)
             boosted = without_tools | {"max_output_tokens": boosted_max}
-            return [with_tools, without_tools, boosted] if "tools" in payload_base else [without_tools, boosted]
+            return (
+                [with_tools, without_tools, boosted]
+                if "tools" in payload_base
+                else [without_tools, boosted]
+            )
 
         attempts = build_attempts(schema_supported, include_sampling)
 
@@ -1033,7 +1059,9 @@ async def _ask_legal_internal(
                                             if inspect.isawaitable(cb_result):
                                                 await cb_result
                                         except Exception as cb_err:
-                                            logger.warning("Callback error during streaming: %s", cb_err)
+                                            logger.warning(
+                                                "Callback error during streaming: %s", cb_err
+                                            )
 
                             final = await s.get_final_response()
                             usage_info = getattr(final, "usage", None)
@@ -1045,21 +1073,33 @@ async def _ask_legal_internal(
                             if not text:
                                 chunks: list[str] = []
                                 for it in items:
-                                    contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
+                                    contents = (
+                                        getattr(it, "content", None)
+                                        or (it.get("content") if isinstance(it, dict) else None)
+                                        or []
+                                    )
                                     before = len(chunks)
                                     for c in contents or []:
-                                        extracted = _extract_text_from_content(c, structured_collector)
+                                        extracted = _extract_text_from_content(
+                                            c, structured_collector
+                                        )
                                         if extracted:
                                             chunks.append(extracted)
                                     if not contents or len(chunks) == before:
-                                        extracted_item = _extract_text_from_content(it, structured_collector)
+                                        extracted_item = _extract_text_from_content(
+                                            it, structured_collector
+                                        )
                                         if extracted_item:
                                             chunks.append(extracted_item)
                                 text = "\n\n".join(chunks) if chunks else ""
                             else:
                                 # всё равно выгребем возможные json куски для structured
                                 for it in items:
-                                    contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
+                                    contents = (
+                                        getattr(it, "content", None)
+                                        or (it.get("content") if isinstance(it, dict) else None)
+                                        or []
+                                    )
                                     if contents:
                                         for c in contents:
                                             _extract_text_from_content(c, structured_collector)
@@ -1072,8 +1112,14 @@ async def _ask_legal_internal(
                             final_raw = (text or accumulated_text or "").strip()
                             finish_reasons = _collect_finish_reasons(items)
                             if logger.isEnabledFor(logging.DEBUG):
-                                logger.debug("OpenAI finish_reason=%s usage=%s", finish_reasons or "n/a", usage_info)
-                                logger.debug("OpenAI raw response (stream): %s", _truncate_for_log(final_raw))
+                                logger.debug(
+                                    "OpenAI finish_reason=%s usage=%s",
+                                    finish_reasons or "n/a",
+                                    usage_info,
+                                )
+                                logger.debug(
+                                    "OpenAI raw response (stream): %s", _truncate_for_log(final_raw)
+                                )
 
                             formatted_final = _clean_response_text(final_raw)
                             if callback and formatted_final:
@@ -1093,7 +1139,9 @@ async def _ask_legal_internal(
                                     "finish_reasons": finish_reasons,
                                 }
 
-                            logger.warning("OpenAI stream returned no text; trying next payload option")
+                            logger.warning(
+                                "OpenAI stream returned no text; trying next payload option"
+                            )
                             last_err = "empty_response"
                             continue
 
@@ -1106,7 +1154,11 @@ async def _ask_legal_internal(
 
                     if items:
                         for it in items:
-                            contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
+                            contents = (
+                                getattr(it, "content", None)
+                                or (it.get("content") if isinstance(it, dict) else None)
+                                or []
+                            )
                             if contents:
                                 for c in contents:
                                     _extract_text_from_content(c, structured_collector)
@@ -1120,11 +1172,17 @@ async def _ask_legal_internal(
                         raw = text.strip()
                         finish_reasons = _collect_finish_reasons(items)
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug("OpenAI finish_reason=%s usage=%s", finish_reasons or "n/a", usage_info)
+                            logger.debug(
+                                "OpenAI finish_reason=%s usage=%s",
+                                finish_reasons or "n/a",
+                                usage_info,
+                            )
                             logger.debug("OpenAI raw response: %s", _truncate_for_log(raw))
                         cleaned = _clean_response_text(raw)
                         if not cleaned:
-                            logger.warning("Response contained only auxiliary events; trying next payload")
+                            logger.warning(
+                                "Response contained only auxiliary events; trying next payload"
+                            )
                             last_err = "empty_response"
                             continue
                         structured_out = None
@@ -1144,7 +1202,11 @@ async def _ask_legal_internal(
                     # join chunks if no output_text
                     chunks: list[str] = []
                     for it in items:
-                        contents = getattr(it, "content", None) or (it.get("content") if isinstance(it, dict) else None) or []
+                        contents = (
+                            getattr(it, "content", None)
+                            or (it.get("content") if isinstance(it, dict) else None)
+                            or []
+                        )
                         before = len(chunks)
                         for c in contents or []:
                             extracted = _extract_text_from_content(c, structured_collector)
@@ -1159,15 +1221,23 @@ async def _ask_legal_internal(
                         joined = "\n\n".join(chunks).strip()
                         finish_reasons = _collect_finish_reasons(items)
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug("OpenAI finish_reason=%s usage=%s", finish_reasons or "n/a", usage_info)
-                            logger.debug("OpenAI raw response (joined): %s", _truncate_for_log(joined))
+                            logger.debug(
+                                "OpenAI finish_reason=%s usage=%s",
+                                finish_reasons or "n/a",
+                                usage_info,
+                            )
+                            logger.debug(
+                                "OpenAI raw response (joined): %s", _truncate_for_log(joined)
+                            )
                         cleaned_joined = _clean_response_text(joined)
                         if not cleaned_joined:
                             logger.warning("Joined chunks were auxiliary only; trying next payload")
                             last_err = "empty_response"
                             continue
                         structured_out = None
-                        if cleaned_joined.lstrip().startswith("{") and cleaned_joined.rstrip().endswith("}"):
+                        if cleaned_joined.lstrip().startswith(
+                            "{"
+                        ) and cleaned_joined.rstrip().endswith("}"):
                             try:
                                 structured_out = json.loads(cleaned_joined)
                             except Exception:
@@ -1187,14 +1257,22 @@ async def _ask_legal_internal(
                 except TypeError as type_err:
                     # проблемы совместимости SDK → убираем схему/семплинг и пробуем снова
                     message = str(type_err)
-                    if schema_supported and ("json_schema" in message or "response_format" in message or "format" in message):
-                        logger.warning("Responses API rejected structured output; retrying WITHOUT schema")
+                    if schema_supported and (
+                        "json_schema" in message
+                        or "response_format" in message
+                        or "format" in message
+                    ):
+                        logger.warning(
+                            "Responses API rejected structured output; retrying WITHOUT schema"
+                        )
                         schema_supported = False
                         attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
                     if include_sampling and ("temperature" in message or "top_p" in message):
-                        logger.warning("Responses API rejected sampling params; retrying with defaults")
+                        logger.warning(
+                            "Responses API rejected sampling params; retrying with defaults"
+                        )
                         include_sampling = False
                         caps["supports_sampling"] = False
                         attempts = build_attempts(schema_supported, include_sampling)
@@ -1205,14 +1283,23 @@ async def _ask_legal_internal(
 
                 except Exception as e:
                     message = str(e)
-                    if schema_supported and ("json_schema" in message or "response_format" in message or "format" in message or "structured" in message):
-                        logger.warning("OpenAI API error on structured output; retrying WITHOUT schema")
+                    if schema_supported and (
+                        "json_schema" in message
+                        or "response_format" in message
+                        or "format" in message
+                        or "structured" in message
+                    ):
+                        logger.warning(
+                            "OpenAI API error on structured output; retrying WITHOUT schema"
+                        )
                         schema_supported = False
                         attempts = build_attempts(schema_supported, include_sampling)
                         retry_payload = True
                         break
                     if include_sampling and ("temperature" in message or "top_p" in message):
-                        logger.warning("OpenAI API rejected sampling params; retrying with defaults")
+                        logger.warning(
+                            "OpenAI API rejected sampling params; retrying with defaults"
+                        )
                         include_sampling = False
                         caps["supports_sampling"] = False
                         attempts = build_attempts(schema_supported, include_sampling)

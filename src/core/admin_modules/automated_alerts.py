@@ -10,27 +10,28 @@
 """
 
 import asyncio
+import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape as html_escape
-import logging
 from typing import Any, Awaitable, Iterable
-import time
 
 logger = logging.getLogger(__name__)
 
 
 from src.core.admin_modules.cohort_analytics import CohortAnalytics
 from src.core.admin_modules.pmf_metrics import PMFMetrics
-from src.core.admin_modules.revenue_analytics import RevenueAnalytics
 from src.core.admin_modules.retention_analytics import RetentionAnalytics
+from src.core.admin_modules.revenue_analytics import RevenueAnalytics
 from src.core.user_behavior_tracker import UserBehaviorTracker
 
 
 @dataclass
 class Alert:
     """Структура alert"""
+
     severity: str  # "critical", "warning", "info"
     category: str  # "revenue", "retention", "pmf", "technical"
     title: str
@@ -51,12 +52,10 @@ def group_alerts_by_severity(alerts: Iterable["Alert"]) -> dict[str, list["Alert
     return groups
 
 
-
-
-
 @dataclass
 class AlertConfig:
     """Конфигурация alert правил"""
+
     # Revenue alerts
     mrr_drop_threshold: float = 10.0  # % падение MRR
     churn_spike_threshold: float = 20.0  # % рост churn
@@ -120,7 +119,11 @@ class AutomatedAlerts:
 
         async with self._alerts_cache_lock:
             now = time.time()
-            if not force_refresh and self._alerts_cache and (now - self._alerts_cache_timestamp) < ttl:
+            if (
+                not force_refresh
+                and self._alerts_cache
+                and (now - self._alerts_cache_timestamp) < ttl
+            ):
                 return list(self._alerts_cache)
 
             tasks = [
@@ -140,7 +143,6 @@ class AutomatedAlerts:
             self._alerts_cache_timestamp = now
             return list(alerts)
 
-
     async def _run_check(self, name: str, coroutine: Awaitable[list[Alert]]) -> list[Alert]:
         """Запустить проверку метрик с логированием ошибок"""
         try:
@@ -158,44 +160,50 @@ class AutomatedAlerts:
             current_mrr = await self.revenue_analytics.get_mrr_breakdown()
 
             if current_mrr.mrr_growth_rate < -self.config.mrr_drop_threshold:
-                alerts.append(Alert(
-                    severity="critical",
-                    category="revenue",
-                    title="🔴 Обнаружено падение MRR",
-                    message=f"MRR упал на {abs(current_mrr.mrr_growth_rate):.1f}% в {current_mrr.month}",
-                    metric_value=current_mrr.mrr_growth_rate,
-                    threshold=-self.config.mrr_drop_threshold,
-                    action_required="Проанализировать churn reasons, провести retention campaign",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+                alerts.append(
+                    Alert(
+                        severity="critical",
+                        category="revenue",
+                        title="🔴 Обнаружено падение MRR",
+                        message=f"MRR упал на {abs(current_mrr.mrr_growth_rate):.1f}% в {current_mrr.month}",
+                        metric_value=current_mrr.mrr_growth_rate,
+                        threshold=-self.config.mrr_drop_threshold,
+                        action_required="Проанализировать churn reasons, провести retention campaign",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
             # Churn spike
             if current_mrr.customer_churn_rate > self.config.churn_spike_threshold:
-                alerts.append(Alert(
-                    severity="critical",
-                    category="revenue",
-                    title="🚨 Высокий уровень оттока",
-                    message=f"Уровень оттока клиентов: {current_mrr.customer_churn_rate:.1f}% ({current_mrr.churned_customers} пользователей)",
-                    metric_value=current_mrr.customer_churn_rate,
-                    threshold=self.config.churn_spike_threshold,
-                    action_required="Запустить winback campaign, провести exit interviews",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+                alerts.append(
+                    Alert(
+                        severity="critical",
+                        category="revenue",
+                        title="🚨 Высокий уровень оттока",
+                        message=f"Уровень оттока клиентов: {current_mrr.customer_churn_rate:.1f}% ({current_mrr.churned_customers} пользователей)",
+                        metric_value=current_mrr.customer_churn_rate,
+                        threshold=self.config.churn_spike_threshold,
+                        action_required="Запустить winback campaign, провести exit interviews",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
             # Quick Ratio too low
             arr_metrics = await self.revenue_analytics.get_arr_metrics()
 
             if arr_metrics.quick_ratio < self.config.quick_ratio_min:
-                alerts.append(Alert(
-                    severity="warning",
-                    category="revenue",
-                    title="⚠️ Низкий Quick Ratio",
-                    message=f"Quick Ratio: {arr_metrics.quick_ratio:.2f} (цель: >{self.config.quick_ratio_min})",
-                    metric_value=arr_metrics.quick_ratio,
-                    threshold=self.config.quick_ratio_min,
-                    action_required="Фокус на уменьшении churn и увеличении expansion revenue",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+                alerts.append(
+                    Alert(
+                        severity="warning",
+                        category="revenue",
+                        title="⚠️ Низкий Quick Ratio",
+                        message=f"Quick Ratio: {arr_metrics.quick_ratio:.2f} (цель: >{self.config.quick_ratio_min})",
+                        metric_value=arr_metrics.quick_ratio,
+                        threshold=self.config.quick_ratio_min,
+                        action_required="Фокус на уменьшении churn и увеличении expansion revenue",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
         except Exception:
             logger.exception("Error checking revenue alerts")
@@ -214,31 +222,35 @@ class AutomatedAlerts:
                 latest_cohort = comparison.cohorts_data[0]
 
                 if latest_cohort.day_30_retention < self.config.day_30_retention_min:
-                    alerts.append(Alert(
-                        severity="warning",
-                        category="retention",
-                        title="📉 Низкое удержание на 30-й день",
-                        message=f"Когорта {latest_cohort.cohort_month}: {latest_cohort.day_30_retention:.1f}% удержание",
-                        metric_value=latest_cohort.day_30_retention,
-                        threshold=self.config.day_30_retention_min,
-                        action_required="Улучшить onboarding, добавить engagement hooks",
-                        timestamp=int(datetime.now().timestamp())
-                    ))
+                    alerts.append(
+                        Alert(
+                            severity="warning",
+                            category="retention",
+                            title="📉 Низкое удержание на 30-й день",
+                            message=f"Когорта {latest_cohort.cohort_month}: {latest_cohort.day_30_retention:.1f}% удержание",
+                            metric_value=latest_cohort.day_30_retention,
+                            threshold=self.config.day_30_retention_min,
+                            action_required="Улучшить onboarding, добавить engagement hooks",
+                            timestamp=int(datetime.now().timestamp()),
+                        )
+                    )
 
             # Power user churn
             churned_power_users = await self._count_churned_power_users(days=7)
 
             if churned_power_users >= self.config.power_user_churn_threshold:
-                alerts.append(Alert(
-                    severity="critical",
-                    category="retention",
-                    title="🔴 Уходят активные пользователи",
-                    message=f"{churned_power_users} активных пользователей ушли за последние 7 дней",
-                    metric_value=churned_power_users,
-                    threshold=self.config.power_user_churn_threshold,
-                    action_required="СРОЧНО связаться с ушедшими активными пользователями, выяснить причины",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+                alerts.append(
+                    Alert(
+                        severity="critical",
+                        category="retention",
+                        title="🔴 Уходят активные пользователи",
+                        message=f"{churned_power_users} активных пользователей ушли за последние 7 дней",
+                        metric_value=churned_power_users,
+                        threshold=self.config.power_user_churn_threshold,
+                        action_required="СРОЧНО связаться с ушедшими активными пользователями, выяснить причины",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
         except Exception:
             logger.exception("Error checking retention alerts")
@@ -248,7 +260,8 @@ class AutomatedAlerts:
     async def _count_churned_power_users(self, days: int = 7) -> int:
         """Подсчитать сколько power users ушли"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) as churned
                 FROM users u
                 WHERE u.total_requests > 50
@@ -259,7 +272,9 @@ class AutomatedAlerts:
                   AND u.subscription_until < strftime('%s', 'now')
                   AND u.last_active IS NOT NULL
                   AND (strftime('%s', 'now') - u.last_active) BETWEEN 0 AND ?
-            """, (86400 * days,))
+            """,
+                (86400 * days,),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -274,43 +289,51 @@ class AutomatedAlerts:
             nps = await self.pmf_metrics.get_nps(days=30)
 
             if nps.nps_score < self.config.nps_min:
-                alerts.append(Alert(
-                    severity="critical",
-                    category="pmf",
-                    title="🔴 Отрицательный NPS",
-                    message=f"NPS Score: {nps.nps_score:+.0f} (Критики: {nps.detractor_rate:.1f}%)",
-                    metric_value=nps.nps_score,
-                    threshold=self.config.nps_min,
-                    action_required="Опросить критиков, выявить основные проблемы",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+                alerts.append(
+                    Alert(
+                        severity="critical",
+                        category="pmf",
+                        title="🔴 Отрицательный NPS",
+                        message=f"NPS Score: {nps.nps_score:+.0f} (Критики: {nps.detractor_rate:.1f}%)",
+                        metric_value=nps.nps_score,
+                        threshold=self.config.nps_min,
+                        action_required="Опросить критиков, выявить основные проблемы",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
-            if (nps.previous_nps is not None) and (nps.nps_score < nps.previous_nps - self.config.nps_drop_threshold):
-                alerts.append(Alert(
-                    severity="warning",
-                    category="pmf",
-                    title="📉 Падение NPS",
-                    message=f"NPS упал с {nps.previous_nps:+.0f} до {nps.nps_score:+.0f}",
-                    metric_value=nps.nps_score - nps.previous_nps,
-                    threshold=-self.config.nps_drop_threshold,
-                    action_required="Проанализировать недавние изменения, отзывы пользователей",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+            if (nps.previous_nps is not None) and (
+                nps.nps_score < nps.previous_nps - self.config.nps_drop_threshold
+            ):
+                alerts.append(
+                    Alert(
+                        severity="warning",
+                        category="pmf",
+                        title="📉 Падение NPS",
+                        message=f"NPS упал с {nps.previous_nps:+.0f} до {nps.nps_score:+.0f}",
+                        metric_value=nps.nps_score - nps.previous_nps,
+                        threshold=-self.config.nps_drop_threshold,
+                        action_required="Проанализировать недавние изменения, отзывы пользователей",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
             # DAU/MAU stickiness
             usage = await self.pmf_metrics.get_usage_intensity()
 
             if usage.dau_mau_ratio < self.config.dau_mau_min:
-                alerts.append(Alert(
-                    severity="warning",
-                    category="pmf",
-                    title="⚠️ Низкая вовлеченность",
-                    message=f"DAU/MAU: {usage.dau_mau_ratio:.1f}% (цель: >{self.config.dau_mau_min}%)",
-                    metric_value=usage.dau_mau_ratio,
-                    threshold=self.config.dau_mau_min,
-                    action_required="Добавить ежедневные механики вовлечения, push-уведомления",
-                    timestamp=int(datetime.now().timestamp())
-                ))
+                alerts.append(
+                    Alert(
+                        severity="warning",
+                        category="pmf",
+                        title="⚠️ Низкая вовлеченность",
+                        message=f"DAU/MAU: {usage.dau_mau_ratio:.1f}% (цель: >{self.config.dau_mau_min}%)",
+                        metric_value=usage.dau_mau_ratio,
+                        threshold=self.config.dau_mau_min,
+                        action_required="Добавить ежедневные механики вовлечения, push-уведомления",
+                        timestamp=int(datetime.now().timestamp()),
+                    )
+                )
 
         except Exception:
             logger.exception("Error checking PMF alerts")
@@ -327,32 +350,36 @@ class AutomatedAlerts:
 
             for engagement in engagements:
                 if engagement.success_rate < self.config.feature_success_rate_min:
-                    alerts.append(Alert(
-                        severity="critical",
-                        category="technical",
-                        title=f"🔴 Высокий уровень ошибок: {engagement.feature_name}",
-                        message=f"Успешность: {engagement.success_rate:.1f}% (использований: {engagement.total_uses})",
-                        metric_value=engagement.success_rate,
-                        threshold=self.config.feature_success_rate_min,
-                        action_required=f"Проверить логи для {engagement.feature_name}, исправить ошибки",
-                        timestamp=int(datetime.now().timestamp())
-                    ))
+                    alerts.append(
+                        Alert(
+                            severity="critical",
+                            category="technical",
+                            title=f"🔴 Высокий уровень ошибок: {engagement.feature_name}",
+                            message=f"Успешность: {engagement.success_rate:.1f}% (использований: {engagement.total_uses})",
+                            metric_value=engagement.success_rate,
+                            threshold=self.config.feature_success_rate_min,
+                            action_required=f"Проверить логи для {engagement.feature_name}, исправить ошибки",
+                            timestamp=int(datetime.now().timestamp()),
+                        )
+                    )
 
             # Friction points with high impact
             frictions = await self.behavior_tracker.identify_friction_points(days=7)
 
             for friction in frictions:
                 if friction.impact_score > 80:
-                    alerts.append(Alert(
-                        severity="critical",
-                        category="technical",
-                        title=f"🚨 Критическая проблема: {friction.location}",
-                        message=f"Влияние: {friction.impact_score}/100, затронуто {friction.affected_users} пользователей",
-                        metric_value=friction.impact_score,
-                        threshold=80,
-                        action_required=f"Исправить {friction.friction_type} в {friction.location}",
-                        timestamp=int(datetime.now().timestamp())
-                    ))
+                    alerts.append(
+                        Alert(
+                            severity="critical",
+                            category="technical",
+                            title=f"🚨 Критическая проблема: {friction.location}",
+                            message=f"Влияние: {friction.impact_score}/100, затронуто {friction.affected_users} пользователей",
+                            metric_value=friction.impact_score,
+                            threshold=80,
+                            action_required=f"Исправить {friction.friction_type} в {friction.location}",
+                            timestamp=int(datetime.now().timestamp()),
+                        )
+                    )
 
             # Garant API limits (diagnostics): предупреждать при низком остатке
             try:
@@ -365,27 +392,31 @@ class AutomatedAlerts:
                     for item in limits or []:
                         # Если явный ноль — критично; если ниже порога — warning
                         if item.value <= 0:
-                            alerts.append(Alert(
-                                severity="critical",
-                                category="technical",
-                                title="🔴 ГАРАНТ: исчерпан лимит",
-                                message=f"{item.title}: 0 оставшихся вызовов",
-                                metric_value=item.value,
-                                threshold=0,
-                                action_required="Приостановить сценарии, увеличить квоту или подождать новый месяц",
-                                timestamp=int(datetime.now().timestamp()),
-                            ))
+                            alerts.append(
+                                Alert(
+                                    severity="critical",
+                                    category="technical",
+                                    title="🔴 ГАРАНТ: исчерпан лимит",
+                                    message=f"{item.title}: 0 оставшихся вызовов",
+                                    metric_value=item.value,
+                                    threshold=0,
+                                    action_required="Приостановить сценарии, увеличить квоту или подождать новый месяц",
+                                    timestamp=int(datetime.now().timestamp()),
+                                )
+                            )
                         elif item.value <= warn_threshold:
-                            alerts.append(Alert(
-                                severity="warning",
-                                category="technical",
-                                title="⚠️ ГАРАНТ: низкий остаток",
-                                message=f"{item.title}: {item.value} вызовов осталось",
-                                metric_value=item.value,
-                                threshold=warn_threshold,
-                                action_required="Планировать экономию запросов или пополнить квоту",
-                                timestamp=int(datetime.now().timestamp()),
-                            ))
+                            alerts.append(
+                                Alert(
+                                    severity="warning",
+                                    category="technical",
+                                    title="⚠️ ГАРАНТ: низкий остаток",
+                                    message=f"{item.title}: {item.value} вызовов осталось",
+                                    metric_value=item.value,
+                                    threshold=warn_threshold,
+                                    action_required="Планировать экономию запросов или пополнить квоту",
+                                    timestamp=int(datetime.now().timestamp()),
+                                )
+                            )
             except Exception:
                 logger.debug("Garant limits check skipped", exc_info=True)
 
@@ -538,6 +569,7 @@ async def start_monitoring(db, bot, admin_chat_ids: list[int], config: AlertConf
     """
     alert_system = AutomatedAlerts(db, bot, admin_chat_ids, config)
     await alert_system.monitoring_loop()
+
 
 __all__ = (
     "AutomatedAlerts",

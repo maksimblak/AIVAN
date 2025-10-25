@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 os.environ.setdefault("PYTHONPATH", str(PROJECT_ROOT))
 

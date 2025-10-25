@@ -24,7 +24,12 @@ class DummyResponse:
 
 
 class DummyAsyncClient:
-    def __init__(self, *, post_response: DummyResponse | None = None, get_response: DummyResponse | None = None):
+    def __init__(
+        self,
+        *,
+        post_response: DummyResponse | None = None,
+        get_response: DummyResponse | None = None,
+    ):
         self._post_response = post_response
         self._get_response = get_response
 
@@ -54,7 +59,9 @@ def base_env() -> dict[str, str]:
 
 
 @pytest.mark.asyncio()
-async def test_robokassa_create_invoice_signature(monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]) -> None:
+async def test_robokassa_create_invoice_signature(
+    monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]
+) -> None:
     env = {
         **base_env,
         "ROBOKASSA_MERCHANT_LOGIN": "demo",
@@ -78,13 +85,17 @@ async def test_robokassa_create_invoice_signature(monkeypatch: pytest.MonkeyPatc
     assert result.url is not None
 
     expected_amount = f"{amount_rub:.2f}"
-    expected_signature = hashlib.md5(f"demo:{expected_amount}:{invoice_id}:pass1".encode("utf-8")).hexdigest()
+    expected_signature = hashlib.md5(
+        f"demo:{expected_amount}:{invoice_id}:pass1".encode("utf-8")
+    ).hexdigest()
     assert expected_signature in result.url
     assert f"InvId={invoice_id}" in result.url
 
 
 @pytest.mark.asyncio()
-async def test_robokassa_poll_payment_success(monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]) -> None:
+async def test_robokassa_poll_payment_success(
+    monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]
+) -> None:
     env = {
         **base_env,
         "ROBOKASSA_MERCHANT_LOGIN": "demo",
@@ -110,7 +121,9 @@ async def test_robokassa_poll_payment_success(monkeypatch: pytest.MonkeyPatch, b
 
 
 @pytest.mark.asyncio()
-async def test_yookassa_create_invoice(monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]) -> None:
+async def test_yookassa_create_invoice(
+    monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]
+) -> None:
     env = {
         **base_env,
         "YOOKASSA_SHOP_ID": "123456",
@@ -143,7 +156,9 @@ async def test_yookassa_create_invoice(monkeypatch: pytest.MonkeyPatch, base_env
 
 
 @pytest.mark.asyncio()
-async def test_yookassa_poll_payment_success(monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]) -> None:
+async def test_yookassa_poll_payment_success(
+    monkeypatch: pytest.MonkeyPatch, base_env: dict[str, str]
+) -> None:
     env = {
         **base_env,
         "YOOKASSA_SHOP_ID": "123456",

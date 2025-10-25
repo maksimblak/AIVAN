@@ -116,7 +116,12 @@ class DocumentChat(DocumentProcessor):
 
     # ------------------------------- Загрузка/хранилище -------------------------------
 
-    async def load_document(self, file_path: str | Path, document_id: str | None = None, progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None) -> str:
+    async def load_document(
+        self,
+        file_path: str | Path,
+        document_id: str | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> str:
         """Загрузить документ для чата и вернуть идентификатор сессии."""
 
         async def _notify(stage: str, percent: float, **payload: Any) -> None:
@@ -165,7 +170,12 @@ class DocumentChat(DocumentProcessor):
         await _notify("completed", 100, chunks=len(chunk_texts))
         return document_id
 
-    async def process(self, file_path: str | Path, progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None, **kwargs) -> DocumentResult:
+    async def process(
+        self,
+        file_path: str | Path,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        **kwargs,
+    ) -> DocumentResult:
         """Совместимость с интерфейсом DocumentProcessor — загрузка документа."""
         try:
             document_id = await self.load_document(file_path, progress_callback=progress_callback)
@@ -180,9 +190,7 @@ class DocumentChat(DocumentProcessor):
         except ProcessingError:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise ProcessingError(
-                f"Ошибка загрузки документа: {exc}", "LOAD_ERROR"
-            ) from exc
+            raise ProcessingError(f"Ошибка загрузки документа: {exc}", "LOAD_ERROR") from exc
 
     def get_document_info(self, document_id: str) -> dict[str, Any]:
         doc = self.loaded_documents.get(document_id)
@@ -216,7 +224,9 @@ class DocumentChat(DocumentProcessor):
         ai_payload: dict[str, Any] | None = None
         if self.allow_ai and self.openai_service:
             try:
-                user_prompt = DOCUMENT_CHAT_USER_TMPL.format(question=question, context=context_text)
+                user_prompt = DOCUMENT_CHAT_USER_TMPL.format(
+                    question=question, context=context_text
+                )
                 response = await self.openai_service.ask_legal(
                     system_prompt=DOCUMENT_CHAT_SYSTEM,
                     user_text=user_prompt,
@@ -297,7 +307,9 @@ class DocumentChat(DocumentProcessor):
             occurrences = text_lower.count(token)
             if occurrences:
                 score += 1.0 + occurrences * 0.2
-        keyword_overlap = tokens.intersection(TextProcessor.top_keywords(chunk.text, limit=8, min_length=3))
+        keyword_overlap = tokens.intersection(
+            TextProcessor.top_keywords(chunk.text, limit=8, min_length=3)
+        )
         score += len(keyword_overlap) * 0.5
         # Penalise extremely long chunks so that shorter answers have a chance
         length_penalty = math.log1p(len(chunk.text))
@@ -405,4 +417,3 @@ class DocumentChat(DocumentProcessor):
                 return json.loads(match.group(0))
             except json.JSONDecodeError:
                 return None
-

@@ -11,14 +11,13 @@ from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.types import Message
 
+from core.bot_app.ui_components import Emoji
 from src.core.safe_telegram import (
     format_safe_html,
     split_html_for_telegram,
     tg_edit_html,
     tg_send_html,
 )
-
-from core.bot_app.ui_components import Emoji
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +29,8 @@ class StreamManager:
         self,
         bot: Bot,
         chat_id: int,
-        update_interval: float = 1.5,   # как часто редактируем сообщение
-        buffer_size: int = 50,          # минимальный прирост текста до апдейта
+        update_interval: float = 1.5,  # как часто редактируем сообщение
+        buffer_size: int = 50,  # минимальный прирост текста до апдейта
         max_retries: int = 3,
     ):
         self.bot = bot
@@ -42,8 +41,8 @@ class StreamManager:
 
         self.message: Optional[Message] = None
         self.last_update_time = 0.0
-        self.last_sent_text = ""            # что реально отправлено (уже отформатированное)
-        self.pending_text = ""              # сырая сборка из LLM
+        self.last_sent_text = ""  # что реально отправлено (уже отформатированное)
+        self.pending_text = ""  # сырая сборка из LLM
         self.is_final = False
         self._stopped = False
         self.update_task: Optional[asyncio.Task] = None
@@ -119,9 +118,9 @@ class StreamManager:
         if len(formatted) > 3900:
             # Ищем безопасное место для обрезки (после закрывающего тега или пробела)
             cutoff = 3890
-            safe_cut = formatted.rfind('>', 0, cutoff)
+            safe_cut = formatted.rfind(">", 0, cutoff)
             if safe_cut == -1:
-                safe_cut = formatted.rfind(' ', 0, cutoff)
+                safe_cut = formatted.rfind(" ", 0, cutoff)
             if safe_cut == -1:
                 safe_cut = cutoff
             formatted = formatted[:safe_cut] + "…"
@@ -161,7 +160,9 @@ class StreamManager:
                 await self.update_task
 
         # полный текст
-        full_text = (final_text if isinstance(final_text, str) else None) or (self.pending_text or "")
+        full_text = (final_text if isinstance(final_text, str) else None) or (
+            self.pending_text or ""
+        )
         formatted = format_safe_html(full_text) or "—"
 
         try:
@@ -201,7 +202,8 @@ class StreamManager:
             with suppress(asyncio.CancelledError):
                 await self.update_task
         logger.info(
-            "Stopped streaming for message %s", self.message.message_id if self.message else "unknown"
+            "Stopped streaming for message %s",
+            self.message.message_id if self.message else "unknown",
         )
 
 

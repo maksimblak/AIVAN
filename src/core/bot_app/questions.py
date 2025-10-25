@@ -1,26 +1,34 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
-from contextlib import suppress, asynccontextmanager
-import json
+from contextlib import asynccontextmanager, suppress
 from html import escape as html_escape
-from typing import Any, Mapping, Sequence
 from types import SimpleNamespace
+from typing import Any, Mapping, Sequence
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import FSInputFile, Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from core.bot_app.promt import JUDICIAL_PRACTICE_SEARCH_PROMPT
 from core.bot_app.status_manager import ProgressStatus
-from core.bot_app.stream_manager import StreamManager, StreamingCallback
+from core.bot_app.stream_manager import StreamingCallback, StreamManager
 from core.bot_app.typing_indicator import send_typing_once, typing_action
 from core.bot_app.ui_components import Emoji
 from src.core.attachments import QuestionAttachment
+from src.core.bot_app import context as simple_context
+from src.core.bot_app.common import ensure_valid_user_id, get_safe_db_method, get_user_session
+from src.core.bot_app.feedback import (
+    ensure_rating_snapshot,
+    handle_pending_feedback,
+    send_rating_request,
+)
+from src.core.excel_export import build_practice_excel
 from src.core.exceptions import (
     ErrorContext,
     NetworkException,
@@ -28,21 +36,13 @@ from src.core.exceptions import (
     SystemException,
     ValidationException,
 )
+from src.core.garant_api import GarantAPIError
 from src.core.safe_telegram import (
     format_safe_html,
     send_html_text,
     split_html_for_telegram as safe_split_html,
 )
-from src.core.bot_app import context as simple_context
-from src.core.bot_app.common import get_user_session, get_safe_db_method, ensure_valid_user_id
-from src.core.bot_app.feedback import (
-    ensure_rating_snapshot,
-    handle_pending_feedback,
-    send_rating_request,
-)
-from src.core.garant_api import GarantAPIError
 from src.core.validation import InputValidator
-from src.core.excel_export import build_practice_excel
 
 __all__ = [
     "ResponseTimer",
@@ -94,7 +94,6 @@ def _strip_fenced_json_blocks(text: str) -> str:
     if not text:
         return ""
     return _JSON_BLOCK_RE.sub("", text).strip()
-
 
 
 def _relocate_json_blocks_to_end(text: str) -> str:
@@ -168,7 +167,9 @@ def _build_structured_cases_from_fragments(
         if not isinstance(metadata, Mapping):
             continue
 
-        title = str(metadata.get("title") or metadata.get("name") or getattr(fragment, "header", "") or "").strip()
+        title = str(
+            metadata.get("title") or metadata.get("name") or getattr(fragment, "header", "") or ""
+        ).strip()
         url = str(metadata.get("url") or metadata.get("link") or "").strip()
         case_number = str(metadata.get("case_number") or metadata.get("case") or "").strip()
         facts = str(metadata.get("summary") or getattr(fragment, "excerpt", "") or "").strip()
@@ -215,6 +216,7 @@ def _back_to_main_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_main")]
         ]
     )
+
 
 logger = logging.getLogger("ai-ivan.simple.questions")
 
@@ -284,7 +286,9 @@ def _extract_practice_cases_from_text(text: str) -> list[dict[str, str]]:
                 if isinstance(norms, (list, tuple)):
                     norms = ", ".join(str(x).strip() for x in norms if str(x).strip())
                 norms_text = str(norms or "").strip()
-                applicability = str(item.get("applicability") or item.get("applicable") or "").strip()
+                applicability = str(
+                    item.get("applicability") or item.get("applicable") or ""
+                ).strip()
                 out.append(
                     {
                         "title": title,
@@ -679,20 +683,24 @@ async def _stop_status_indicator(status: ProgressStatus | None, ok: bool) -> Non
 async def process_question_with_attachments(message: Message) -> None:
     caption = (message.caption or "").strip()
     if not caption:
-        warning_msg = "\n\n".join([
-            f"{Emoji.WARNING} <b>Добавьте текст вопроса</b>",
-            "Напишите короткое описание ситуации в подписи к файлу и отправьте снова.",
-        ])
+        warning_msg = "\n\n".join(
+            [
+                f"{Emoji.WARNING} <b>Добавьте текст вопроса</b>",
+                "Напишите короткое описание ситуации в подписи к файлу и отправьте снова.",
+            ]
+        )
         await message.answer(warning_msg, parse_mode=ParseMode.HTML)
         return
 
     try:
         attachments = await _collect_question_attachments(message)
     except ValueError as exc:
-        error_msg = "\n\n".join([
-            f"{Emoji.WARNING} <b>Не удалось обработать вложение</b>",
-            html_escape(str(exc)),
-        ])
+        error_msg = "\n\n".join(
+            [
+                f"{Emoji.WARNING} <b>Не удалось обработать вложение</b>",
+                html_escape(str(exc)),
+            ]
+        )
         await message.answer(error_msg, parse_mode=ParseMode.HTML)
         return
 
@@ -799,11 +807,15 @@ async def process_question(
             if getattr(garant_client, "sutyazhnik_enabled", False):
                 try:
                     garant_sutyazhnik_results = await garant_client.sutyazhnik_search(question_text)
-                    garant_sutyazhnik_context = garant_client.format_sutyazhnik_results(garant_sutyazhnik_results)
+                    garant_sutyazhnik_context = garant_client.format_sutyazhnik_results(
+                        garant_sutyazhnik_results
+                    )
                 except GarantAPIError as garant_exc:
                     logger.warning("Garant Sutyazhnik search failed: %s", garant_exc)
                 except Exception as garant_exc:  # noqa: BLE001
-                    logger.error("Unexpected Garant Sutyazhnik failure: %s", garant_exc, exc_info=True)
+                    logger.error(
+                        "Unexpected Garant Sutyazhnik failure: %s", garant_exc, exc_info=True
+                    )
             practice_excel_fragments = _prepare_garant_excel_fragments(
                 garant_search_results,
                 garant_sutyazhnik_results,
@@ -902,12 +914,16 @@ async def process_question(
 
         async with typing_context_manager:
             try:
-                stream_manager = StreamManager(
-                    bot=message.bot,
-                    chat_id=message.chat.id,
-                    reply_to_message_id=message.message_id,
-                    send_interval=1.8,
-                ) if use_streaming else None
+                stream_manager = (
+                    StreamManager(
+                        bot=message.bot,
+                        chat_id=message.chat.id,
+                        reply_to_message_id=message.message_id,
+                        send_interval=1.8,
+                    )
+                    if use_streaming
+                    else None
+                )
 
                 callback = StreamingCallback(stream_manager) if stream_manager else None
 
@@ -920,7 +936,7 @@ async def process_question(
                     model=model_to_use,
                     user_id=user_id,
                     max_output_tokens=9000 if practice_mode_used else None,
-                    reasoning_effort="low" if is_practice else None
+                    reasoning_effort="low" if is_practice else None,
                 )
                 final_answer_text = result.get("text")
 
@@ -943,7 +959,11 @@ async def process_question(
                 if practice_mode_used and practice_excel_fragments:
                     summary_payload = result.get("practice_summary")
                     if not isinstance(summary_payload, dict):
-                        summary_payload = {} if summary_payload is None else {"summary_html": str(summary_payload)}
+                        summary_payload = (
+                            {}
+                            if summary_payload is None
+                            else {"summary_html": str(summary_payload)}
+                        )
                     existing_fragments = list(summary_payload.get("fragments") or [])
                     combined_fragments = existing_fragments + practice_excel_fragments
 
@@ -983,7 +1003,9 @@ async def process_question(
                             structured_payload["cases"] = cases
                             summary_payload["structured"] = structured_payload
                             if logger.isEnabledFor(logging.DEBUG):
-                                logger.debug("Extracted %s practice cases from JSON (primary)", len(cases))
+                                logger.debug(
+                                    "Extracted %s practice cases from JSON (primary)", len(cases)
+                                )
                     except Exception:
                         pass
 
@@ -1002,7 +1024,9 @@ async def process_question(
                                 "fragments": [],
                             }
                             if logger.isEnabledFor(logging.DEBUG):
-                                logger.debug("Extracted %s practice cases from JSON (fallback)", len(cases))
+                                logger.debug(
+                                    "Extracted %s practice cases from JSON (fallback)", len(cases)
+                                )
                     except Exception:
                         pass
 
@@ -1097,7 +1121,9 @@ async def process_question(
                         reply_to_message_id=message.message_id,
                     )
                 except Exception as send_exc:
-                    logger.warning("Failed to send HTML chunk, fallback to safe sender: %s", send_exc)
+                    logger.warning(
+                        "Failed to send HTML chunk, fallback to safe sender: %s", send_exc
+                    )
                     await send_html_text(
                         message.bot,
                         chat_id=message.chat.id,
@@ -1207,7 +1233,9 @@ async def process_question(
                     structured_payload = {}
                 cases_payload = structured_payload.get("cases")
                 if not cases_payload:
-                    generated_cases = _build_structured_cases_from_fragments(rag_fragments, limit=10)
+                    generated_cases = _build_structured_cases_from_fragments(
+                        rag_fragments, limit=10
+                    )
                     if generated_cases:
                         structured_payload = dict(structured_payload)
                         structured_payload["cases"] = generated_cases
@@ -1227,7 +1255,9 @@ async def process_question(
                     except Exception:
                         logger.debug("Practice summary structured payload: %s", structured_payload)
                 # Убираем служебный JSON из источника для листа «Обзор», чтобы он не попадал в Excel
-                excel_source = _strip_fenced_json_blocks(final_answer_text or raw_response_text or "")
+                excel_source = _strip_fenced_json_blocks(
+                    final_answer_text or raw_response_text or ""
+                )
                 practice_excel_path = await asyncio.to_thread(
                     build_practice_excel,
                     summary_html=excel_source,
@@ -1349,7 +1379,9 @@ async def process_question(
                     if "request_start_time" in locals()
                     else 0
                 )
-                err_type = request_error_type if "request_error_type" in locals() else type(exc).__name__
+                err_type = (
+                    request_error_type if "request_error_type" in locals() else type(exc).__name__
+                )
                 record_request_fn = get_safe_db_method("record_request", default_return=None)
                 if record_request_fn:
                     await record_request_fn(
@@ -1380,8 +1412,3 @@ async def process_question(
 def register_question_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
-
-
-
-
-

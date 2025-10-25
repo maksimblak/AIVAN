@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-import re
 
 from .storage_backends import ArtifactUploader  # fixed: relative import
 
@@ -302,7 +302,9 @@ class DocumentStorage:
         try:
             return await self._artifact_uploader.upload(file_path, content_type=mime_type)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to upload document %s to remote storage: %s", file_path.name, exc)
+            logger.warning(
+                "Failed to upload document %s to remote storage: %s", file_path.name, exc
+            )
             return None
 
     @staticmethod

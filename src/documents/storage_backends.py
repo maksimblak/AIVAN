@@ -41,9 +41,7 @@ class S3ArtifactUploader:
         try:
             import boto3  # type: ignore
         except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "boto3 is required for S3ArtifactUploader"
-            ) from exc
+            raise RuntimeError("boto3 is required for S3ArtifactUploader") from exc
 
         client = boto3.client(
             "s3",

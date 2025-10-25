@@ -12,20 +12,25 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from src.core.admin_modules.admin_utils import (
+    back_keyboard,
+    edit_or_answer,
+    parse_user_id,
+    require_admin,
+)
 from src.core.admin_modules.retention_analytics import RetentionAnalytics
-from src.core.admin_modules.admin_utils import back_keyboard, edit_or_answer, parse_user_id, require_admin
 
 logger = logging.getLogger(__name__)
 
 retention_router = Router()
 
 INDICATOR_LABELS = {
-    'low_usage': '📊 Низкая активность',
-    'had_errors': '🐛 Технические проблемы',
-    'limited_exploration': '🎯 Не изучили продукт',
-    'poor_experience': '😞 Негативный опыт',
-    'immediate_abandonment': '⚡ Бросили сразу после оплаты',
-    'price_sensitive': '💰 Цена против ценности'
+    "low_usage": "📊 Низкая активность",
+    "had_errors": "🐛 Технические проблемы",
+    "limited_exploration": "🎯 Не изучили продукт",
+    "poor_experience": "😞 Негативный опыт",
+    "immediate_abandonment": "⚡ Бросили сразу после оплаты",
+    "price_sensitive": "💰 Цена против ценности",
 }
 
 
@@ -34,14 +39,20 @@ def create_retention_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="💎 Оставшиеся пользователи", callback_data="retention:retained"),
-                InlineKeyboardButton(text="📉 Пользователи в оттоке", callback_data="retention:churned"),
+                InlineKeyboardButton(
+                    text="💎 Оставшиеся пользователи", callback_data="retention:retained"
+                ),
+                InlineKeyboardButton(
+                    text="📉 Пользователи в оттоке", callback_data="retention:churned"
+                ),
             ],
             [
                 InlineKeyboardButton(text="⚖️ Сравнить группы", callback_data="retention:compare"),
             ],
             [
-                InlineKeyboardButton(text="🔍 Анализ пользователя", callback_data="retention:deep_dive"),
+                InlineKeyboardButton(
+                    text="🔍 Анализ пользователя", callback_data="retention:deep_dive"
+                ),
             ],
             [
                 InlineKeyboardButton(text="« Назад", callback_data="admin_refresh"),
@@ -107,7 +118,7 @@ async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]
 
     output += "<b>👑 Топ-3 суперактивных:</b>\n\n"
     for i, user in enumerate(top_3, 1):
-        medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉'
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
 
         output += f"{medal} Пользователь #{user.user_id}\n"
         output += f"   • Платежей: {user.payment_count}\n"
@@ -136,11 +147,13 @@ async def handle_retained_users(callback: CallbackQuery, db, admin_ids: set[int]
         output += f"• {feature}: используют {total_count} раз\n"
 
     # Паттерны времени
-    weekday_count = sum(1 for u in retained if u.usage_patterns.get('is_weekday_user', False))
-    daytime_count = sum(1 for u in retained if u.usage_patterns.get('is_daytime_user', False))
+    weekday_count = sum(1 for u in retained if u.usage_patterns.get("is_weekday_user", False))
+    daytime_count = sum(1 for u in retained if u.usage_patterns.get("is_daytime_user", False))
 
     output += "\n<b>Паттерны использования:</b>\n"
-    output += f"• Будние дни: {weekday_count}/{len(retained)} ({weekday_count/len(retained)*100:.0f}%)\n"
+    output += (
+        f"• Будние дни: {weekday_count}/{len(retained)} ({weekday_count/len(retained)*100:.0f}%)\n"
+    )
     output += f"• Дневное время: {daytime_count}/{len(retained)} ({daytime_count/len(retained)*100:.0f}%)\n"
 
     # Insights
@@ -221,17 +234,17 @@ async def handle_churned_users(callback: CallbackQuery, db, admin_ids: set[int])
     # Рекомендации
     output += "\n<b>💡 Рекомендации:</b>\n"
 
-    if 'low_usage' in dict(sorted_indicators):
-        if all_indicators['low_usage'] > len(churned) * 0.3:
+    if "low_usage" in dict(sorted_indicators):
+        if all_indicators["low_usage"] > len(churned) * 0.3:
             output += "1️⃣ ПРИОРИТЕТ: Улучшить онбординге - 30%+ не поняли ценность\n"
 
-    if 'had_errors' in dict(sorted_indicators):
+    if "had_errors" in dict(sorted_indicators):
         output += "2️⃣ Срочно исправить технические проблемы\n"
 
-    if 'limited_exploration' in dict(sorted_indicators):
+    if "limited_exploration" in dict(sorted_indicators):
         output += "3️⃣ Добавить пошаговое руководство по функциям\n"
 
-    if 'price_sensitive' in dict(sorted_indicators):
+    if "price_sensitive" in dict(sorted_indicators):
         output += "4️⃣ A/B тест цены или добавить доступный тариф\n"
 
     # Показываем 2-3 примера
@@ -242,7 +255,7 @@ async def handle_churned_users(callback: CallbackQuery, db, admin_ids: set[int])
     for user in examples:
         output += f"Пользователь #{user.user_id}\n"
         output += f"   • Запросов: {user.total_requests}\n"
-        issues = ', '.join(INDICATOR_LABELS.get(code, code) for code in user.churn_indicators[:2])
+        issues = ", ".join(INDICATOR_LABELS.get(code, code) for code in user.churn_indicators[:2])
         output += f"   • Проблемы: {issues}\n"
         output += f"   • Потенциал возврата: {user.winback_probability:.0f}%\n"
         output += f"   • Действие: <i>{user.recommended_action}</i>\n\n"
@@ -274,8 +287,8 @@ async def handle_compare_groups(callback: CallbackQuery, db, admin_ids: set[int]
     output += f"Продлевающие: {retained_data['avg_requests']:.1f} запросов\n"
     output += f"Отток: {churned_data['avg_requests']:.1f} запросов\n"
 
-    requests_diff = retained_data['avg_requests'] - churned_data['avg_requests']
-    churn_avg_requests = churned_data['avg_requests']
+    requests_diff = retained_data["avg_requests"] - churned_data["avg_requests"]
+    churn_avg_requests = churned_data["avg_requests"]
     requests_pct = (requests_diff / churn_avg_requests * 100) if churn_avg_requests else 0
     output += f"→ Разница: {requests_diff:+.1f} ({requests_pct:+.0f}%)\n\n"
 
@@ -296,34 +309,40 @@ async def handle_compare_groups(callback: CallbackQuery, db, admin_ids: set[int]
 
     # Топ фичи для retained
     output += "<b>💎 Что ценят продлевающие:</b>\n"
-    for feature, count in list(retained_data['top_features'].items())[:3]:
+    for feature, count in list(retained_data["top_features"].items())[:3]:
         output += f"• {feature}: {count} использований\n"
 
     # Что НЕ используют churned
     output += "\n<b>❌ Что не пробуют ушедшие:</b>\n"
-    for feature, count in list(churned_data['unused_features_common'].items())[:3]:
+    for feature, count in list(churned_data["unused_features_common"].items())[:3]:
         output += f"• {feature}: {count} пользователей пропустили\n"
 
     # Ключевые выводы
     output += "\n<b>🎯 КЛЮЧЕВЫЕ ВЫВОДЫ:</b>\n\n"
 
     if requests_diff > 50:
-        requests_ratio = (retained_data['avg_requests'] / churn_avg_requests) if churn_avg_requests else 0
+        requests_ratio = (
+            (retained_data["avg_requests"] / churn_avg_requests) if churn_avg_requests else 0
+        )
         output += f"1️⃣ Продлевающие в {requests_ratio:.1f}x активнее!\n"
         output += "   → Нужно мотивировать новых к активности\n\n"
 
-    if retained_data['avg_feature_diversity'] > 50:
+    if retained_data["avg_feature_diversity"] > 50:
         output += "2️⃣ Продлевающие изучают больше фич\n"
         output += "   → Показывать все возможности в онбординге\n\n"
 
-    top_unused = list(churned_data['unused_features_common'].keys())[0] if churned_data['unused_features_common'] else None
+    top_unused = (
+        list(churned_data["unused_features_common"].keys())[0]
+        if churned_data["unused_features_common"]
+        else None
+    )
     if top_unused:
         output += f"3️⃣ Ушедшие пропускают {top_unused}\n"
         output += "   → Либо промо этой фичи, либо она не нужна\n\n"
 
     # Процент weekday/daytime users
-    if 'common_patterns' in retained_data:
-        weekday_pct = retained_data['common_patterns']['weekday_preference_pct']
+    if "common_patterns" in retained_data:
+        weekday_pct = retained_data["common_patterns"]["weekday_preference_pct"]
         if weekday_pct > 70:
             output += f"4️⃣ {weekday_pct:.0f}% продлевающих - B2B пользователи\n"
             output += "   → Фокус на профессиональное использование\n"
@@ -361,7 +380,6 @@ async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
     if user_id is None:
         return
 
-
     analytics = RetentionAnalytics(db)
 
     # Проверяем в retained
@@ -392,9 +410,9 @@ async def cmd_deep_dive_user(message: Message, db, admin_ids: set[int]):
             output += f"• {feature}: {count} раз\n"
 
         output += "\n<b>⏰ Паттерны:</b>\n"
-        if retained_user.usage_patterns.get('peak_hour') is not None:
+        if retained_user.usage_patterns.get("peak_hour") is not None:
             output += f"• Пик активности: {retained_user.usage_patterns['peak_hour']:02d}:00\n"
-        if retained_user.usage_patterns.get('is_weekday_user'):
+        if retained_user.usage_patterns.get("is_weekday_user"):
             output += "• Тип: Будние дни (B2B?)\n"
         else:
             output += "• Тип: Выходные (B2C?)\n"

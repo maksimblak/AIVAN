@@ -6,18 +6,12 @@ from typing import Optional
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    User,
-)
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, User
 
 from core.bot_app.ui_components import Emoji
-from src.core.exceptions import ValidationException
 from src.core.bot_app import context as simple_context
-from src.core.bot_app.common import ensure_valid_user_id, get_user_session, get_safe_db_method
+from src.core.bot_app.common import ensure_valid_user_id, get_safe_db_method, get_user_session
+from src.core.exceptions import ValidationException
 
 __all__ = [
     "format_user_display",
@@ -47,7 +41,9 @@ def format_user_display(user: User | None) -> str:
     return " ".join(parts)
 
 
-async def ensure_rating_snapshot(request_id: int, telegram_user: User | None, answer_text: str) -> None:
+async def ensure_rating_snapshot(
+    request_id: int, telegram_user: User | None, answer_text: str
+) -> None:
     if not answer_text.strip() or telegram_user is None:
         return
 
@@ -75,7 +71,9 @@ def _create_rating_keyboard(request_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="👍 Полезно", callback_data=f"rate_like_{request_id}"),
-                InlineKeyboardButton(text="👎 Улучшить", callback_data=f"rate_dislike_{request_id}"),
+                InlineKeyboardButton(
+                    text="👎 Улучшить", callback_data=f"rate_dislike_{request_id}"
+                ),
             ]
         ]
     )
@@ -98,8 +96,7 @@ async def send_rating_request(
 
     keyboard = _create_rating_keyboard(request_id)
     await message.answer(
-        f"{Emoji.STAR} <b>Оцените ответ</b>\n\n"
-        "Это поможет нам становиться лучше.",
+        f"{Emoji.STAR} <b>Оцените ответ</b>\n\n" "Это поможет нам становиться лучше.",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
     )
@@ -382,4 +379,3 @@ async def cmd_ratings_stats(message: Message) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.error("Error in cmd_ratings_stats: %s", exc)
         await message.answer("❌ Ошибка получения статистики рейтингов")
-

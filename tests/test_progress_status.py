@@ -3,26 +3,30 @@ import asyncio
 import sys
 import types
 
-if 'aiogram' not in sys.modules:
-    aiogram_module = types.ModuleType('aiogram')
+if "aiogram" not in sys.modules:
+    aiogram_module = types.ModuleType("aiogram")
     aiogram_module.Bot = object
-    sys.modules['aiogram'] = aiogram_module
+    sys.modules["aiogram"] = aiogram_module
 
-    enums_module = types.ModuleType('aiogram.enums')
-    enums_module.ParseMode = types.SimpleNamespace(HTML='HTML', MARKDOWN_V2='MARKDOWN_V2')
-    sys.modules['aiogram.enums'] = enums_module
+    enums_module = types.ModuleType("aiogram.enums")
+    enums_module.ParseMode = types.SimpleNamespace(HTML="HTML", MARKDOWN_V2="MARKDOWN_V2")
+    sys.modules["aiogram.enums"] = enums_module
 
-    exceptions_module = types.ModuleType('aiogram.exceptions')
+    exceptions_module = types.ModuleType("aiogram.exceptions")
+
     class FakeTelegramBadRequest(Exception):
         pass
-    exceptions_module.TelegramBadRequest = FakeTelegramBadRequest
-    sys.modules['aiogram.exceptions'] = exceptions_module
 
-    types_module = types.ModuleType('aiogram.types')
+    exceptions_module.TelegramBadRequest = FakeTelegramBadRequest
+    sys.modules["aiogram.exceptions"] = exceptions_module
+
+    types_module = types.ModuleType("aiogram.types")
+
     class _FakeMessage:
         pass
+
     types_module.Message = _FakeMessage
-    sys.modules['aiogram.types'] = types_module
+    sys.modules["aiogram.types"] = types_module
 
 from core.bot_app.status_manager import ProgressStatus
 
@@ -95,6 +99,3 @@ async def _assert_manual_update_advances_flow() -> None:
         await status.complete()
 
     assert message.deleted
-
-
-

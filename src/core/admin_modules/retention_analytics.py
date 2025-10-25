@@ -5,12 +5,12 @@ Retention Analytics - глубокий анализ повторных поку�
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RetainedUserProfile:
     """Профиль пользователя который продлевает подписку"""
+
     user_id: int
     payment_count: int
     total_spent: int
@@ -46,6 +47,7 @@ class RetainedUserProfile:
 @dataclass
 class ChurnedUserProfile:
     """Профиль пользователя который НЕ продлил"""
+
     user_id: int
     payment_count: int  # должно быть 1
     total_spent: int
@@ -263,14 +265,20 @@ class RetentionAnalytics:
                     avg_session_minutes = (total_response_ms / response_count) / 60000
 
                 weeks_span = 0.0
-                if min_created is not None and max_created is not None and max_created > min_created:
+                if (
+                    min_created is not None
+                    and max_created is not None
+                    and max_created > min_created
+                ):
                     weeks_span = (max_created - min_created) / 604800.0
                 days_per_week = 0.0
                 if weeks_span and weeks_span > 0:
                     days_per_week = round((active_days or 0) / weeks_span, 2)
 
                 total_features_available = 10
-                feature_diversity = round(((feature_count or 0) / total_features_available) * 100, 2)
+                feature_diversity = round(
+                    ((feature_count or 0) / total_features_available) * 100, 2
+                )
 
                 favorite_features: list[tuple[str, int]] = []
                 if favorites_json:
@@ -333,14 +341,17 @@ class RetentionAnalytics:
     async def _get_favorite_features(self, user_id: int) -> list[tuple[str, int]]:
         """Топ-5 любимых фич пользователя"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT request_type, COUNT(*) as count
                 FROM requests
                 WHERE user_id = ? AND success = 1
                 GROUP BY request_type
                 ORDER BY count DESC
                 LIMIT 5
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -351,7 +362,8 @@ class RetentionAnalytics:
         """Паттерны использования по времени"""
         async with self.db.pool.acquire() as conn:
             # Peak hour
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     CAST(strftime('%H', created_at, 'unixepoch') AS INTEGER) as hour,
                     COUNT(*) as count
@@ -360,7 +372,9 @@ class RetentionAnalytics:
                 GROUP BY hour
                 ORDER BY count DESC
                 LIMIT 1
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             hour_row = await cursor.fetchone()
             await cursor.close()
@@ -368,7 +382,8 @@ class RetentionAnalytics:
             peak_hour = hour_row[0] if hour_row else None
 
             # Day of week (0 = Monday, 6 = Sunday)
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     CAST(strftime('%w', created_at, 'unixepoch') AS INTEGER) as dow,
                     COUNT(*) as count
@@ -377,7 +392,9 @@ class RetentionAnalytics:
                 GROUP BY dow
                 ORDER BY count DESC
                 LIMIT 1
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             dow_row = await cursor.fetchone()
             await cursor.close()
@@ -385,19 +402,22 @@ class RetentionAnalytics:
             peak_day = dow_row[0] if dow_row else None
 
             return {
-                'peak_hour': peak_hour,
-                'peak_day_of_week': peak_day,
-                'is_weekday_user': peak_day is not None and peak_day < 6,
-                'is_daytime_user': peak_hour is not None and 9 <= peak_hour <= 18
+                "peak_hour": peak_hour,
+                "peak_day_of_week": peak_day,
+                "is_weekday_user": peak_day is not None and peak_day < 6,
+                "is_daytime_user": peak_hour is not None and 9 <= peak_hour <= 18,
             }
 
     async def _get_avg_session_duration(self, user_id: int) -> float:
         """Средняя длительность сессии в минутах"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT AVG(response_time_ms) FROM requests
                 WHERE user_id = ? AND response_time_ms > 0
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             row = await cursor.fetchone()
             await cursor.close()
@@ -408,13 +428,16 @@ class RetentionAnalytics:
     async def _get_days_active_per_week(self, user_id: int) -> float:
         """Сколько дней в неделю в среднем активен"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     COUNT(DISTINCT DATE(created_at, 'unixepoch')) as unique_days,
                     (MAX(created_at) - MIN(created_at)) / 604800.0 as weeks
                 FROM requests
                 WHERE user_id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             row = await cursor.fetchone()
             await cursor.close()
@@ -461,11 +484,14 @@ class RetentionAnalytics:
     async def _get_feature_diversity(self, user_id: int) -> float:
         """% фич которые пользователь использовал"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(DISTINCT request_type) as used_features
                 FROM requests
                 WHERE user_id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             row = await cursor.fetchone()
             await cursor.close()
@@ -483,7 +509,7 @@ class RetentionAnalytics:
         avg_requests_per_day: float,
         days_active_per_week: float,
         feature_diversity: float,
-        lifetime_days: int
+        lifetime_days: int,
     ) -> float:
         """Scoring 0-100 насколько пользователь power user"""
 
@@ -535,7 +561,8 @@ class RetentionAnalytics:
             cutoff = now - (days_since_expiry * 86400)
 
             # Пользователи с ровно 1 платежом и истекшей подпиской
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     COUNT(t.id) as payment_count,
@@ -552,20 +579,32 @@ class RetentionAnalytics:
                 GROUP BY u.user_id
                 HAVING payment_count = 1
                 ORDER BY u.subscription_until DESC
-            """, (cutoff, now))
+            """,
+                (cutoff, now),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
             profiles = []
             for row in rows:
-                user_id, payment_count, total_spent, created_at, sub_until, total_requests, last_request = row
+                (
+                    user_id,
+                    payment_count,
+                    total_spent,
+                    created_at,
+                    sub_until,
+                    total_requests,
+                    last_request,
+                ) = row
 
                 lifetime_days = (sub_until - created_at) // 86400
                 last_active_days_ago = (now - last_request) // 86400
 
                 # Определяем индикаторы оттока
-                churn_indicators = await self._identify_churn_indicators(user_id, total_requests, lifetime_days)
+                churn_indicators = await self._identify_churn_indicators(
+                    user_id, total_requests, lifetime_days
+                )
 
                 # Последняя активность
                 drop_off_feature = await self._get_last_feature_used(user_id)
@@ -584,31 +623,33 @@ class RetentionAnalytics:
                     total_requests=total_requests,
                     lifetime_days=lifetime_days,
                     had_issues=had_issues,
-                    last_active_days_ago=last_active_days_ago
+                    last_active_days_ago=last_active_days_ago,
                 )
 
                 # Рекомендация по возврату
                 recommended_action = self._recommend_winback_action(
                     churn_indicators=churn_indicators,
                     winback_prob=winback_prob,
-                    had_issues=had_issues
+                    had_issues=had_issues,
                 )
 
-                profiles.append(ChurnedUserProfile(
-                    user_id=user_id,
-                    payment_count=payment_count,
-                    total_spent=total_spent,
-                    lifetime_days=lifetime_days,
-                    total_requests=total_requests,
-                    churn_indicators=churn_indicators,
-                    last_active_days_ago=last_active_days_ago,
-                    drop_off_feature=drop_off_feature,
-                    unused_features=unused_features,
-                    had_technical_issues=had_issues,
-                    received_poor_responses=poor_responses,
-                    winback_probability=winback_prob,
-                    recommended_action=recommended_action
-                ))
+                profiles.append(
+                    ChurnedUserProfile(
+                        user_id=user_id,
+                        payment_count=payment_count,
+                        total_spent=total_spent,
+                        lifetime_days=lifetime_days,
+                        total_requests=total_requests,
+                        churn_indicators=churn_indicators,
+                        last_active_days_ago=last_active_days_ago,
+                        drop_off_feature=drop_off_feature,
+                        unused_features=unused_features,
+                        had_technical_issues=had_issues,
+                        received_poor_responses=poor_responses,
+                        winback_probability=winback_prob,
+                        recommended_action=recommended_action,
+                    )
+                )
 
             return profiles
 
@@ -622,52 +663,64 @@ class RetentionAnalytics:
         # 1. Низкая активность
         avg_per_day = total_requests / max(lifetime_days, 1)
         if avg_per_day < 1:
-            indicators.append('low_usage')
+            indicators.append("low_usage")
 
         # 2. Технические проблемы
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM requests
                 WHERE user_id = ? AND success = 0
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
             failed = (await cursor.fetchone())[0]
             await cursor.close()
 
             if failed > total_requests * 0.2:  # >20% failures
-                indicators.append('had_errors')
+                indicators.append("had_errors")
 
         # 3. Не изучил продукт
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(DISTINCT request_type) FROM requests
                 WHERE user_id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
             unique_features = (await cursor.fetchone())[0]
             await cursor.close()
 
             if unique_features <= 2:
-                indicators.append('limited_exploration')
+                indicators.append("limited_exploration")
 
         # 4. Негативный опыт
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM ratings r
                 INNER JOIN requests req ON r.request_id = req.id
                 WHERE req.user_id = ? AND r.rating = -1
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
             dislikes = (await cursor.fetchone())[0]
             await cursor.close()
 
             if dislikes > 2:
-                indicators.append('poor_experience')
+                indicators.append("poor_experience")
 
         # 5. Быстро бросил после покупки (объединенный запрос для атомарности)
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     (SELECT MIN(created_at) FROM payments WHERE user_id = ? AND status = 'completed') as first_payment,
                     (SELECT MAX(created_at) FROM requests WHERE user_id = ?) as last_request
-            """, (user_id, user_id))
+            """,
+                (user_id, user_id),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -676,23 +729,26 @@ class RetentionAnalytics:
                 days_after_payment = (last_request - first_payment) // 86400
 
                 if days_after_payment < 3:
-                    indicators.append('immediate_abandonment')
+                    indicators.append("immediate_abandonment")
 
         # 6. Вероятно цена слишком высокая
         if total_requests < 10:  # мало использовал перед окончанием
-            indicators.append('price_sensitive')
+            indicators.append("price_sensitive")
 
         return indicators
 
     async def _get_last_feature_used(self, user_id: int) -> str | None:
         """Последняя фича которую использовал пользователь"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT request_type FROM requests
                 WHERE user_id = ?
                 ORDER BY created_at DESC
                 LIMIT 1
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             row = await cursor.fetchone()
             await cursor.close()
@@ -702,20 +758,23 @@ class RetentionAnalytics:
     async def _get_unused_features(self, user_id: int) -> list[str]:
         """Какие фичи не попробовал"""
         all_features = [
-            'legal_question',
-            'voice_message',
-            'document_summary',
-            'document_risks',
-            'document_chat',
-            'ocr',
-            'judicial_practice'
+            "legal_question",
+            "voice_message",
+            "document_summary",
+            "document_risks",
+            "document_chat",
+            "ocr",
+            "judicial_practice",
         ]
 
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT DISTINCT request_type FROM requests
                 WHERE user_id = ?
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -727,10 +786,13 @@ class RetentionAnalytics:
     async def _had_technical_issues(self, user_id: int) -> bool:
         """Были ли серьезные технические проблемы"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM requests
                 WHERE user_id = ? AND success = 0
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             failures = (await cursor.fetchone())[0]
             await cursor.close()
@@ -740,11 +802,14 @@ class RetentionAnalytics:
     async def _had_poor_responses(self, user_id: int) -> bool:
         """Были ли плохие ответы (negative ratings)"""
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM ratings r
                 INNER JOIN requests req ON r.request_id = req.id
                 WHERE req.user_id = ? AND r.rating = -1
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             dislikes = (await cursor.fetchone())[0]
             await cursor.close()
@@ -752,11 +817,7 @@ class RetentionAnalytics:
             return dislikes >= 2
 
     def _calculate_winback_probability(
-        self,
-        total_requests: int,
-        lifetime_days: int,
-        had_issues: bool,
-        last_active_days_ago: int
+        self, total_requests: int, lifetime_days: int, had_issues: bool, last_active_days_ago: int
     ) -> float:
         """Вероятность вернуть пользователя"""
 
@@ -785,17 +846,14 @@ class RetentionAnalytics:
         return round(min(max(prob, 0), 100), 2)
 
     def _recommend_winback_action(
-        self,
-        churn_indicators: list[str],
-        winback_prob: float,
-        had_issues: bool
+        self, churn_indicators: list[str], winback_prob: float, had_issues: bool
     ) -> str:
         """Рекомендация что делать для возврата"""
 
         if winback_prob > 60:
-            if 'price_sensitive' in churn_indicators:
+            if "price_sensitive" in churn_indicators:
                 return "Discount offer (30-50% off)"
-            elif 'limited_exploration' in churn_indicators:
+            elif "limited_exploration" in churn_indicators:
                 return "Onboarding email + free trial extension"
             else:
                 return "Simple reminder + case study"
@@ -803,7 +861,7 @@ class RetentionAnalytics:
         elif winback_prob > 30:
             if had_issues:
                 return "Apology + fixed issues announcement + discount"
-            elif 'poor_experience' in churn_indicators:
+            elif "poor_experience" in churn_indicators:
                 return "Product improvements announcement + free month"
             else:
                 return "Win-back campaign with strong incentive"
@@ -830,7 +888,7 @@ class RetentionAnalytics:
                 "avg_power_score": sum(u.power_user_score for u in retained) / len(retained),
                 "avg_feature_diversity": sum(u.feature_diversity for u in retained) / len(retained),
                 "top_features": self._get_top_features_for_segment(retained),
-                "common_patterns": self._find_common_patterns(retained)
+                "common_patterns": self._find_common_patterns(retained),
             },
             "churned": {
                 "count": len(churned),
@@ -838,8 +896,8 @@ class RetentionAnalytics:
                 "avg_lifetime_days": sum(u.lifetime_days for u in churned) / len(churned),
                 "top_churn_indicators": self._get_top_churn_indicators(churned),
                 "unused_features_common": self._get_common_unused_features(churned),
-                "winback_distribution": self._winback_distribution(churned)
-            }
+                "winback_distribution": self._winback_distribution(churned),
+            },
         }
 
         return comparison
@@ -857,15 +915,15 @@ class RetentionAnalytics:
 
     def _find_common_patterns(self, users: list[RetainedUserProfile]) -> dict[str, Any]:
         """Общие паттерны среди retained users"""
-        weekday_users = sum(1 for u in users if u.usage_patterns.get('is_weekday_user', False))
-        daytime_users = sum(1 for u in users if u.usage_patterns.get('is_daytime_user', False))
+        weekday_users = sum(1 for u in users if u.usage_patterns.get("is_weekday_user", False))
+        daytime_users = sum(1 for u in users if u.usage_patterns.get("is_daytime_user", False))
 
         return {
             "weekday_preference_pct": round((weekday_users / len(users)) * 100, 1),
             "daytime_preference_pct": round((daytime_users / len(users)) * 100, 1),
             "avg_days_active_per_week": round(
                 sum(u.days_active_per_week for u in users) / len(users), 2
-            )
+            ),
         }
 
     def _get_top_churn_indicators(self, users: list[ChurnedUserProfile]) -> dict[str, int]:
@@ -903,4 +961,3 @@ class RetentionAnalytics:
                 distribution["low"] += 1
 
         return distribution
-

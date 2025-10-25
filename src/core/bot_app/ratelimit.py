@@ -94,9 +94,7 @@ class RateLimiter:
             snapshot["tracked_users"] = len(self._local)
             snapshot["max_active_requests"] = max(active_counts, default=0)
             snapshot["limiter_saturated"] = (
-                self.max_requests > 0
-                and snapshot["max_active_requests"] >= self.max_requests
+                self.max_requests > 0 and snapshot["max_active_requests"] >= self.max_requests
             )
 
         return snapshot
-

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class UserSegment:
     """Сегмент пользователей для аналитики"""
+
     segment_id: str
     name: str
     description: str
@@ -28,6 +29,7 @@ class UserSegment:
 @dataclass
 class ConversionMetrics:
     """Метрики конверсии"""
+
     total_trial_users: int
     converted_to_paid: int
     conversion_rate: float
@@ -38,6 +40,7 @@ class ConversionMetrics:
 @dataclass
 class ChurnMetrics:
     """Метрики оттока"""
+
     total_expired: int
     renewed_count: int
     churned_count: int
@@ -100,22 +103,22 @@ class AdminAnalytics:
         segments = {}
 
         # 1. Power Users - активные платные пользователи
-        segments['power_users'] = await self._get_power_users()
+        segments["power_users"] = await self._get_power_users()
 
         # 2. At Risk - риск оттока
-        segments['at_risk'] = await self._get_at_risk_users()
+        segments["at_risk"] = await self._get_at_risk_users()
 
         # 3. Churned - ушедшие
-        segments['churned'] = await self._get_churned_users()
+        segments["churned"] = await self._get_churned_users()
 
         # 4. Trial Converters - успешная конверсия
-        segments['trial_converters'] = await self._get_trial_converters()
+        segments["trial_converters"] = await self._get_trial_converters()
 
         # 5. Freeloaders - использовали trial и пропали
-        segments['freeloaders'] = await self._get_freeloaders()
+        segments["freeloaders"] = await self._get_freeloaders()
 
         # 6. New Users - новые за последние 7 дней
-        segments['new_users'] = await self._get_new_users()
+        segments["new_users"] = await self._get_new_users()
 
         # 7. Подписки по тарифам
         segments.update(await self._get_subscription_plan_segments())
@@ -129,7 +132,8 @@ class AdminAnalytics:
             now = int(time.time())
             week_ago = now - (7 * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     u.total_requests,
@@ -145,37 +149,42 @@ class AdminAnalytics:
                 GROUP BY u.user_id
                 HAVING week_requests > 35  -- > 5/день за неделю
                 ORDER BY week_requests DESC
-            """, (week_ago, now))
+            """,
+                (week_ago, now),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
             users = []
             for row in rows:
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'last_active': datetime.fromtimestamp(row[2]).strftime('%Y-%m-%d %H:%M'),
-                    'subscription_until': datetime.fromtimestamp(row[3]).strftime('%Y-%m-%d'),
-                    'days_since_registration': (now - row[4]) // 86400,
-                    'week_requests': row[5],
-                    'avg_requests_per_day': round(row[5] / 7, 1),
-                    'avg_response_time_ms': int(row[6]) if row[6] else 0
-                })
+                users.append(
+                    {
+                        "user_id": row[0],
+                        "total_requests": row[1],
+                        "last_active": datetime.fromtimestamp(row[2]).strftime("%Y-%m-%d %H:%M"),
+                        "subscription_until": datetime.fromtimestamp(row[3]).strftime("%Y-%m-%d"),
+                        "days_since_registration": (now - row[4]) // 86400,
+                        "week_requests": row[5],
+                        "avg_requests_per_day": round(row[5] / 7, 1),
+                        "avg_response_time_ms": int(row[6]) if row[6] else 0,
+                    }
+                )
 
             metrics = {
-                'total_revenue_potential': len(users) * 300,  # примерная стоимость подписки
-                'avg_requests_per_user': sum(u['week_requests'] for u in users) / max(len(users), 1),
-                'most_active_user_id': users[0]['user_id'] if users else None
+                "total_revenue_potential": len(users) * 300,  # примерная стоимость подписки
+                "avg_requests_per_user": sum(u["week_requests"] for u in users)
+                / max(len(users), 1),
+                "most_active_user_id": users[0]["user_id"] if users else None,
             }
 
             return UserSegment(
-                segment_id='power_users',
-                name='⚡ Суперактивные',
-                description='Активные платные пользователи (>5 запросов/день)',
+                segment_id="power_users",
+                name="⚡ Суперактивные",
+                description="Активные платные пользователи (>5 запросов/день)",
                 user_count=len(users),
                 users=users,
-                metrics=metrics
+                metrics=metrics,
             )
 
     async def _get_at_risk_users(self) -> UserSegment:
@@ -186,7 +195,8 @@ class AdminAnalytics:
             week_ago = now - (7 * 86400)
             expires_soon = now + (7 * 86400)  # подписка истекает через 7 дней
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     u.total_requests,
@@ -201,7 +211,9 @@ class AdminAnalytics:
                 GROUP BY u.user_id
                 HAVING week_requests < 14  -- < 2/день
                 ORDER BY u.subscription_until ASC
-            """, (week_ago, now, expires_soon))
+            """,
+                (week_ago, now, expires_soon),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -209,27 +221,29 @@ class AdminAnalytics:
             users = []
             for row in rows:
                 days_until_expiry = (row[3] - now) // 86400
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'last_active': datetime.fromtimestamp(row[2]).strftime('%Y-%m-%d %H:%M'),
-                    'days_until_expiry': days_until_expiry,
-                    'week_requests': row[4],
-                    'risk_level': 'high' if days_until_expiry < 3 else 'medium'
-                })
+                users.append(
+                    {
+                        "user_id": row[0],
+                        "total_requests": row[1],
+                        "last_active": datetime.fromtimestamp(row[2]).strftime("%Y-%m-%d %H:%M"),
+                        "days_until_expiry": days_until_expiry,
+                        "week_requests": row[4],
+                        "risk_level": "high" if days_until_expiry < 3 else "medium",
+                    }
+                )
 
             metrics = {
-                'high_risk_count': sum(1 for u in users if u['risk_level'] == 'high'),
-                'potential_revenue_loss': len(users) * 300
+                "high_risk_count": sum(1 for u in users if u["risk_level"] == "high"),
+                "potential_revenue_loss": len(users) * 300,
             }
 
             return UserSegment(
-                segment_id='at_risk',
-                name='⚠️ Группа риска',
-                description='Мало используют, подписка истекает скоро',
+                segment_id="at_risk",
+                name="⚠️ Группа риска",
+                description="Мало используют, подписка истекает скоро",
                 user_count=len(users),
                 users=users,
-                metrics=metrics
+                metrics=metrics,
             )
 
     async def _get_churned_users(self) -> UserSegment:
@@ -239,7 +253,8 @@ class AdminAnalytics:
             now = int(time.time())
             month_ago = now - (30 * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     u.total_requests,
@@ -255,7 +270,9 @@ class AdminAnalytics:
                 GROUP BY u.user_id
                 HAVING total_payments > 0
                 ORDER BY u.subscription_until DESC
-            """, (month_ago, now))
+            """,
+                (month_ago, now),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -264,36 +281,39 @@ class AdminAnalytics:
             for row in rows:
                 days_since_expiry = (now - row[3]) // 86400
                 lifetime_days = (row[3] - row[4]) // 86400
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'last_active': datetime.fromtimestamp(row[2]).strftime('%Y-%m-%d %H:%M'),
-                    'expired_at': datetime.fromtimestamp(row[3]).strftime('%Y-%m-%d'),
-                    'days_since_expiry': days_since_expiry,
-                    'lifetime_days': lifetime_days,
-                    'total_payments': row[5],
-                    'ltv': row[5] * 300  # примерная lifetime value
-                })
+                users.append(
+                    {
+                        "user_id": row[0],
+                        "total_requests": row[1],
+                        "last_active": datetime.fromtimestamp(row[2]).strftime("%Y-%m-%d %H:%M"),
+                        "expired_at": datetime.fromtimestamp(row[3]).strftime("%Y-%m-%d"),
+                        "days_since_expiry": days_since_expiry,
+                        "lifetime_days": lifetime_days,
+                        "total_payments": row[5],
+                        "ltv": row[5] * 300,  # примерная lifetime value
+                    }
+                )
 
             metrics = {
-                'avg_lifetime_days': sum(u['lifetime_days'] for u in users) / max(len(users), 1),
-                'total_lost_revenue': sum(u['ltv'] for u in users)
+                "avg_lifetime_days": sum(u["lifetime_days"] for u in users) / max(len(users), 1),
+                "total_lost_revenue": sum(u["ltv"] for u in users),
             }
 
             return UserSegment(
-                segment_id='churned',
-                name='📉 Ушедшие',
-                description='Не продлили подписку после истечения',
+                segment_id="churned",
+                name="📉 Ушедшие",
+                description="Не продлили подписку после истечения",
                 user_count=len(users),
                 users=users,
-                metrics=metrics
+                metrics=metrics,
             )
 
     async def _get_trial_converters(self) -> UserSegment:
         """Успешно конвертировались из trial в paid"""
 
         async with self.db.pool.acquire() as conn:
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     u.total_requests,
@@ -307,7 +327,8 @@ class AdminAnalytics:
                 GROUP BY u.user_id
                 ORDER BY first_payment_at DESC
                 LIMIT 100
-            """)
+            """
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -315,29 +336,32 @@ class AdminAnalytics:
             users = []
             for row in rows:
                 time_to_conversion_days = (row[4] - row[2]) // 86400
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'registered_at': datetime.fromtimestamp(row[2]).strftime('%Y-%m-%d'),
-                    'first_payment_at': datetime.fromtimestamp(row[4]).strftime('%Y-%m-%d'),
-                    'time_to_conversion_days': time_to_conversion_days,
-                    'payment_count': row[5],
-                    'is_recurring': row[5] > 1
-                })
+                users.append(
+                    {
+                        "user_id": row[0],
+                        "total_requests": row[1],
+                        "registered_at": datetime.fromtimestamp(row[2]).strftime("%Y-%m-%d"),
+                        "first_payment_at": datetime.fromtimestamp(row[4]).strftime("%Y-%m-%d"),
+                        "time_to_conversion_days": time_to_conversion_days,
+                        "payment_count": row[5],
+                        "is_recurring": row[5] > 1,
+                    }
+                )
 
             metrics = {
-                'avg_time_to_conversion': sum(u['time_to_conversion_days'] for u in users) / max(len(users), 1),
-                'recurring_customers': sum(1 for u in users if u['is_recurring']),
-                'total_revenue': len(users) * 300
+                "avg_time_to_conversion": sum(u["time_to_conversion_days"] for u in users)
+                / max(len(users), 1),
+                "recurring_customers": sum(1 for u in users if u["is_recurring"]),
+                "total_revenue": len(users) * 300,
             }
 
             return UserSegment(
-                segment_id='trial_converters',
-                name='💰 Из триала в оплату',
-                description='Успешно конвертировались в платных клиентов',
+                segment_id="trial_converters",
+                name="💰 Из триала в оплату",
+                description="Успешно конвертировались в платных клиентов",
                 user_count=len(users),
                 users=users,
-                metrics=metrics
+                metrics=metrics,
             )
 
     async def _get_freeloaders(self) -> UserSegment:
@@ -347,7 +371,8 @@ class AdminAnalytics:
             now = int(time.time())
             week_ago = now - (7 * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     u.total_requests,
@@ -361,7 +386,9 @@ class AdminAnalytics:
                   AND t.id IS NULL
                   AND u.last_request_at < ?
                 ORDER BY u.total_requests DESC
-            """, (now, week_ago))
+            """,
+                (now, week_ago),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -369,21 +396,23 @@ class AdminAnalytics:
             users = []
             for row in rows:
                 days_inactive = (now - row[3]) // 86400
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'trial_remaining': row[2],
-                    'days_inactive': days_inactive,
-                    'registered_at': datetime.fromtimestamp(row[4]).strftime('%Y-%m-%d')
-                })
+                users.append(
+                    {
+                        "user_id": row[0],
+                        "total_requests": row[1],
+                        "trial_remaining": row[2],
+                        "days_inactive": days_inactive,
+                        "registered_at": datetime.fromtimestamp(row[4]).strftime("%Y-%m-%d"),
+                    }
+                )
 
             return UserSegment(
-                segment_id='freeloaders',
-                name='🚫 Бесплатники',
-                description='Использовали trial, не купили, неактивны',
+                segment_id="freeloaders",
+                name="🚫 Бесплатники",
+                description="Использовали trial, не купили, неактивны",
                 user_count=len(users),
                 users=users,
-                metrics={'potential_conversions': len(users)}
+                metrics={"potential_conversions": len(users)},
             )
 
     async def _get_new_users(self) -> UserSegment:
@@ -393,7 +422,8 @@ class AdminAnalytics:
             now = int(time.time())
             week_ago = now - (7 * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     u.user_id,
                     u.total_requests,
@@ -403,33 +433,37 @@ class AdminAnalytics:
                 FROM users u
                 WHERE u.created_at >= ?
                 ORDER BY u.created_at DESC
-            """, (week_ago,))
+            """,
+                (week_ago,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
             users = []
             for row in rows:
-                users.append({
-                    'user_id': row[0],
-                    'total_requests': row[1],
-                    'trial_remaining': row[2],
-                    'registered_at': datetime.fromtimestamp(row[3]).strftime('%Y-%m-%d %H:%M'),
-                    'has_subscription': row[4] > now
-                })
+                users.append(
+                    {
+                        "user_id": row[0],
+                        "total_requests": row[1],
+                        "trial_remaining": row[2],
+                        "registered_at": datetime.fromtimestamp(row[3]).strftime("%Y-%m-%d %H:%M"),
+                        "has_subscription": row[4] > now,
+                    }
+                )
 
             metrics = {
-                'already_paid': sum(1 for u in users if u['has_subscription']),
-                'avg_requests': sum(u['total_requests'] for u in users) / max(len(users), 1)
+                "already_paid": sum(1 for u in users if u["has_subscription"]),
+                "avg_requests": sum(u["total_requests"] for u in users) / max(len(users), 1),
             }
 
             return UserSegment(
-                segment_id='new_users',
-                name='🆕 Новые пользователи',
-                description='Зарегистрировались за последние 7 дней',
+                segment_id="new_users",
+                name="🆕 Новые пользователи",
+                description="Зарегистрировались за последние 7 дней",
                 user_count=len(users),
                 users=users,
-                metrics=metrics
+                metrics=metrics,
             )
 
     async def _get_subscription_plan_segments(self) -> dict[str, UserSegment]:
@@ -475,29 +509,41 @@ class AdminAnalytics:
 
                     total_requests += total_request_value
 
-                    users.append({
-                        'user_id': user_id,
-                        'subscription_until': datetime.fromtimestamp(subscription_until_value).strftime('%Y-%m-%d') if subscription_until_value else '—',
-                        'last_purchase': datetime.fromtimestamp(last_purchase_value).strftime('%Y-%m-%d') if last_purchase_value else '—',
-                        'total_requests': total_request_value,
-                        'requests_balance': balance if balance is not None else '—',
-                    })
+                    users.append(
+                        {
+                            "user_id": user_id,
+                            "subscription_until": (
+                                datetime.fromtimestamp(subscription_until_value).strftime(
+                                    "%Y-%m-%d"
+                                )
+                                if subscription_until_value
+                                else "—"
+                            ),
+                            "last_purchase": (
+                                datetime.fromtimestamp(last_purchase_value).strftime("%Y-%m-%d")
+                                if last_purchase_value
+                                else "—"
+                            ),
+                            "total_requests": total_request_value,
+                            "requests_balance": balance if balance is not None else "—",
+                        }
+                    )
 
                 user_count = len(users)
                 avg_requests = round(total_requests / user_count, 1) if user_count else 0.0
-                monthly_revenue = active_users * config['price']
-                segment_key = f'plan_{plan_id}'
+                monthly_revenue = active_users * config["price"]
+                segment_key = f"plan_{plan_id}"
 
                 segments[segment_key] = UserSegment(
                     segment_id=segment_key,
-                    name=config['name'],
-                    description=config['description'],
+                    name=config["name"],
+                    description=config["description"],
                     user_count=user_count,
                     users=users,
                     metrics={
-                        'active_subscribers': active_users,
-                        'avg_requests': avg_requests,
-                        'monthly_revenue_estimate': f"{monthly_revenue:,}₽".replace(",", " "),
+                        "active_subscribers": active_users,
+                        "avg_requests": avg_requests,
+                        "monthly_revenue_estimate": f"{monthly_revenue:,}₽".replace(",", " "),
                     },
                 )
 
@@ -508,14 +554,13 @@ class AdminAnalytics:
 
         async with self.db.pool.acquire() as conn:
             # Всего trial пользователей
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM users WHERE trial_remaining < 10"
-            )
+            cursor = await conn.execute("SELECT COUNT(*) FROM users WHERE trial_remaining < 10")
             total_trial = (await cursor.fetchone())[0]
             await cursor.close()
 
             # Конвертировались в paid
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     COUNT(DISTINCT u.user_id) as converted,
                     AVG(u.total_requests) as avg_requests,
@@ -523,7 +568,8 @@ class AdminAnalytics:
                 FROM users u
                 INNER JOIN payments t ON u.user_id = t.user_id
                 WHERE u.trial_remaining < 10
-            """)
+            """
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -536,7 +582,7 @@ class AdminAnalytics:
                 converted_to_paid=converted,
                 conversion_rate=round((converted / max(total_trial, 1)) * 100, 2),
                 avg_trial_requests_before_conversion=round(avg_requests, 1),
-                avg_time_to_conversion_days=round(avg_time, 1)
+                avg_time_to_conversion_days=round(avg_time, 1),
             )
 
     async def get_churn_metrics(self, period_days: int = 30) -> ChurnMetrics:
@@ -547,7 +593,8 @@ class AdminAnalytics:
             period_start = now - (period_days * 86400)
 
             # Истекшие подписки за период
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN renewed.user_id IS NOT NULL THEN 1 ELSE 0 END) as renewed
@@ -559,7 +606,9 @@ class AdminAnalytics:
                 ) renewed ON u.user_id = renewed.user_id
                 WHERE u.subscription_until >= ?
                   AND u.subscription_until < ?
-            """, (period_start, period_start, now))
+            """,
+                (period_start, period_start, now),
+            )
 
             row = await cursor.fetchone()
             await cursor.close()
@@ -574,7 +623,7 @@ class AdminAnalytics:
                 churned_count=churned,
                 retention_rate=round((renewed / max(total_expired, 1)) * 100, 2),
                 avg_requests_before_churn=0.0,  # TODO: рассчитать
-                churn_by_usage={}  # TODO: рассчитать
+                churn_by_usage={},  # TODO: рассчитать
             )
 
     async def get_daily_stats(self, days: int = 7) -> list[dict[str, Any]]:
@@ -584,7 +633,8 @@ class AdminAnalytics:
             now = int(time.time())
             period_start = now - (days * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     DATE(created_at, 'unixepoch') as date,
                     COUNT(*) as requests,
@@ -595,18 +645,20 @@ class AdminAnalytics:
                 WHERE created_at >= ?
                 GROUP BY date
                 ORDER BY date DESC
-            """, (period_start,))
+            """,
+                (period_start,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
             return [
                 {
-                    'date': row[0],
-                    'requests': row[1],
-                    'active_users': row[2],
-                    'total_tokens': row[3],
-                    'avg_response_time_ms': int(row[4]) if row[4] else 0
+                    "date": row[0],
+                    "requests": row[1],
+                    "active_users": row[2],
+                    "total_tokens": row[3],
+                    "avg_response_time_ms": int(row[4]) if row[4] else 0,
                 }
                 for row in rows
             ]
@@ -620,7 +672,8 @@ class AdminAnalytics:
                 period_start = now - (days * 86400)
 
                 # Используем request_type из таблицы requests (основной источник данных)
-                cursor = await conn.execute("""
+                cursor = await conn.execute(
+                    """
                     SELECT request_type, COUNT(*) as count
                     FROM requests
                     WHERE created_at >= ?
@@ -628,7 +681,9 @@ class AdminAnalytics:
                       AND request_type IS NOT NULL
                     GROUP BY request_type
                     ORDER BY count DESC
-                """, (period_start,))
+                """,
+                    (period_start,),
+                )
 
                 rows = await cursor.fetchall()
                 await cursor.close()
@@ -638,14 +693,17 @@ class AdminAnalytics:
 
                 # Fallback: если нет данных в requests, попробуем behavior_events
                 try:
-                    cursor = await conn.execute("""
+                    cursor = await conn.execute(
+                        """
                         SELECT feature, COUNT(*) as count
                         FROM behavior_events
                         WHERE timestamp >= ?
                           AND event_type = 'feature_use'
                         GROUP BY feature
                         ORDER BY count DESC
-                    """, (period_start,))
+                    """,
+                        (period_start,),
+                    )
 
                     rows = await cursor.fetchall()
                     await cursor.close()
@@ -670,7 +728,7 @@ class AdminAnalytics:
         if segment.metrics:
             summary += "\n<b>Метрики:</b>\n"
             for key, value in segment.metrics.items():
-                label = METRIC_LABELS.get(key, key.replace('_', ' ').title())
+                label = METRIC_LABELS.get(key, key.replace("_", " ").title())
                 summary += f"• {label}: {value}\n"
 
         if segment.users:

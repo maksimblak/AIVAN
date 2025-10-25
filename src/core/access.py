@@ -110,9 +110,7 @@ class AccessService:
                 allowed=True,
                 trial_used=used_before_request,
                 trial_remaining=trial_after,
-                message=(
-                    f"Пробный режим: осталось {trial_after} из {self._trial_limit} запросов."
-                ),
+                message=(f"Пробный режим: осталось {trial_after} из {self._trial_limit} запросов."),
                 is_trial=True,
             )
 

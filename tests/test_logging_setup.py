@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from core.bot_app.logging_setup import setup_logging
 
 
-def _reset_logger_state(logger: logging.Logger, original_level: int, original_handlers: list[logging.Handler]) -> None:
+def _reset_logger_state(
+    logger: logging.Logger, original_level: int, original_handlers: list[logging.Handler]
+) -> None:
     logger.handlers = original_handlers
     logger.setLevel(original_level)
 
@@ -32,7 +34,9 @@ def test_setup_logging_with_json_formatter() -> None:
         assert root.level == logging.DEBUG
         assert len(root.handlers) == 1
         handler = root.handlers[0]
-        record = logging.LogRecord("test", logging.INFO, __file__, 1, "hello", args=(), exc_info=None)
+        record = logging.LogRecord(
+            "test", logging.INFO, __file__, 1, "hello", args=(), exc_info=None
+        )
         payload = json.loads(handler.formatter.format(record))
         assert payload["msg"] == "hello"
         assert payload["lvl"] == "INFO"

@@ -8,8 +8,8 @@ from aiogram import BaseMiddleware
 from aiogram.enums import ParseMode
 from aiogram.types import CallbackQuery, Message, Update
 
-from src.core.exceptions import BaseCustomException, ErrorContext, ErrorHandler
 from core.bot_app.ui_components import sanitize_telegram_html
+from src.core.exceptions import BaseCustomException, ErrorContext, ErrorHandler
 
 DEFAULT_ERROR_MESSAGE = (
     "\u26a0\ufe0f <b>Произошла ошибка обработки запроса</b>\n\n"
@@ -42,9 +42,14 @@ class ErrorHandlingMiddleware(BaseMiddleware):
                     custom_exc = await self._error_handler.handle_exception(exc, context)
                     user_message = getattr(custom_exc, "user_message", DEFAULT_ERROR_MESSAGE)
                 except Exception as handler_error:  # noqa: BLE001
-                    self._logger.exception("Error handler failed to process aiogram exception", extra={"handler_error": str(handler_error)})
+                    self._logger.exception(
+                        "Error handler failed to process aiogram exception",
+                        extra={"handler_error": str(handler_error)},
+                    )
             else:
-                self._logger.warning("Error handler is not configured; falling back to default response")
+                self._logger.warning(
+                    "Error handler is not configured; falling back to default response"
+                )
 
             self._log_exception(exc, context, custom_exc)
             await self._reply_to_event(event, user_message)
@@ -79,14 +84,13 @@ class ErrorHandlingMiddleware(BaseMiddleware):
             additional = context.additional_data or {}
             payload = additional.get("payload")
             if payload:
-                trimmed = payload if len(payload) <= 1000 else payload[:1000] + '...'
+                trimmed = payload if len(payload) <= 1000 else payload[:1000] + "..."
                 log_extra["payload"] = trimmed
             event_type = additional.get("event_type")
             if event_type:
                 log_extra["event_type"] = event_type
 
-        self._logger.exception('Unhandled exception in aiogram handler', extra=log_extra)
-
+        self._logger.exception("Unhandled exception in aiogram handler", extra=log_extra)
 
     def _build_context(self, event: Update, data: Dict[str, Any]) -> ErrorContext:
         user_id = None
@@ -102,9 +106,7 @@ class ErrorHandlingMiddleware(BaseMiddleware):
                 user_id = event.from_user.id
             if event.message and event.message.chat:
                 chat_id = event.message.chat.id
-            message_text = event.data or (
-                event.message.text if event.message else None
-            )
+            message_text = event.data or (event.message.text if event.message else None)
 
         handler_obj = data.get("handler")
         handler_name = getattr(handler_obj, "__qualname__", None) or repr(handler_obj)

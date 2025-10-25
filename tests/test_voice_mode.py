@@ -4,10 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from aiogram.enums import ParseMode
-from src.core.bot_app import voice as voice_mod
-from src.core.bot_app import context as ctx
+
+from src.core.bot_app import context as ctx, voice as voice_mod
 
 
 class DummyAudioService:
@@ -119,4 +118,3 @@ async def test_process_voice_message_happy_path(monkeypatch, tmp_path):
         assert dummy_service.ensure_called
     finally:
         voice_mod.simple_context.audio_service = original_audio_service
-

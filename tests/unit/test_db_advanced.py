@@ -2,15 +2,19 @@
 Тесты для продвинутой базы данных
 """
 
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
-import tempfile
-import os
-from pathlib import Path
-from src.core.db_advanced import DatabaseAdvanced, UserRecord, TransactionRecord
+
+from src.core.db_advanced import DatabaseAdvanced, TransactionRecord, UserRecord
 
 if os.getenv("RUN_FULL_TESTS") != "1":
-    pytestmark = pytest.mark.skip(reason="Requires RUN_FULL_TESTS=1 for database integration checks")
+    pytestmark = pytest.mark.skip(
+        reason="Requires RUN_FULL_TESTS=1 for database integration checks"
+    )
 
 
 class TestDatabaseAdvanced:
@@ -36,9 +40,7 @@ class TestDatabaseAdvanced:
     async def test_init_creates_tables(self, db):
         # Act & Assert - проверяем что таблицы созданы
         async with db.get_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = await cursor.fetchall()
             table_names = [row[0] for row in tables]
 
@@ -115,7 +117,7 @@ class TestDatabaseAdvanced:
             currency="XTR",
             amount=100,
             payload="test_payload",
-            status="pending"
+            status="pending",
         )
 
         # Assert
@@ -192,8 +194,7 @@ class TestDatabaseAdvanced:
             async with db.get_connection() as conn:
                 async with conn.execute("BEGIN"):
                     await conn.execute(
-                        "UPDATE users SET trial_remaining = ? WHERE user_id = ?",
-                        (5, user_id)
+                        "UPDATE users SET trial_remaining = ? WHERE user_id = ?", (5, user_id)
                     )
                     # Имитируем ошибку
                     raise Exception("Test error")

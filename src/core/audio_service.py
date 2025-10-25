@@ -6,15 +6,16 @@ import logging
 import re
 import tempfile
 from contextlib import suppress
-
-import httpx
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from openai import APIStatusError, AsyncOpenAI
 
 try:  # pragma: no cover - optional dependency
-    from core.bot_app.openai_gateway import get_async_openai_client as _gateway_get_openai_client  # type: ignore
+    from core.bot_app.openai_gateway import (  # type: ignore
+        get_async_openai_client as _gateway_get_openai_client,
+    )
 except Exception:  # noqa: BLE001 - gateway not available during some tests
     _gateway_get_openai_client = None
 
@@ -287,7 +288,6 @@ class AudioService:
             raise last_error
         raise RuntimeError("Unexpected failure in text-to-speech payload creation")
 
-
     async def _invoke_tts(
         self,
         *,
@@ -382,7 +382,9 @@ class AudioService:
                 audio_payload.pop(removed, None)
                 continue
             except httpx.HTTPStatusError as http_error:
-                if include_modalities and self._is_unknown_parameter_error(http_error, "modalities"):
+                if include_modalities and self._is_unknown_parameter_error(
+                    http_error, "modalities"
+                ):
                     include_modalities = False
                     continue
                 if not optional_keys or http_error.response.status_code not in {400, 422}:
@@ -398,7 +400,9 @@ class AudioService:
         try:
             return base64.b64decode(audio_b64)
         except Exception as decode_error:  # noqa: BLE001
-            raise RuntimeError("Failed to decode audio payload from responses API") from decode_error
+            raise RuntimeError(
+                "Failed to decode audio payload from responses API"
+            ) from decode_error
 
     @staticmethod
     def _to_plain_data(obj: Any) -> Any:

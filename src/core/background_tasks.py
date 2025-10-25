@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from .exceptions import ErrorContext, ErrorHandler
 from src.core.db_advanced import TransactionStatus
 from src.documents.base import DocumentStorage
+
+from .exceptions import ErrorContext, ErrorHandler
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +364,6 @@ class DocumentStorageCleanupTask(BackgroundTask):
     async def execute(self) -> dict[str, Any]:
         removed = await self.storage.cleanup_all_users(self.max_age_hours)
         return {"removed": removed, "max_age_hours": self.max_age_hours}
-
 
 
 class HealthCheckTask(BackgroundTask):

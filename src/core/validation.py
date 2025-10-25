@@ -146,7 +146,9 @@ class InputValidator:
             return ValidationResult(is_valid=False, errors=["User ID должен быть числом"])
 
         if uid <= 0:
-            return ValidationResult(is_valid=False, errors=["User ID должен быть положительным числом"])
+            return ValidationResult(
+                is_valid=False, errors=["User ID должен быть положительным числом"]
+            )
 
         max_allowed = 9_223_372_036_854_775_807  # 2**63 - 1
         if uid > max_allowed:
@@ -192,6 +194,7 @@ class InputValidator:
         """Проверка на подозрительные паттерны безопасности"""
         try:
             from src.core.metrics import get_metrics_collector
+
             metrics = get_metrics_collector()
         except Exception as e:
             logger.debug(f"Failed to import metrics collector: {e}")
@@ -228,7 +231,9 @@ class InputValidator:
                 pattern_name = cls._get_sql_pattern_name(i)
                 if metrics:
                     try:
-                        metrics.record_sql_injection_attempt(pattern_type=pattern_name, source="user_input")
+                        metrics.record_sql_injection_attempt(
+                            pattern_type=pattern_name, source="user_input"
+                        )
                         metrics.record_security_violation(
                             violation_type="sql_injection", severity="warning", source="user_input"
                         )
@@ -366,4 +371,3 @@ def validate_input(validation_func):
         return wrapper
 
     return decorator
-

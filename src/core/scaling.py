@@ -11,11 +11,11 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any
 
 from src.core.app_context import get_settings
 from src.core.settings import AppSettings
-from datetime import datetime, timedelta
-from typing import Any
 
 try:
     import redis.asyncio as redis
@@ -112,7 +112,7 @@ class ServiceRegistry:
 
     def _generate_node_id(self) -> str:
         """Генерация уникального ID ноды"""
-        hostname = (self._settings.get_str("HOSTNAME", "localhost") or "localhost")
+        hostname = self._settings.get_str("HOSTNAME", "localhost") or "localhost"
         pid = os.getpid()
         timestamp = datetime.now().isoformat()
 
@@ -629,9 +629,3 @@ class ScalingManager:
                 "max_nodes": self.max_nodes,
             },
         }
-
-
-
-
-
-

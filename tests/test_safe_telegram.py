@@ -331,7 +331,9 @@ async def test_send_html_text_handles_split_failure(
     monkeypatch.setattr(safe_telegram, "tg_send_html", send_mock)
     monkeypatch.setattr(safe_telegram, "format_safe_html", lambda raw: raw)
 
-    await send_html_text(mock_telegram_bot, chat_id=11, raw_text="hello world", reply_to_message_id=None)
+    await send_html_text(
+        mock_telegram_bot, chat_id=11, raw_text="hello world", reply_to_message_id=None
+    )
 
     send_mock.assert_awaited_once()
     _, kwargs = send_mock.await_args

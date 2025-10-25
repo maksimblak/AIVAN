@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import logging
-from src.core.settings import AppSettings
-
 import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Tuple
+
+from src.core.settings import AppSettings
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -52,6 +52,7 @@ LANG_NAMES: Dict[str, str] = {
     "zh": "🇨🇳 Китайский",
     "ja": "🇯🇵 Японский",
 }
+
 
 def _human_lang(code: str) -> str:
     return LANG_NAMES.get(code, code)
@@ -96,6 +97,7 @@ DATE_RE = re.compile(
 )
 NUMBER_RE = re.compile(r"\b\d[\d\s.,]*\b")
 
+
 def _protect_entities(text: str) -> Tuple[str, Dict[str, str]]:
     """Заменяем критичные сущности плейсхолдерами {{URL0}}, {{EM0}}, {{DT0}}, {{N0}}."""
     mapping: Dict[str, str] = {}
@@ -117,11 +119,13 @@ def _protect_entities(text: str) -> Tuple[str, Dict[str, str]]:
     s4 = NUMBER_RE.sub(lambda m: _swap_store(mapping, "N", counter, m.group(0)), s3)
     return s4, mapping
 
+
 def _swap_store(mapping: Dict[str, str], tag: str, counter: Dict[str, int], value: str) -> str:
     key = f"{{{{{tag}{counter[tag]}}}}}"
     mapping[key] = value
     counter[tag] += 1
     return key
+
 
 def _restore_entities(text: str, mapping: Dict[str, str]) -> str:
     # чтобы не повредить пересечения, заменяем по убыванию длины ключа
@@ -131,6 +135,7 @@ def _restore_entities(text: str, mapping: Dict[str, str]) -> str:
 
 
 # ------------------------------- Класс модуля -------------------------------
+
 
 class DocumentTranslator(DocumentProcessor):
     """Класс для перевода документов"""
@@ -171,6 +176,7 @@ class DocumentTranslator(DocumentProcessor):
             target_lang: целевой язык (ru, en, zh, de, ...)
             glossary: пользовательский глоссарий {исходный термин: целевой термин}
         """
+
         async def _notify(stage: str, percent: float, **payload: Any) -> None:
             if not progress_callback:
                 return
@@ -186,7 +192,9 @@ class DocumentTranslator(DocumentProcessor):
 
         if not self.allow_ai or not self.openai_service:
             if not self.openai_service:
-                logger.warning("OpenAI service is not initialized; translation will fallback to identity")
+                logger.warning(
+                    "OpenAI service is not initialized; translation will fallback to identity"
+                )
 
         # Извлекаем текст
         success, text = await FileFormatHandler.extract_text_from_file(file_path)
@@ -265,7 +273,13 @@ class DocumentTranslator(DocumentProcessor):
     # -------------------------------- Перевод --------------------------------
 
     async def _translate_text(
-        self, text: str, source_lang: str, target_lang: str, *, glossary: Dict[str, str], progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        *,
+        glossary: Dict[str, str],
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Перевод текста с помощью AI (чанкинг + защита сущностей)."""
 
@@ -289,7 +303,9 @@ class DocumentTranslator(DocumentProcessor):
         protected_text, placeholders = _protect_entities(text)
 
         # Разрежем на чанки
-        chunks = TextProcessor.split_into_chunks(protected_text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap)
+        chunks = TextProcessor.split_into_chunks(
+            protected_text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap
+        )
         if not chunks:
             chunks = [protected_text]
 
@@ -301,7 +317,9 @@ class DocumentTranslator(DocumentProcessor):
 
         # Если нет AI — деградируем: возвращаем исходный текст (с восстановлением сущностей)
         if not (self.allow_ai and self.openai_service):
-            await _emit("completed", 100, language_pair=f"{source_lang}->{target_lang}", mode="fallback")
+            await _emit(
+                "completed", 100, language_pair=f"{source_lang}->{target_lang}", mode="fallback"
+            )
             return _restore_entities(protected_text, placeholders), []
 
         glossary_text = self._format_glossary(glossary)
@@ -360,13 +378,21 @@ class DocumentTranslator(DocumentProcessor):
             )
 
             progress = 40 + (i / max(total_chunks, 1)) * 45
-            await _emit("translating", progress, chunk_index=i, chunks_total=total_chunks, status=status)
+            await _emit(
+                "translating", progress, chunk_index=i, chunks_total=total_chunks, status=status
+            )
 
         # Склеиваем и возвращаем плейсхолдеры назад
         await _emit("merging", 90, chunks_total=total_chunks)
         merged = self._merge_chunks(translated_parts)
         restored = _restore_entities(merged, placeholders)
-        await _emit("completed", 100, language_pair=f"{source_lang}->{target_lang}", chunks_total=total_chunks, mode="ai")
+        await _emit(
+            "completed",
+            100,
+            language_pair=f"{source_lang}->{target_lang}",
+            chunks_total=total_chunks,
+            mode="ai",
+        )
         return restored, details
 
     @staticmethod

@@ -10,8 +10,8 @@ import logging
 import re
 import tempfile
 import uuid
-from datetime import datetime
 from dataclasses import asdict
+from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
 from types import MappingProxyType
@@ -378,7 +378,6 @@ class DocumentManager:
             return True
         return False
 
-
     # -------------------------------------------------------------- helpers ---
 
     def _init_storage(self, settings: AppSettings) -> DocumentStorage:
@@ -440,7 +439,7 @@ class DocumentManager:
         base_name = Path(doc_info.original_name or "document").stem or "document"
 
         if operation == "summarize":
-            summary_block = ((result.data.get("summary") or {}).get("content") or "")
+            summary_block = (result.data.get("summary") or {}).get("content") or ""
             structured = (result.data.get("summary") or {}).get("structured") or {}
             docx_path = await self._build_docx_summary(base_name, summary_block, structured)
             exports.append({"path": str(docx_path), "format": "docx", "label": "Выжимка (DOCX)"})
@@ -454,16 +453,30 @@ class DocumentManager:
         elif operation == "anonymize":
             docx_ready = result.data.get("anonymized_docx")
             if docx_ready:
-                exports.append({"path": str(docx_ready), "format": "docx", "label": "Анонимизированный документ"})
+                exports.append(
+                    {
+                        "path": str(docx_ready),
+                        "format": "docx",
+                        "label": "Анонимизированный документ",
+                    }
+                )
             else:
                 anonymized = (result.data.get("anonymized_text") or "").strip()
                 if anonymized:
                     docx_path = await self._build_docx_anonymized(base_name, anonymized)
-                    exports.append({"path": str(docx_path), "format": "docx", "label": "Анонимизированный документ"})
+                    exports.append(
+                        {
+                            "path": str(docx_path),
+                            "format": "docx",
+                            "label": "Анонимизированный документ",
+                        }
+                    )
 
         elif operation == "analyze_risks":
             docx_path = await self._build_docx_risk(base_name, result.data or {})
-            exports.append({"path": str(docx_path), "format": "docx", "label": "Анализ рисков (DOCX)"})
+            exports.append(
+                {"path": str(docx_path), "format": "docx", "label": "Анализ рисков (DOCX)"}
+            )
 
         elif operation == "lawsuit_analysis":
             analysis = result.data.get("analysis") or {}
@@ -493,7 +506,9 @@ class DocumentManager:
             recognized = (result.data.get("recognized_text") or "").strip()
             if recognized:
                 docx_path = await self._build_docx_ocr(base_name, recognized)
-                exports.append({"path": str(docx_path), "format": "docx", "label": "Распознанный текст (DOCX)"})
+                exports.append(
+                    {"path": str(docx_path), "format": "docx", "label": "Распознанный текст (DOCX)"}
+                )
 
         return exports
 
@@ -524,10 +539,14 @@ class DocumentManager:
         return candidate
 
     async def _write_export(self, base: str, suffix: str, content: str, extension: str) -> Path:
-        target = Path(tempfile.gettempdir()) / f"aivan_{base}_{suffix}_{uuid.uuid4().hex}{extension}"
+        target = (
+            Path(tempfile.gettempdir()) / f"aivan_{base}_{suffix}_{uuid.uuid4().hex}{extension}"
+        )
         return await write_text_async(target, content)
 
-    async def _build_docx_from_markdown_safe(self, base_name: str, suffix: str, markdown: str) -> Path:
+    async def _build_docx_from_markdown_safe(
+        self, base_name: str, suffix: str, markdown: str
+    ) -> Path:
         docx_path = self._build_human_friendly_temp_path(base_name, suffix, ".docx")
         content = (markdown or "").strip()
         if not content:
@@ -537,7 +556,9 @@ class DocumentManager:
         except DocumentDraftingError as exc:
             raise ProcessingError(str(exc), "DOCX_EXPORT_ERROR") from exc
         except Exception as exc:  # noqa: BLE001
-            raise ProcessingError("Ошибка при формировании DOCX-файла", "DOCX_EXPORT_ERROR") from exc
+            raise ProcessingError(
+                "Ошибка при формировании DOCX-файла", "DOCX_EXPORT_ERROR"
+            ) from exc
         return docx_path
 
     @staticmethod
@@ -607,12 +628,22 @@ class DocumentManager:
         def _format_risk_block(entry: Mapping[str, Any]) -> list[str]:
             level = str(entry.get("risk_level") or entry.get("level") or "").strip().lower()
             icon = _risk_icon(level)
-            desc = _normalise(str(entry.get("description") or entry.get("note") or entry.get("text") or ""), 320)
+            desc = _normalise(
+                str(entry.get("description") or entry.get("note") or entry.get("text") or ""), 320
+            )
             snippet = _normalise(str(entry.get("clause_text") or ""), 420)
             hint = _normalise(str(entry.get("strategy_hint") or ""), 320)
-            law_refs = [ _normalise(str(ref), 160) for ref in (entry.get("law_refs") or []) if str(ref).strip() ]
+            law_refs = [
+                _normalise(str(ref), 160)
+                for ref in (entry.get("law_refs") or [])
+                if str(ref).strip()
+            ]
             header_level = level.upper() if level else "N/A"
-            header = f"- **{icon} [{header_level}] {desc}**" if desc else f"- **{icon} [{header_level}] Риск без описания**"
+            header = (
+                f"- **{icon} [{header_level}] {desc}**"
+                if desc
+                else f"- **{icon} [{header_level}] Риск без описания**"
+            )
             block = [header]
             if snippet:
                 block.append(f"  - Фрагмент: {snippet}")
@@ -626,7 +657,9 @@ class DocumentManager:
             seen: set[tuple[str, str]] = set()
             blocks: list[str] = []
             for entry in items or []:
-                desc_key = _normalise(str(entry.get("description") or entry.get("note") or ""), None).lower()
+                desc_key = _normalise(
+                    str(entry.get("description") or entry.get("note") or ""), None
+                ).lower()
                 snippet_key = _normalise(str(entry.get("clause_text") or ""), None).lower()
                 key = (desc_key, snippet_key)
                 if desc_key and key in seen:
@@ -641,7 +674,9 @@ class DocumentManager:
         ai_risks = ((data.get("ai_analysis") or {}).get("risks")) or []
         _append_risks("Выявленные риски", ai_risks)
 
-        recommendations = [str(item).strip() for item in data.get("recommendations") or [] if str(item).strip()]
+        recommendations = [
+            str(item).strip() for item in data.get("recommendations") or [] if str(item).strip()
+        ]
         if recommendations:
             sections.append("## Рекомендации")
             sections.extend(f"- {text}" for text in recommendations)
@@ -712,7 +747,9 @@ class DocumentManager:
                 preview_flat = preview_flat[:277].rstrip() + "..."
             lines.extend(["", f"<b>📝 Кратко:</b> {html_escape(preview_flat)}"])
 
-        def append_section(title: str, icon: str, items: list[Any], limit: int = 5, *, clip: int = 220) -> None:
+        def append_section(
+            title: str, icon: str, items: list[Any], limit: int = 5, *, clip: int = 220
+        ) -> None:
             if not items:
                 return
             lines.append("")
@@ -837,7 +874,9 @@ class DocumentManager:
                     continue
                 seen_pairs.add(key)
 
-                display_rows.append(f"{html_escape(original_clean)} → {html_escape(replacement_display)}")
+                display_rows.append(
+                    f"{html_escape(original_clean)} → {html_escape(replacement_display)}"
+                )
                 if len(display_rows) >= 3:
                     break
 
@@ -932,7 +971,9 @@ class DocumentManager:
             # Сортируем риски по важности
             def _severity_rank(item: Mapping[str, Any]) -> tuple[int, str]:
                 level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
-                rank = severity_order.index(level) if level in severity_order else len(severity_order)
+                rank = (
+                    severity_order.index(level) if level in severity_order else len(severity_order)
+                )
                 return rank, str(item.get("description") or item.get("note") or "")
 
             sorted_risks = sorted(all_risks, key=_severity_rank)
@@ -964,7 +1005,9 @@ class DocumentManager:
 
         # Рекомендации (компактно)
         if recommendations:
-            unique_recs = list(dict.fromkeys(str(r).strip() for r in recommendations if str(r).strip()))[:3]
+            unique_recs = list(
+                dict.fromkeys(str(r).strip() for r in recommendations if str(r).strip())
+            )[:3]
             if unique_recs:
                 lines.append("")
                 lines.append("<b>💡 Рекомендации:</b>")
@@ -989,7 +1032,9 @@ class DocumentManager:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_risk_badge(item: Mapping[str, Any], level_meta: Mapping[str, tuple[str, str]]) -> str:
+    def _format_risk_badge(
+        item: Mapping[str, Any], level_meta: Mapping[str, tuple[str, str]]
+    ) -> str:
         level = str(item.get("risk_level") or item.get("level") or "").lower().strip()
         icon, label = level_meta.get(level, ("⚪", level or "-"))
         desc = str(item.get("description") or item.get("note") or "").strip()
@@ -1036,7 +1081,9 @@ class DocumentManager:
                 if paragraph:
                     lines.append(html_escape(paragraph))
 
-        def _append_list_block(title: str, items: list[str], *, icon: str = "•", limit: int | None = None) -> None:
+        def _append_list_block(
+            title: str, items: list[str], *, icon: str = "•", limit: int | None = None
+        ) -> None:
             cleaned_items = [str(item or "").strip() for item in items if str(item or "").strip()]
             if not cleaned_items:
                 return
@@ -1132,13 +1179,21 @@ class DocumentManager:
 
         if data.get("structured_payload_repaired"):
             lines.append("")
-            lines.append("<i>⚠️ Ответ модели был усечён; структура восстановлена автоматически, проверьте данные вручную.</i>")
+            lines.append(
+                "<i>⚠️ Ответ модели был усечён; структура восстановлена автоматически, проверьте данные вручную.</i>"
+            )
 
         if data.get("fallback_used"):
             lines.append("")
-            lines.append("<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>")
+            lines.append(
+                "<i>⚠️ Структурированный ответ не получен, добавлен текстовый ответ модели.</i>"
+            )
 
-        meta_notes = [html_escape(str(note or "").strip()) for note in (analysis.get("meta_notes") or []) if str(note or "").strip()]
+        meta_notes = [
+            html_escape(str(note or "").strip())
+            for note in (analysis.get("meta_notes") or [])
+            if str(note or "").strip()
+        ]
         if meta_notes:
             lines.append("")
             for note in meta_notes:
@@ -1238,20 +1293,24 @@ class DocumentManager:
 
             # Подсчитываем базовую статистику
             words_count = len(text.split())
-            lines_count = len([line for line in text.split('\n') if line.strip()])
+            lines_count = len([line for line in text.split("\n") if line.strip()])
 
-            lines.extend([
-                "",
-                f"📝 <b>Объём:</b> {words_count} слов • {lines_count} строк",
-                "",
-                "<b>Превью:</b>",
-                f"<i>{html_escape(text_preview)}</i>",
-            ])
+            lines.extend(
+                [
+                    "",
+                    f"📝 <b>Объём:</b> {words_count} слов • {lines_count} строк",
+                    "",
+                    "<b>Превью:</b>",
+                    f"<i>{html_escape(text_preview)}</i>",
+                ]
+            )
         else:
-            lines.extend([
-                "",
-                "⚠️ <i>Текст не распознан или документ пуст</i>",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "⚠️ <i>Текст не распознан или документ пуст</i>",
+                ]
+            )
 
         lines.extend(["", "📎 Полный текст: <b>DOCX</b>"])
 
@@ -1270,7 +1329,9 @@ class DocumentManager:
             parsed_from_fallback = dict(parsed_from_fallback)
 
             for key in ("summary", "overall_assessment", "confidence"):
-                if _is_blank_field(analysis.get(key)) and not _is_blank_field(parsed_from_fallback.get(key)):
+                if _is_blank_field(analysis.get(key)) and not _is_blank_field(
+                    parsed_from_fallback.get(key)
+                ):
                     analysis[key] = parsed_from_fallback.get(key)
 
             for key in (
@@ -1286,13 +1347,17 @@ class DocumentManager:
                 "case_law",
                 "improvement_steps",
             ):
-                if _is_blank_field(analysis.get(key)) and not _is_blank_field(parsed_from_fallback.get(key)):
+                if _is_blank_field(analysis.get(key)) and not _is_blank_field(
+                    parsed_from_fallback.get(key)
+                ):
                     analysis[key] = parsed_from_fallback.get(key)
 
             parties = dict(analysis.get("parties") or {})
             fallback_parties = parsed_from_fallback.get("parties") or {}
             for part_key in ("plaintiff", "defendant", "other"):
-                if _is_blank_field(parties.get(part_key)) and not _is_blank_field(fallback_parties.get(part_key)):
+                if _is_blank_field(parties.get(part_key)) and not _is_blank_field(
+                    fallback_parties.get(part_key)
+                ):
                     parties[part_key] = fallback_parties.get(part_key)
             analysis["parties"] = parties
 
@@ -1302,12 +1367,20 @@ class DocumentManager:
                 fallback_strategy.get("success_probability")
             ):
                 strategy["success_probability"] = fallback_strategy.get("success_probability")
-            if _is_blank_field(strategy.get("actions")) and not _is_blank_field(fallback_strategy.get("actions")):
+            if _is_blank_field(strategy.get("actions")) and not _is_blank_field(
+                fallback_strategy.get("actions")
+            ):
                 strategy["actions"] = fallback_strategy.get("actions")
             analysis["strategy"] = strategy
 
-            meta_notes = [str(note or "").strip() for note in (analysis.get("meta_notes") or []) if str(note or "").strip()]
-            meta_notes.append("Использован текст модели для восстановления структурированного отчёта.")
+            meta_notes = [
+                str(note or "").strip()
+                for note in (analysis.get("meta_notes") or [])
+                if str(note or "").strip()
+            ]
+            meta_notes.append(
+                "Использован текст модели для восстановления структурированного отчёта."
+            )
             analysis["meta_notes"] = meta_notes
             analysis["fallback_raw_text"] = ""
 
@@ -1331,7 +1404,9 @@ class DocumentManager:
             lines.extend(["## 👥 Стороны", *party_lines, ""])
 
         def append_block(key: str, values: Any) -> None:
-            cleaned = [str(value or "").strip() for value in (values or []) if str(value or "").strip()]
+            cleaned = [
+                str(value or "").strip() for value in (values or []) if str(value or "").strip()
+            ]
             if not cleaned:
                 return
             icon, title = _LAWSUIT_SECTION_META[key]
@@ -1364,7 +1439,11 @@ class DocumentManager:
                 ]
             )
 
-        meta_notes = [str(note or "").strip() for note in (analysis.get("meta_notes") or []) if str(note or "").strip()]
+        meta_notes = [
+            str(note or "").strip()
+            for note in (analysis.get("meta_notes") or [])
+            if str(note or "").strip()
+        ]
         if meta_notes:
             lines.extend(["", "## Примечания", *meta_notes])
 

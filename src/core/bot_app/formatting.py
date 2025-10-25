@@ -9,7 +9,9 @@ DEFAULT_TEXT_LIMIT = 3900
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[\.\!\?])\s+")
 
 
-def chunk_text(text: str, max_length: int | None = None, *, default_limit: int = DEFAULT_TEXT_LIMIT) -> list[str]:
+def chunk_text(
+    text: str, max_length: int | None = None, *, default_limit: int = DEFAULT_TEXT_LIMIT
+) -> list[str]:
     """Split long Telegram messages into chunks respecting limits."""
     limit = max_length or default_limit
     if len(text) <= limit:

@@ -47,15 +47,14 @@ DEFAULT_SUBSCRIPTION_PLANS: tuple[SubscriptionPlan, ...] = (
     ),
 )
 
+
 def get_default_subscription_plans() -> tuple[SubscriptionPlan, ...]:
     """Return default subscription plan catalog."""
 
     return DEFAULT_SUBSCRIPTION_PLANS
 
 
-
 def build_plan_map(plans: Iterable[SubscriptionPlan]) -> dict[str, SubscriptionPlan]:
     """Create a fast lookup dictionary by plan_id."""
 
     return {plan.plan_id: plan for plan in plans}
-

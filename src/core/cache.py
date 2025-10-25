@@ -99,10 +99,10 @@ class CacheBackend(ABC):
     async def get_stats(self) -> dict[str, Any]:
         """Получить статистику кеша"""
         pass
+
     async def cleanup_expired(self) -> None:
         """Опциональная очистка устаревших записей."""
         return None
-
 
 
 class InMemoryCacheBackend(CacheBackend):

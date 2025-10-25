@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
-import json
 
 import httpx
 
@@ -179,8 +179,12 @@ class GarantAPIClient:
             data = response.json()
             if self._log_debug:
                 try:
-                    logger.debug("[GARANT] /v2/search request: %s", json.dumps(payload, ensure_ascii=False))
-                    logger.debug("[GARANT] /v2/search response: %s", json.dumps(data, ensure_ascii=False))
+                    logger.debug(
+                        "[GARANT] /v2/search request: %s", json.dumps(payload, ensure_ascii=False)
+                    )
+                    logger.debug(
+                        "[GARANT] /v2/search response: %s", json.dumps(data, ensure_ascii=False)
+                    )
                 except Exception:
                     logger.debug("[GARANT] /v2/search response parsed (non-serializable)")
         except httpx.TimeoutException as exc:  # noqa: PERF203
@@ -228,8 +232,12 @@ class GarantAPIClient:
             data = response.json()
             if self._log_debug:
                 try:
-                    logger.debug("[GARANT] /v2/snippets request: %s", json.dumps(payload, ensure_ascii=False))
-                    logger.debug("[GARANT] /v2/snippets response: %s", json.dumps(data, ensure_ascii=False))
+                    logger.debug(
+                        "[GARANT] /v2/snippets request: %s", json.dumps(payload, ensure_ascii=False)
+                    )
+                    logger.debug(
+                        "[GARANT] /v2/snippets response: %s", json.dumps(data, ensure_ascii=False)
+                    )
                 except Exception:
                     logger.debug("[GARANT] /v2/snippets response parsed (non-serializable)")
         except httpx.TimeoutException as exc:  # noqa: PERF203
@@ -253,7 +261,7 @@ class GarantAPIClient:
 
         trimmed_limit = limit if limit is not None else self._snippet_limit
         if trimmed_limit:
-            return snippets[: trimmed_limit]
+            return snippets[:trimmed_limit]
         return snippets
 
     async def search_with_snippets(
@@ -401,10 +409,18 @@ class GarantAPIClient:
             data = response.json()
             if self._log_debug:
                 try:
-                    logger.debug("[GARANT] /v2/sutyazhnik-search request: %s", json.dumps(payload, ensure_ascii=False))
-                    logger.debug("[GARANT] /v2/sutyazhnik-search response: %s", json.dumps(data, ensure_ascii=False))
+                    logger.debug(
+                        "[GARANT] /v2/sutyazhnik-search request: %s",
+                        json.dumps(payload, ensure_ascii=False),
+                    )
+                    logger.debug(
+                        "[GARANT] /v2/sutyazhnik-search response: %s",
+                        json.dumps(data, ensure_ascii=False),
+                    )
                 except Exception:
-                    logger.debug("[GARANT] /v2/sutyazhnik-search response parsed (non-serializable)")
+                    logger.debug(
+                        "[GARANT] /v2/sutyazhnik-search response parsed (non-serializable)"
+                    )
         except httpx.TimeoutException as exc:  # noqa: PERF203
             raise GarantAPIError(f"Garant sutyazhnik request timed out: {exc}") from exc
         except httpx.HTTPStatusError as exc:
@@ -541,9 +557,7 @@ def format_search_results(
             for snippet in result.snippets:
                 path = snippet.formatted_path()
                 relevance = (
-                    f"{snippet.relevance:.2f}"
-                    if isinstance(snippet.relevance, float)
-                    else None
+                    f"{snippet.relevance:.2f}" if isinstance(snippet.relevance, float) else None
                 )
                 parts = [f"entry {snippet.entry}"]
                 if relevance:

@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 
 from src.core.settings import AppSettings
 
-
 _settings_cache: Optional[AppSettings] = None
 
 
@@ -16,7 +15,9 @@ def set_settings(settings: AppSettings) -> None:
     _settings_cache = settings
 
 
-def get_settings(env: Mapping[str, str] | None = None, *, force_reload: bool = False) -> AppSettings:
+def get_settings(
+    env: Mapping[str, str] | None = None, *, force_reload: bool = False
+) -> AppSettings:
     """Возвращает экземпляр настроек, предпочитая кеш либо загружая из окружения."""
     global _settings_cache
 

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ------------------------------ Модель данных ------------------------------
 
+
 class RiskLevel(Enum):
     LOW = "low"
     MEDIUM = "medium"
@@ -177,6 +178,7 @@ RISK_ANALYSIS_PROMPT = """
 """
 
 # ------------------------- Основной класс-анализатор -------------------------
+
 
 class RiskAnalyzer(DocumentProcessor):
     """Класс для анализа рисков в договорах и документах"""
@@ -394,7 +396,9 @@ class RiskAnalyzer(DocumentProcessor):
                 prompt += f"\n\nУчитывай также пользовательские критерии:\n{criteria_text}\n"
 
             if len(text) <= 12000:
-                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=text, use_schema=False)
+                resp = await self.openai_service.ask_legal(
+                    system_prompt=prompt, user_text=text, use_schema=False
+                )
                 return self._parse_ai_json_payload(resp, method="single", chunks=1)
 
             chunks = TextProcessor.split_into_chunks(
@@ -408,7 +412,9 @@ class RiskAnalyzer(DocumentProcessor):
             summaries: List[str] = []
             for i, (chunk_text, chunk_start, chunk_end) in enumerate(chunks, 1):
                 part = f"(Часть {i}/{len(chunks)}; смещение {chunk_start})\n\n{chunk_text}"
-                resp = await self.openai_service.ask_legal(system_prompt=prompt, user_text=part, use_schema=False)
+                resp = await self.openai_service.ask_legal(
+                    system_prompt=prompt, user_text=part, use_schema=False
+                )
                 payload = self._parse_ai_json_payload(
                     resp,
                     method="chunk",
@@ -421,7 +427,8 @@ class RiskAnalyzer(DocumentProcessor):
                     summaries.append(payload["summary"])
             return {
                 "summary": " ".join(summaries)[:1000],
-                "overall_level": self._dominant_level([r.risk_level for r in risks_all]) or "medium",
+                "overall_level": self._dominant_level([r.risk_level for r in risks_all])
+                or "medium",
                 "risks": risks_all,
                 "recommendations": list(dict.fromkeys(recs_all))[:20],
                 "method": "chunked",
@@ -429,7 +436,14 @@ class RiskAnalyzer(DocumentProcessor):
             }
         except Exception as e:
             logger.error("Ошибка AI-анализа: %s", e)
-            return {"summary": f"Ошибка анализа: {e}", "overall_level": "medium", "risks": [], "recommendations": [], "method": "error", "chunks_analyzed": 0}
+            return {
+                "summary": f"Ошибка анализа: {e}",
+                "overall_level": "medium",
+                "risks": [],
+                "recommendations": [],
+                "method": "error",
+                "chunks_analyzed": 0,
+            }
 
     def _parse_ai_json_payload(
         self,
@@ -441,14 +455,28 @@ class RiskAnalyzer(DocumentProcessor):
     ) -> Dict[str, Any]:
         """Извлекаем строгий JSON из ответа модели; фолбэк — пустые риски."""
         if not resp or not resp.get("ok"):
-            return {"summary": "", "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
+            return {
+                "summary": "",
+                "overall_level": "medium",
+                "risks": [],
+                "recommendations": [],
+                "method": method,
+                "chunks_analyzed": chunks,
+            }
         raw = resp.get("text", "") or ""
         structured = resp.get("structured")
         data: Any = structured if isinstance(structured, Mapping) else None
         if data is None:
             data = self._safe_json_loads(raw)
         if not isinstance(data, dict):
-            return {"summary": raw[:500], "overall_level": "medium", "risks": [], "recommendations": [], "method": method, "chunks_analyzed": chunks}
+            return {
+                "summary": raw[:500],
+                "overall_level": "medium",
+                "risks": [],
+                "recommendations": [],
+                "method": method,
+                "chunks_analyzed": chunks,
+            }
 
         # нормализуем риски
         risks: List[RiskItem] = []
@@ -549,13 +577,23 @@ class RiskAnalyzer(DocumentProcessor):
 
     @staticmethod
     def _max_level(a: str, b: str) -> str:
-        order = {RiskLevel.LOW.value: 1, RiskLevel.MEDIUM.value: 2, RiskLevel.HIGH.value: 3, RiskLevel.CRITICAL.value: 4}
+        order = {
+            RiskLevel.LOW.value: 1,
+            RiskLevel.MEDIUM.value: 2,
+            RiskLevel.HIGH.value: 3,
+            RiskLevel.CRITICAL.value: 4,
+        }
         return a if order.get(a, 1) >= order.get(b, 1) else b
 
     def _dominant_level(self, levels: List[str]) -> Optional[str]:
         if not levels:
             return None
-        order = [RiskLevel.CRITICAL.value, RiskLevel.HIGH.value, RiskLevel.MEDIUM.value, RiskLevel.LOW.value]
+        order = [
+            RiskLevel.CRITICAL.value,
+            RiskLevel.HIGH.value,
+            RiskLevel.MEDIUM.value,
+            RiskLevel.LOW.value,
+        ]
         for lvl in order:
             if lvl in levels:
                 return lvl
@@ -565,7 +603,12 @@ class RiskAnalyzer(DocumentProcessor):
         """Взвешенная оценка: частота и критичность (а не просто максимум)."""
         if not risks:
             return RiskLevel.LOW.value
-        weights = {RiskLevel.LOW.value: 1, RiskLevel.MEDIUM.value: 2, RiskLevel.HIGH.value: 4, RiskLevel.CRITICAL.value: 7}
+        weights = {
+            RiskLevel.LOW.value: 1,
+            RiskLevel.MEDIUM.value: 2,
+            RiskLevel.HIGH.value: 4,
+            RiskLevel.CRITICAL.value: 7,
+        }
         score = sum(weights.get(r.risk_level, 1) for r in risks)
         # Нормализация по количеству рисков
         avg = score / max(1, len(risks))

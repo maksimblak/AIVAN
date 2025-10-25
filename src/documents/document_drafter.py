@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # ============================== Errors & Models ===============================
 
+
 class DocumentDraftingError(RuntimeError):
     """Raised when the LLM response cannot be processed."""
 
@@ -131,18 +132,19 @@ _TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 
 # =============================== JSON helpers =================================
 
+
 def _strip_code_fences(payload: str) -> str:
     stripped = payload.strip()
     lowered = stripped.lower()
     for prefix in ("```json", "```", "~~~json", "~~~"):
         if lowered.startswith(prefix):
-            stripped = stripped[len(prefix):]
+            stripped = stripped[len(prefix) :]
             stripped = stripped.lstrip("\r\n")
             break
 
     for suffix in ("```", "~~~"):
         if stripped.endswith(suffix):
-            stripped = stripped[:-len(suffix)]
+            stripped = stripped[: -len(suffix)]
             stripped = stripped.rstrip()
             break
 
@@ -159,7 +161,7 @@ def _sanitize_json_string(payload: str) -> str:
     (e.g. "Мой арбитр") that the model may emit without escaping.
     """
 
-    if ("\n" not in payload and "\r" not in payload and '"' not in payload):
+    if "\n" not in payload and "\r" not in payload and '"' not in payload:
         return payload
 
     result: list[str] = []
@@ -506,6 +508,7 @@ def _format_answers(answers: Iterable[dict[str, str]]) -> str:
 
 # ============================ High-level API calls ============================
 
+
 async def plan_document(openai_service, request_text: str) -> DraftPlan:
     if not request_text.strip():
         raise DocumentDraftingError("Пустой запрос")
@@ -615,9 +618,13 @@ async def generate_document(
     doc_title = str(data.get("document_title") or title).strip()
     markdown = str(data.get("document_markdown") or "")
     self_check = data.get("self_check") or {}
-    validated = [str(item).strip() for item in self_check.get("validated") or [] if str(item).strip()]
+    validated = [
+        str(item).strip() for item in self_check.get("validated") or [] if str(item).strip()
+    ]
     issues = [str(item).strip() for item in self_check.get("issues") or [] if str(item).strip()]
-    follow_up = [str(item).strip() for item in data.get("follow_up_questions") or [] if str(item).strip()]
+    follow_up = [
+        str(item).strip() for item in data.get("follow_up_questions") or [] if str(item).strip()
+    ]
 
     return DraftResult(
         status=status,
@@ -630,6 +637,7 @@ async def generate_document(
 
 
 # ============================= DOCX builder (MD) ==============================
+
 
 def build_docx_from_markdown(markdown: str, output_path: str) -> None:
     """
@@ -664,9 +672,15 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
         setattr(section, attr, Cm(2.5))
 
     # ——— шрифты и стили
-    def _ensure_font(style_name: str, *, size: int, bold: bool = False,
-                     italic: bool = False, align: int | None = None,
-                     color: RGBColor | None = None) -> None:
+    def _ensure_font(
+        style_name: str,
+        *,
+        size: int,
+        bold: bool = False,
+        italic: bool = False,
+        align: int | None = None,
+        color: RGBColor | None = None,
+    ) -> None:
         try:
             style = document.styles[style_name]
         except KeyError:
@@ -844,7 +858,9 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
         # сбор мета‑строк "Поле: Значение" до первого "обычного" абзаца/заголовка/списка
         if list_mode is None and plain_line:
-            if not plain_line.startswith(("-", "*", "•", "—", "#")) and not _NUMBERED_ITEM_RE.match(plain_line):
+            if not plain_line.startswith(("-", "*", "•", "—", "#")) and not _NUMBERED_ITEM_RE.match(
+                plain_line
+            ):
                 colon_match = _METADATA_LINE_RE.match(plain_line)
                 if colon_match:
                     field = colon_match.group(1).strip()
@@ -867,7 +883,9 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
             parsed_rows = [_parse_table_row(row) for row in table_lines]
             # вторая строка — разделитель?
-            if len(parsed_rows) >= 2 and all(_TABLE_SEPARATOR_RE.fullmatch(cell.replace(" ", "")) for cell in parsed_rows[1]):
+            if len(parsed_rows) >= 2 and all(
+                _TABLE_SEPARATOR_RE.fullmatch(cell.replace(" ", "")) for cell in parsed_rows[1]
+            ):
                 data_rows = [parsed_rows[0]] + parsed_rows[2:]
             else:
                 data_rows = parsed_rows
@@ -886,7 +904,9 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
                         paragraph.paragraph_format.space_before = Pt(0)
                         paragraph.paragraph_format.space_after = Pt(0)
                         paragraph.paragraph_format.first_line_indent = Cm(0)
-                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if row_idx == 0 else WD_ALIGN_PARAGRAPH.LEFT
+                        paragraph.alignment = (
+                            WD_ALIGN_PARAGRAPH.CENTER if row_idx == 0 else WD_ALIGN_PARAGRAPH.LEFT
+                        )
                         _add_runs(paragraph, cell_text)
                         if row_idx == 0:
                             for run in paragraph.runs:
@@ -969,6 +989,7 @@ def build_docx_from_markdown(markdown: str, output_path: str) -> None:
 
 # ================================ UI helpers ==================================
 
+
 def _pluralize_questions(count: int) -> str:
     """Склонение слова 'вопрос' в зависимости от числа."""
     if count % 10 == 1 and count % 100 != 11:
@@ -995,7 +1016,9 @@ def format_plan_summary(plan: DraftPlan) -> str:
     lines.append("")
 
     if plan.questions:
-        lines.append(f"<b>Требуется информация:</b> {len(plan.questions)} {_pluralize_questions(len(plan.questions))}")
+        lines.append(
+            f"<b>Требуется информация:</b> {len(plan.questions)} {_pluralize_questions(len(plan.questions))}"
+        )
         lines.append("")
         lines.append("")
         lines.append("💡 <b>Инструкция по ответу</b>")

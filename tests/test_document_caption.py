@@ -15,13 +15,12 @@ def _ensure_aiogram_stub() -> None:
         return
 
     aiogram_module = types.ModuleType("aiogram")
+
     class _Dispatcher:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     class _Router:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
         def callback_query(self, *args, **kwargs):
             def decorator(handler):
@@ -43,8 +42,7 @@ def _ensure_aiogram_stub() -> None:
         data = _FilterAttr()
 
     class _Bot:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
         async def send_chat_action(self, *args, **kwargs):
             return None
 
@@ -74,20 +72,17 @@ def _ensure_aiogram_stub() -> None:
     fsm_context_module = types.ModuleType("aiogram.fsm.context")
 
     class _FSMContext:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     fsm_context_module.FSMContext = _FSMContext
 
     fsm_state_module = types.ModuleType("aiogram.fsm.state")
 
     class _State:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     class _StatesGroup:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     fsm_state_module.State = _State
     fsm_state_module.StatesGroup = _StatesGroup
@@ -95,24 +90,19 @@ def _ensure_aiogram_stub() -> None:
     types_module = types.ModuleType("aiogram.types")
 
     class _CallbackQuery:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     class _FSInputFile:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     class _InlineKeyboardButton:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     class _InlineKeyboardMarkup:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     class _Message:
-        def __init__(self, *args, **kwargs):
-            ...
+        def __init__(self, *args, **kwargs): ...
 
     types_module.CallbackQuery = _CallbackQuery
     types_module.FSInputFile = _FSInputFile
@@ -275,15 +265,13 @@ def _setup_monkeypatch(monkeypatch):
     monkeypatch.setattr(module, "build_docx_from_markdown", fake_build_docx)
 
     repeated_segment = "А" * 400
-    validated_items = [
-        f"Подтверждение {idx}: {repeated_segment}" for idx in range(6)
-    ]
-    issues_items = [
-        f"Риск {idx}: {repeated_segment}" for idx in range(6)
-    ]
+    validated_items = [f"Подтверждение {idx}: {repeated_segment}" for idx in range(6)]
+    issues_items = [f"Риск {idx}: {repeated_segment}" for idx in range(6)]
 
     async def fake_generate(openai_service, request_text, title, answers):
-        return DummyResult(title="Исковое заявление", validated=validated_items, issues=issues_items)
+        return DummyResult(
+            title="Исковое заявление", validated=validated_items, issues=issues_items
+        )
 
     monkeypatch.setattr(module, "generate_document", fake_generate)
 
@@ -311,5 +299,3 @@ def test_finalize_draft_truncates_caption_and_preserves_html(monkeypatch):
     assert "Документ успешно создан" in caption
     assert "<b>Проверено</b>" in caption
     assert doc_call["parse_mode"] == module.ParseMode.HTML
-
-

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from contextlib import suppress
 from html import escape as html_escape
 from typing import List, Optional
 
@@ -19,6 +20,7 @@ _HTML_TOKEN_RE = re.compile(r"<[^>]+>|[^<]+")
 _HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>")
 _SELF_CLOSING_TAGS = frozenset({"br"})
 
+
 def format_safe_html(raw_text: str) -> str:
     """Sanitize text for Telegram while preserving simple markup and line breaks."""
     normalized = (raw_text or "").replace("\r\n", "\n")
@@ -32,8 +34,8 @@ def format_safe_html(raw_text: str) -> str:
         "\n",
         normalized,
     )
-    normalized = normalized.replace(' ', ' ').replace('‑', '-')
-    normalized = re.sub(r'<br\s*/?>', '\n', normalized, flags=re.IGNORECASE)
+    normalized = normalized.replace(" ", " ").replace("‑", "-")
+    normalized = re.sub(r"<br\s*/?>", "\n", normalized, flags=re.IGNORECASE)
 
     def _convert_markdown_link(match: re.Match[str]) -> str:
         text_part = html_escape(match.group(1).strip())
@@ -47,17 +49,12 @@ def format_safe_html(raw_text: str) -> str:
     )
     try:
         safe_html = sanitize_telegram_html(normalized)
-        safe_html = re.sub(r'<blockquote(?:[^>]*)>', '<i>', safe_html, flags=re.IGNORECASE)
-        safe_html = re.sub(r'</blockquote>', '</i>', safe_html, flags=re.IGNORECASE)
+        safe_html = re.sub(r"<blockquote(?:[^>]*)>", "<i>", safe_html, flags=re.IGNORECASE)
+        safe_html = re.sub(r"</blockquote>", "</i>", safe_html, flags=re.IGNORECASE)
     except Exception as e:
         logger.warning("sanitize_telegram_html failed: %s", e)
         safe_html = normalized or "-"
     return safe_html
-
-
-
-
-
 
 
 def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
@@ -171,7 +168,6 @@ def split_html_for_telegram(html: str, hard_limit: int = 3900) -> List[str]:
     flush_chunk()
 
     return chunks or ["—"]
-
 
 
 def _plain(text: str) -> str:
@@ -312,7 +308,9 @@ async def tg_send_html(
                         chat_id=chat_id,
                         text=chunk,
                         disable_web_page_preview=True,
-                        reply_to_message_id=reply_to_message_id if idx == 0 and attempt == 0 else None,
+                        reply_to_message_id=(
+                            reply_to_message_id if idx == 0 and attempt == 0 else None
+                        ),
                     )
                 return
             if attempt == max_retries - 1:

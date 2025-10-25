@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import logging
+import math
 import re
 import tempfile
 import time
 from contextlib import suppress
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
@@ -138,9 +138,8 @@ async def _record_request_stat(
             exc,
         )
 
-_NUMBERED_ANSWER_RE = re.compile(
-    r"^\s*(\d+)(?:[\).:-]|\s+-|\s+)\s*(.*)"
-)
+
+_NUMBERED_ANSWER_RE = re.compile(r"^\s*(\d+)(?:[\).:-]|\s+-|\s+)\s*(.*)")
 _BULLET_ANSWER_RE = re.compile(r"^\s*[-\u2022\*\u2014\u2013]\s*(.*)")
 _HEADING_PATTERN_RE = re.compile(
     r"^\s*(?![-\u2022])(?!\d+[\).:-])([A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u0451\u0030-\u0039][^:]{0,80}):\s*(.*)$"
@@ -156,6 +155,7 @@ class DocumentDraftStates(StatesGroup):
     waiting_for_request = State()
     asking_details = State()
     generating = State()
+
 
 DOCUMENT_OPERATION_REQUEST_TYPES: dict[str, str] = {
     "summarize": "document_summarize",
@@ -207,7 +207,8 @@ def _build_ocr_reply_markup(output_format: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="⬅️ Назад", callback_data="document_processing"),
                 InlineKeyboardButton(
-                    text=f"{Emoji.DOCUMENT} Следующий файл", callback_data=f"ocr_upload_more:{output_format}"
+                    text=f"{Emoji.DOCUMENT} Следующий файл",
+                    callback_data=f"ocr_upload_more:{output_format}",
                 ),
             ]
         ]
@@ -223,7 +224,8 @@ def _with_back_to_operations(markup: InlineKeyboardMarkup | None = None) -> Inli
 
     keyboard = [list(row) for row in (markup.inline_keyboard or [])]
     if not any(
-        isinstance(btn, InlineKeyboardButton) and getattr(btn, "callback_data", "") == "back_to_menu"
+        isinstance(btn, InlineKeyboardButton)
+        and getattr(btn, "callback_data", "") == "back_to_menu"
         for row in keyboard
         for btn in row
     ):
@@ -474,7 +476,9 @@ def _build_completion_payload(op: str, result_obj) -> dict[str, Any]:
     elif op == "ocr":
         payload["confidence"] = data.get("confidence_score")
         processing = data.get("processing_info") or {}
-        payload["pages_total"] = processing.get("pages_processed") or len(data.get("pages", []) or [])
+        payload["pages_total"] = processing.get("pages_processed") or len(
+            data.get("pages", []) or []
+        )
         payload["mode"] = processing.get("file_type")
     elif op == "chat":
         info = data.get("document_info") or {}
@@ -491,7 +495,11 @@ def _make_progress_updater(
     file_size_kb: int,
     stage_labels: dict[str, tuple[str, str]],
 ) -> tuple[Callable[[dict[str, Any]], Awaitable[None]], dict[str, Any]]:
-    progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+    progress_state: dict[str, Any] = {
+        "percent": 0,
+        "stage": "start",
+        "started_at": time.monotonic(),
+    }
 
     async def send_progress(update: dict[str, Any]) -> None:
         nonlocal progress_state, status_msg
@@ -600,7 +608,10 @@ async def _make_status_progress_handler(
 
         stage = str(update.get("stage") or progress_state["stage"] or "processing")
         normalized_stage = stage
-        if normalized_stage not in stage_index_map and normalized_stage not in {"completed", "failed"}:
+        if normalized_stage not in stage_index_map and normalized_stage not in {
+            "completed",
+            "failed",
+        }:
             normalized_stage = progress_state["stage"]
 
         percent_val = update.get("percent")
@@ -683,7 +694,11 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=f"{Emoji.BACK} Назад к операциям", callback_data="doc_draft_cancel")]
+                [
+                    InlineKeyboardButton(
+                        text=f"{Emoji.BACK} Назад к операциям", callback_data="doc_draft_cancel"
+                    )
+                ]
             ]
         )
         message_text_to_send: str | None = intro_text
@@ -716,7 +731,9 @@ async def handle_doc_draft_start(callback: CallbackQuery, state: FSMContext) -> 
                         )
                 except Exception as photo_error:  # noqa: BLE001
                     logger.warning(
-                        "Failed to send document drafter header image: %s", photo_error, exc_info=True
+                        "Failed to send document drafter header image: %s",
+                        photo_error,
+                        exc_info=True,
                     )
         if message_text_to_send:
             if callback.message:
@@ -922,8 +939,7 @@ async def handle_doc_draft_answer(
     answer_text = (source_text or "").strip()
     if not answer_text:
         await message.answer(
-            "⚠️ <b>Пустой ответ</b>\n\n"
-            "📝 Пожалуйста, введите ваш ответ на вопрос",
+            "⚠️ <b>Пустой ответ</b>\n\n" "📝 Пожалуйста, введите ваш ответ на вопрос",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -1012,7 +1028,9 @@ async def _extract_doc_voice_text(message: Message) -> str | None:
 
     audio_service = _get_audio_service()
     if audio_service is None:
-        await message.answer(f"{Emoji.WARNING} Голосовой режим недоступен, отправьте текстовое сообщение.")
+        await message.answer(
+            f"{Emoji.WARNING} Голосовой режим недоступен, отправьте текстовое сообщение."
+        )
         return None
 
     try:
@@ -1021,11 +1039,15 @@ async def _extract_doc_voice_text(message: Message) -> str | None:
         voice_enabled = settings().voice_mode_enabled
 
     if not voice_enabled:
-        await message.answer(f"{Emoji.WARNING} Голосовой режим сейчас выключен. Пришлите ответ текстом.")
+        await message.answer(
+            f"{Emoji.WARNING} Голосовой режим сейчас выключен. Пришлите ответ текстом."
+        )
         return None
 
     if not message.bot:
-        await message.answer(f"{Emoji.WARNING} Не удалось получить доступ к боту. Ответьте текстом.")
+        await message.answer(
+            f"{Emoji.WARNING} Не удалось получить доступ к боту. Ответьте текстом."
+        )
         return None
 
     temp_voice_path: Path | None = None
@@ -1085,7 +1107,7 @@ def _extract_answer_chunks(
     question_headings: Sequence[str] | None = None,
 ) -> list[str] | None:
     """Разбить объединённый ответ на отдельные части."""
-    text = (answer_text or "")
+    text = answer_text or ""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = (
         text.replace("\u00A0", " ")
@@ -1284,7 +1306,9 @@ async def _send_questions_prompt(
         while True:
             candidate_len = _estimate_len(chunk_len, line_count, (block, ""))
             if candidate_len <= max_len:
-                chunk_len, line_count = _append_lines(chunk_lines, chunk_len, line_count, (block, ""))
+                chunk_len, line_count = _append_lines(
+                    chunk_lines, chunk_len, line_count, (block, "")
+                )
                 break
 
             if line_count > base_line_count:
@@ -1344,7 +1368,9 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
 
     openai_service = _get_openai_service()
     if openai_service is None:
-        await message.answer(f"{Emoji.ERROR} Сервис генерации документов временно недоступен. Попробуйте позже.")
+        await message.answer(
+            f"{Emoji.ERROR} Сервис генерации документов временно недоступен. Попробуйте позже."
+        )
         await state.clear()
         return
 
@@ -1428,7 +1454,11 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
 
     if result.status != "ok":
         if progress:
-            note = "Нужны дополнительные уточнения" if result.follow_up_questions else "Не удалось завершить документ"
+            note = (
+                "Нужны дополнительные уточнения"
+                if result.follow_up_questions
+                else "Не удалось завершить документ"
+            )
             await progress.fail(note=note)
         if result.follow_up_questions:
             extra_questions = [
@@ -1445,7 +1475,9 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
                 draft_answers=answers,
             )
             await state.set_state(DocumentDraftStates.asking_details)
-            await message.answer(f"{Emoji.WARNING} Нужно несколько уточнений, чтобы завершить документ.")
+            await message.answer(
+                f"{Emoji.WARNING} Нужно несколько уточнений, чтобы завершить документ."
+            )
             await _send_questions_prompt(
                 message,
                 extra_questions,
@@ -1527,7 +1559,9 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
     if issues_items:
         issues_block = _format_summary_block(issues_items)
         if issues_block:
-            summary_sections.append(f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issues_block}")
+            summary_sections.append(
+                f"{Emoji.WARNING} <b>На что обратить внимание</b>\n{issues_block}"
+            )
 
     summary_block = "\n\n".join(summary_sections) if summary_sections else ""
 
@@ -1535,16 +1569,16 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         text = re.sub(r"\s+", " ", raw_text).strip()
         if len(text) <= _SUMMARY_PREVIEW_ITEM_MAX_LEN:
             return text
-        snippet = text[: _SUMMARY_PREVIEW_ITEM_MAX_LEN].rstrip()
+        snippet = text[:_SUMMARY_PREVIEW_ITEM_MAX_LEN].rstrip()
         snippet = re.sub(r"\s+\S*$", "", snippet)
         if not snippet:
-            snippet = text[: _SUMMARY_PREVIEW_ITEM_MAX_LEN]
+            snippet = text[:_SUMMARY_PREVIEW_ITEM_MAX_LEN]
         return snippet.rstrip() + "…"
 
     def _prepare_preview_items(items: Sequence[str]) -> list[str]:
         cleaned = [str(item or "").strip() for item in items if str(item or "").strip()]
         preview: list[str] = []
-        for raw_text in cleaned[: _SUMMARY_PREVIEW_MAX_ITEMS]:
+        for raw_text in cleaned[:_SUMMARY_PREVIEW_MAX_ITEMS]:
             preview.append(_truncate_item_text(raw_text))
         if len(cleaned) > _SUMMARY_PREVIEW_MAX_ITEMS:
             preview.append("…")
@@ -1615,9 +1649,7 @@ async def _finalize_draft(message: Message, state: FSMContext) -> None:
         if progress:
             await progress.fail(note=str(err))
         await message.answer(
-            f"❌ <b>Ошибка формирования DOCX</b>\n"
-            f"<code>{'─' * 30}</code>\n\n"
-            f"⚠️ {err}",
+            f"❌ <b>Ошибка формирования DOCX</b>\n" f"<code>{'─' * 30}</code>\n\n" f"⚠️ {err}",
             parse_mode=ParseMode.HTML,
         )
         if not request_logged:
@@ -1688,11 +1720,13 @@ async def handle_document_processing(callback: CallbackQuery) -> None:
             emoji = op_info.get("emoji", "📄")
             name = op_info.get("name", op_key)
             secondary_buttons.append(
-                InlineKeyboardButton(text=f"{emoji} {name}", callback_data=f"doc_operation_{op_key}")
+                InlineKeyboardButton(
+                    text=f"{emoji} {name}", callback_data=f"doc_operation_{op_key}"
+                )
             )
 
         for i in range(0, len(secondary_buttons), 2):
-            buttons.append(secondary_buttons[i:i + 2])
+            buttons.append(secondary_buttons[i : i + 2])
 
         buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
 
@@ -1909,7 +1943,11 @@ async def handle_document_operation(callback: CallbackQuery, state: FSMContext) 
 
         reply_markup = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад к операциям", callback_data="document_processing")]
+                [
+                    InlineKeyboardButton(
+                        text="◀️ Назад к операциям", callback_data="document_processing"
+                    )
+                ]
             ]
         )
 
@@ -2005,7 +2043,7 @@ async def handle_ocr_upload_more(callback: CallbackQuery, state: FSMContext) -> 
         await state.set_state(DocumentProcessingStates.waiting_for_document)
 
         await callback.message.answer(
-            f"{Emoji.DOCUMENT} Отправьте следующий файл или фото для режима \"распознание текста\".",
+            f'{Emoji.DOCUMENT} Отправьте следующий файл или фото для режима "распознание текста".',
             parse_mode=ParseMode.HTML,
         )
         await callback.answer("Готов к загрузке нового документа")
@@ -2084,7 +2122,11 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
             stage_labels = _get_stage_labels(operation)
 
             status_msg: Message | None = None
-            progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+            progress_state: dict[str, Any] = {
+                "percent": 0,
+                "stage": "start",
+                "started_at": time.monotonic(),
+            }
 
             progress_config = _PROGRESS_OPERATION_CONFIG.get(operation)
             if progress_config:
@@ -2099,7 +2141,9 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                     auto_cycle_interval=progress_config.get("auto_cycle_interval", 1.0),
                 )
             else:
-                status_msg = await message.answer("⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML)
+                status_msg = await message.answer(
+                    "⏳ Подготавливаем обработку…", parse_mode=ParseMode.HTML
+                )
                 send_progress, progress_state = _make_progress_updater(
                     message,
                     status_msg,
@@ -2144,8 +2188,12 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                 await send_progress({"stage": "finalizing", "percent": 90})
 
                 if result.success:
-                    formatted_result = document_manager.format_result_for_telegram(result, operation)
-                    base_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    formatted_result = document_manager.format_result_for_telegram(
+                        result, operation
+                    )
+                    base_markup = (
+                        _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    )
                     primary_markup = _with_back_to_operations(base_markup)
                     for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
                         await message.answer(
@@ -2188,25 +2236,40 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                                 reply_markup=export_markup,
                             )
                         except Exception as send_error:  # noqa: BLE001
-                            logger.error("Не удалось отправить файл %s: %s", export_path, send_error, exc_info=True)
+                            logger.error(
+                                "Не удалось отправить файл %s: %s",
+                                export_path,
+                                send_error,
+                                exc_info=True,
+                            )
                             await message.answer(f"Не удалось отправить файл {export_file_name}")
                         finally:
                             with suppress(Exception):
                                 Path(export_path).unlink(missing_ok=True)
 
                     completion_payload = _build_completion_payload(operation, result)
-                    await send_progress({'stage': 'completed', 'percent': 100, **completion_payload})
-                    if 'status_msg' in locals() and status_msg:
+                    await send_progress(
+                        {"stage": "completed", "percent": 100, **completion_payload}
+                    )
+                    if "status_msg" in locals() and status_msg:
                         with suppress(Exception):
                             await asyncio.sleep(0.6)
                             await status_msg.delete()
 
-                    logger.info("Successfully processed document %s for user %s", file_name, message.from_user.id)
+                    logger.info(
+                        "Successfully processed document %s for user %s",
+                        file_name,
+                        message.from_user.id,
+                    )
                     request_success = True
                 else:
                     request_error = result.error_code or "PROCESSING_ERROR"
                     await send_progress(
-                        {'stage': 'failed', 'percent': progress_state['percent'], 'note': result.message}
+                        {
+                            "stage": "failed",
+                            "percent": progress_state["percent"],
+                            "note": result.message,
+                        }
                     )
                     reply_markup = _with_back_to_operations(
                         _build_ocr_reply_markup(output_format) if operation == "ocr" else None
@@ -2217,7 +2280,7 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                         reply_markup=reply_markup,
                     )
                     back_button_sent = True
-                    if 'status_msg' in locals() and status_msg:
+                    if "status_msg" in locals() and status_msg:
                         with suppress(Exception):
                             await status_msg.delete()
 
@@ -2225,9 +2288,13 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
                 request_error = getattr(exc, "error_code", "INTERNAL_ERROR")
                 with suppress(Exception):
                     await send_progress(
-                        {"stage": "failed", "percent": progress_state.get("percent", 0), "note": GENERIC_INTERNAL_ERROR_HTML}
+                        {
+                            "stage": "failed",
+                            "percent": progress_state.get("percent", 0),
+                            "note": GENERIC_INTERNAL_ERROR_HTML,
+                        }
                     )
-                if 'status_msg' in locals() and status_msg:
+                if "status_msg" in locals() and status_msg:
                     with suppress(Exception):
                         await status_msg.delete()
 
@@ -2265,7 +2332,9 @@ async def handle_document_upload(message: Message, state: FSMContext) -> None:
 
     except Exception as exc:  # noqa: BLE001
         reply_markup = _with_back_to_operations(
-            _build_ocr_reply_markup(locals().get('output_format', 'txt')) if 'operation' in locals() and locals().get('operation') == "ocr" else None
+            _build_ocr_reply_markup(locals().get("output_format", "txt"))
+            if "operation" in locals() and locals().get("operation") == "ocr"
+            else None
         )
         await message.answer(
             f"{Emoji.ERROR} <b>Произошла ошибка</b>\n\n{GENERIC_INTERNAL_ERROR_HTML}",
@@ -2351,7 +2420,11 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
             stage_labels = _get_stage_labels(operation)
 
             status_msg: Message | None = None
-            progress_state: dict[str, Any] = {"percent": 0, "stage": "start", "started_at": time.monotonic()}
+            progress_state: dict[str, Any] = {
+                "percent": 0,
+                "stage": "start",
+                "started_at": time.monotonic(),
+            }
 
             progress_config = _PROGRESS_OPERATION_CONFIG.get(operation)
             if progress_config:
@@ -2367,7 +2440,7 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 )
             else:
                 status_msg = await message.answer(
-                    f"📷 Обрабатываем фотографию для режима \"распознание текста\"...\n\n"
+                    f'📷 Обрабатываем фотографию для режима "распознание текста"...\n\n'
                     f"⏳ Операция: {html_escape(operation_name)}\n"
                     f"📏 Размер: {file_size_kb} КБ",
                     parse_mode=ParseMode.HTML,
@@ -2417,9 +2490,13 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 await send_progress({"stage": "finalizing", "percent": 90})
 
                 if result.success:
-                    formatted_result = document_manager.format_result_for_telegram(result, operation)
+                    formatted_result = document_manager.format_result_for_telegram(
+                        result, operation
+                    )
 
-                    base_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    base_markup = (
+                        _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    )
                     primary_markup = _with_back_to_operations(base_markup)
                     for idx, chunk in enumerate(_split_plain_text(formatted_result, limit=3500)):
                         await message.answer(
@@ -2457,7 +2534,10 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                             )
                         except Exception as send_error:  # noqa: BLE001
                             logger.error(
-                                "Не удалось отправить файл %s: %s", export_path, send_error, exc_info=True
+                                "Не удалось отправить файл %s: %s",
+                                export_path,
+                                send_error,
+                                exc_info=True,
                             )
                             await message.answer(f"Не удалось отправить файл {export_file_name}")
                         finally:
@@ -2465,20 +2545,32 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                                 Path(export_path).unlink(missing_ok=True)
 
                     completion_payload = _build_completion_payload(operation, result)
-                    await send_progress({"stage": "completed", "percent": 100, **completion_payload})
-                    if 'status_msg' in locals() and status_msg:
+                    await send_progress(
+                        {"stage": "completed", "percent": 100, **completion_payload}
+                    )
+                    if "status_msg" in locals() and status_msg:
                         with suppress(Exception):
                             await asyncio.sleep(0.6)
                             await status_msg.delete()
 
-                    logger.info("Successfully processed photo %s for user %s", file_name, message.from_user.id)
+                    logger.info(
+                        "Successfully processed photo %s for user %s",
+                        file_name,
+                        message.from_user.id,
+                    )
                     request_success = True
                 else:
                     request_error = result.error_code or "PROCESSING_ERROR"
                     await send_progress(
-                        {"stage": "failed", "percent": progress_state["percent"], "note": result.message}
+                        {
+                            "stage": "failed",
+                            "percent": progress_state["percent"],
+                            "note": result.message,
+                        }
                     )
-                    reply_markup = _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    reply_markup = (
+                        _build_ocr_reply_markup(output_format) if operation == "ocr" else None
+                    )
                     await message.answer(
                         f"{Emoji.ERROR} <b>Ошибка обработки фотографии</b>\n\n{html_escape(str(result.message))}",
                         parse_mode=ParseMode.HTML,
@@ -2489,9 +2581,13 @@ async def handle_photo_upload(message: Message, state: FSMContext) -> None:
                 request_error = getattr(exc, "error_code", "INTERNAL_ERROR")
                 with suppress(Exception):
                     await send_progress(
-                        {"stage": "failed", "percent": progress_state["percent"], "note": GENERIC_INTERNAL_ERROR_TEXT}
+                        {
+                            "stage": "failed",
+                            "percent": progress_state["percent"],
+                            "note": GENERIC_INTERNAL_ERROR_TEXT,
+                        }
                     )
-                    if 'status_msg' in locals() and status_msg:
+                    if "status_msg" in locals() and status_msg:
                         await status_msg.delete()
 
                 reply_markup = _with_back_to_operations(
@@ -2549,13 +2645,15 @@ async def cmd_askdoc(message: Message) -> None:
     document_manager = _get_document_manager()
     if document_manager is None or not message.from_user:
         await message.answer(
-            f"{Emoji.WARNING} Сессия документа не найдена. Загрузите документ с режимом \"Чат\"."
+            f'{Emoji.WARNING} Сессия документа не найдена. Загрузите документ с режимом "Чат".'
         )
         return
 
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        await message.answer(f"{Emoji.WARNING} Укажите вопрос после команды, например: /askdoc Какой срок?")
+        await message.answer(
+            f"{Emoji.WARNING} Укажите вопрос после команды, например: /askdoc Какой срок?"
+        )
         return
 
     question = parts[1].strip()
@@ -2563,7 +2661,9 @@ async def cmd_askdoc(message: Message) -> None:
         async with typing_action(message.bot, message.chat.id, "typing"):
             result = await document_manager.answer_chat_question(message.from_user.id, question)
     except ProcessingError as exc:
-        await message.answer(f"{Emoji.WARNING} {html_escape(exc.message)}", parse_mode=ParseMode.HTML)
+        await message.answer(
+            f"{Emoji.WARNING} {html_escape(exc.message)}", parse_mode=ParseMode.HTML
+        )
         return
     except Exception as exc:  # noqa: BLE001
         logger.error("Document chat failed: %s", exc, exc_info=True)
@@ -2601,10 +2701,14 @@ def register_document_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(handle_back_to_menu, F.data == "back_to_menu")
 
     dp.message.register(handle_doc_draft_request, DocumentDraftStates.waiting_for_request, F.text)
-    dp.message.register(handle_doc_draft_request_voice, DocumentDraftStates.waiting_for_request, F.voice)
+    dp.message.register(
+        handle_doc_draft_request_voice, DocumentDraftStates.waiting_for_request, F.voice
+    )
     dp.message.register(handle_doc_draft_answer, DocumentDraftStates.asking_details, F.text)
     dp.message.register(handle_doc_draft_answer_voice, DocumentDraftStates.asking_details, F.voice)
-    dp.message.register(handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document)
+    dp.message.register(
+        handle_document_upload, DocumentProcessingStates.waiting_for_document, F.document
+    )
     dp.message.register(handle_photo_upload, DocumentProcessingStates.waiting_for_document, F.photo)
     dp.message.register(cmd_askdoc, Command("askdoc"))
     dp.message.register(cmd_enddoc, Command("enddoc"))

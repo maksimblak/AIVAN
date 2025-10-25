@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class UserBehaviorEvent:
     """Событие поведения пользователя"""
+
     user_id: int
     event_type: str  # 'feature_used', 'error', 'abandoned', 'success'
     feature: str  # 'voice', 'document', 'question', etc.
@@ -30,6 +31,7 @@ class UserBehaviorEvent:
 @dataclass
 class FeatureEngagement:
     """Метрики вовлеченности по фиче"""
+
     feature_name: str
     total_uses: int
     unique_users: int
@@ -44,6 +46,7 @@ class FeatureEngagement:
 @dataclass
 class UserJourney:
     """Путь пользователя через продукт"""
+
     user_id: int
     journey_steps: list[dict[str, Any]]
     drop_off_point: str | None
@@ -55,6 +58,7 @@ class UserJourney:
 @dataclass
 class FrictionPoint:
     """Точка трения в продукте"""
+
     location: str  # 'payment_flow', 'document_upload', etc.
     friction_type: str  # 'error', 'timeout', 'abandon', 'confusion'
     affected_users: int
@@ -66,6 +70,7 @@ class FrictionPoint:
 @dataclass
 class FeatureFeedback:
     """Обратная связь по фиче"""
+
     feature: str
     positive_signals: int  # likes, продолжили использовать
     negative_signals: int  # dislikes, abandoned
@@ -89,17 +94,17 @@ class UserBehaviorTracker:
         feature: str,
         duration_ms: int | None = None,
         success: bool = True,
-        metadata: dict[str, Any] | None = None
+        metadata: dict[str, Any] | None = None,
     ):
         """Отслеживание использования фичи"""
         event = UserBehaviorEvent(
             user_id=user_id,
-            event_type='feature_used',
+            event_type="feature_used",
             feature=feature,
             timestamp=int(time.time()),
             metadata=metadata or {},
             duration_ms=duration_ms,
-            success=success
+            success=success,
         )
 
         self.events_buffer.append(event)
@@ -115,41 +120,27 @@ class UserBehaviorTracker:
         )
 
     async def track_abandonment(
-        self,
-        user_id: int,
-        feature: str,
-        stage: str,
-        metadata: dict[str, Any] | None = None
+        self, user_id: int, feature: str, stage: str, metadata: dict[str, Any] | None = None
     ):
         """Отслеживание когда пользователь бросил действие"""
         await self.track_feature_use(
             user_id=user_id,
             feature=feature,
             success=False,
-            metadata={'stage': stage, 'abandoned': True, **(metadata or {})}
+            metadata={"stage": stage, "abandoned": True, **(metadata or {})},
         )
 
-        logger.warning(
-            f"Abandonment: user={user_id}, feature={feature}, stage={stage}"
-        )
+        logger.warning(f"Abandonment: user={user_id}, feature={feature}, stage={stage}")
 
     async def track_error(
-        self,
-        user_id: int,
-        feature: str,
-        error_type: str,
-        error_message: str | None = None
+        self, user_id: int, feature: str, error_type: str, error_message: str | None = None
     ):
         """Отслеживание ошибок"""
         await self.track_feature_use(
             user_id=user_id,
             feature=feature,
             success=False,
-            metadata={
-                'error': True,
-                'error_type': error_type,
-                'error_message': error_message
-            }
+            metadata={"error": True, "error_type": error_type, "error_message": error_message},
         )
 
     async def track_user_journey_step(
@@ -157,21 +148,18 @@ class UserBehaviorTracker:
         user_id: int,
         step_name: str,
         completed: bool = True,
-        metadata: dict[str, Any] | None = None
+        metadata: dict[str, Any] | None = None,
     ):
         """Отслеживание шагов пути пользователя"""
         async with self.db.pool.acquire() as conn:
-            await conn.execute("""
+            await conn.execute(
+                """
                 INSERT INTO user_journey_events
                 (user_id, step_name, completed, metadata, created_at)
                 VALUES (?, ?, ?, ?, ?)
-            """, (
-                user_id,
-                step_name,
-                1 if completed else 0,
-                str(metadata or {}),
-                int(time.time())
-            ))
+            """,
+                (user_id, step_name, 1 if completed else 0, str(metadata or {}), int(time.time())),
+            )
 
     async def _flush_events(self):
         """Сохранение накопленных событий в БД"""
@@ -212,7 +200,8 @@ class UserBehaviorTracker:
             now = int(time.time())
             period_start = now - (days * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     feature,
                     COUNT(*) as total_uses,
@@ -224,7 +213,9 @@ class UserBehaviorTracker:
                 WHERE timestamp >= ?
                 GROUP BY feature
                 ORDER BY total_uses DESC
-            """, (period_start,))
+            """,
+                (period_start,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -232,7 +223,8 @@ class UserBehaviorTracker:
             engagements = []
             for row in rows:
                 # Рассчитываем repeat usage rate
-                repeat_cursor = await conn.execute("""
+                repeat_cursor = await conn.execute(
+                    """
                     SELECT COUNT(DISTINCT user_id) as repeat_users
                     FROM (
                         SELECT user_id, COUNT(*) as use_count
@@ -241,20 +233,25 @@ class UserBehaviorTracker:
                         GROUP BY user_id
                         HAVING use_count > 1
                     )
-                """, (row[0], period_start))
+                """,
+                    (row[0], period_start),
+                )
                 repeat_users = (await repeat_cursor.fetchone())[0]
                 await repeat_cursor.close()
 
                 repeat_rate = (repeat_users / max(row[2], 1)) * 100
 
                 # Получаем ratings для satisfaction
-                rating_cursor = await conn.execute("""
+                rating_cursor = await conn.execute(
+                    """
                     SELECT AVG(rating) as avg_rating
                     FROM ratings r
                     INNER JOIN requests req ON r.request_id = req.id
                     WHERE req.request_type = ?
                     AND r.created_at >= ?
-                """, (row[0], period_start))
+                """,
+                    (row[0], period_start),
+                )
                 rating_row = await rating_cursor.fetchone()
                 await rating_cursor.close()
 
@@ -263,17 +260,19 @@ class UserBehaviorTracker:
                 # Определяем тренд (сравнивая с предыдущим периодом)
                 trend = await self._calculate_trend(row[0], period_start)
 
-                engagements.append(FeatureEngagement(
-                    feature_name=row[0],
-                    total_uses=row[1],
-                    unique_users=row[2],
-                    avg_duration_ms=row[3] or 0,
-                    success_rate=row[4],
-                    abandonment_rate=row[5],
-                    repeat_usage_rate=repeat_rate,
-                    satisfaction_score=satisfaction,
-                    trend=trend
-                ))
+                engagements.append(
+                    FeatureEngagement(
+                        feature_name=row[0],
+                        total_uses=row[1],
+                        unique_users=row[2],
+                        avg_duration_ms=row[3] or 0,
+                        success_rate=row[4],
+                        abandonment_rate=row[5],
+                        repeat_usage_rate=repeat_rate,
+                        satisfaction_score=satisfaction,
+                        trend=trend,
+                    )
+                )
 
             return engagements
 
@@ -281,10 +280,13 @@ class UserBehaviorTracker:
         """Определение тренда использования фичи"""
         async with self.db.pool.acquire() as conn:
             # Текущий период
-            current_cursor = await conn.execute("""
+            current_cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM behavior_events
                 WHERE feature = ? AND timestamp >= ?
-            """, (feature, current_period_start))
+            """,
+                (feature, current_period_start),
+            )
             current_count = (await current_cursor.fetchone())[0]
             await current_cursor.close()
 
@@ -293,24 +295,27 @@ class UserBehaviorTracker:
             period_length = now - current_period_start
             prev_period_start = current_period_start - period_length
 
-            prev_cursor = await conn.execute("""
+            prev_cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM behavior_events
                 WHERE feature = ? AND timestamp >= ? AND timestamp < ?
-            """, (feature, prev_period_start, current_period_start))
+            """,
+                (feature, prev_period_start, current_period_start),
+            )
             prev_count = (await prev_cursor.fetchone())[0]
             await prev_cursor.close()
 
             if prev_count == 0:
-                return 'new'
+                return "new"
 
             change_pct = ((current_count - prev_count) / prev_count) * 100
 
             if change_pct > 20:
-                return 'rising'
+                return "rising"
             elif change_pct < -20:
-                return 'declining'
+                return "declining"
             else:
-                return 'stable'
+                return "stable"
 
     # ==================== ТОЧКИ ТРЕНИЯ ====================
 
@@ -321,7 +326,8 @@ class UserBehaviorTracker:
             period_start = now - (days * 86400)
 
             # Точки с высоким % ошибок
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     feature,
                     COUNT(*) as total_attempts,
@@ -334,7 +340,9 @@ class UserBehaviorTracker:
                 GROUP BY feature
                 HAVING failures > 0 OR abandonments > 0
                 ORDER BY (failures + abandonments) DESC
-            """, (period_start,))
+            """,
+                (period_start,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -348,31 +356,32 @@ class UserBehaviorTracker:
 
                 # Определяем тип трения
                 if failure_rate > 30:
-                    friction_type = 'error'
+                    friction_type = "error"
                 elif abandonment_rate > 40:
-                    friction_type = 'abandon'
+                    friction_type = "abandon"
                 elif avg_duration and avg_duration > 60000:  # >1 min
-                    friction_type = 'timeout'
+                    friction_type = "timeout"
                 else:
-                    friction_type = 'confusion'
+                    friction_type = "confusion"
 
                 # Resolution rate - сколько в итоге успешно завершили
                 resolution_rate = ((total - failures - abandonments) / total) * 100
 
                 # Impact score учитывает количество пользователей и серьезность
-                impact_score = (
-                    (users / 100) * 50 +  # чем больше пользователей, тем выше impact
-                    (failure_rate + abandonment_rate) / 2  # серьезность проблемы
-                )
+                impact_score = (users / 100) * 50 + (  # чем больше пользователей, тем выше impact
+                    failure_rate + abandonment_rate
+                ) / 2  # серьезность проблемы
 
-                friction_points.append(FrictionPoint(
-                    location=feature,
-                    friction_type=friction_type,
-                    affected_users=users,
-                    avg_recovery_time_ms=avg_duration or 0,
-                    resolution_rate=resolution_rate,
-                    impact_score=min(impact_score, 100)
-                ))
+                friction_points.append(
+                    FrictionPoint(
+                        location=feature,
+                        friction_type=friction_type,
+                        affected_users=users,
+                        avg_recovery_time_ms=avg_duration or 0,
+                        resolution_rate=resolution_rate,
+                        impact_score=min(impact_score, 100),
+                    )
+                )
 
             return sorted(friction_points, key=lambda x: x.impact_score, reverse=True)
 
@@ -382,12 +391,15 @@ class UserBehaviorTracker:
         """Получение пути пользователя через продукт"""
         async with self.db.pool.acquire() as conn:
             # Получаем все события пользователя
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT event_type, feature, timestamp, metadata, success, duration_ms
                 FROM behavior_events
                 WHERE user_id = ?
                 ORDER BY timestamp ASC
-            """, (user_id,))
+            """,
+                (user_id,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -400,11 +412,11 @@ class UserBehaviorTracker:
                 event_type, feature, timestamp, metadata, success, duration = row
 
                 step = {
-                    'step_number': i + 1,
-                    'feature': feature,
-                    'timestamp': datetime.fromtimestamp(timestamp).isoformat(),
-                    'success': bool(success),
-                    'duration_ms': duration
+                    "step_number": i + 1,
+                    "feature": feature,
+                    "timestamp": datetime.fromtimestamp(timestamp).isoformat(),
+                    "success": bool(success),
+                    "duration_ms": duration,
                 }
 
                 journey_steps.append(step)
@@ -424,15 +436,15 @@ class UserBehaviorTracker:
 
             # Определяем completed (дошли до payment или active subscription)
             completed = any(
-                step['feature'] in ['payment_success', 'subscription_active']
+                step["feature"] in ["payment_success", "subscription_active"]
                 for step in journey_steps
             )
 
             total_time = 0
             if journey_steps:
                 total_time = (
-                    datetime.fromisoformat(journey_steps[-1]['timestamp']).timestamp() -
-                    datetime.fromisoformat(journey_steps[0]['timestamp']).timestamp()
+                    datetime.fromisoformat(journey_steps[-1]["timestamp"]).timestamp()
+                    - datetime.fromisoformat(journey_steps[0]["timestamp"]).timestamp()
                 )
 
             return UserJourney(
@@ -441,7 +453,7 @@ class UserBehaviorTracker:
                 drop_off_point=drop_off_point,
                 completed=completed,
                 total_time_seconds=int(total_time),
-                friction_points=list(set(friction_points))
+                friction_points=list(set(friction_points)),
             )
 
     # ==================== ОБРАТНАЯ СВЯЗЬ ПО ФИЧАМ ====================
@@ -453,29 +465,38 @@ class UserBehaviorTracker:
             period_start = now - (days * 86400)
 
             # Положительные сигналы: успехи, повторное использование
-            pos_cursor = await conn.execute("""
+            pos_cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM behavior_events
                 WHERE feature = ? AND timestamp >= ? AND success = 1
-            """, (feature, period_start))
+            """,
+                (feature, period_start),
+            )
             positive_signals = (await pos_cursor.fetchone())[0]
             await pos_cursor.close()
 
             # Негативные сигналы: ошибки, abandonment
-            neg_cursor = await conn.execute("""
+            neg_cursor = await conn.execute(
+                """
                 SELECT COUNT(*) FROM behavior_events
                 WHERE feature = ? AND timestamp >= ?
                 AND (success = 0 OR metadata LIKE '%abandoned%')
-            """, (feature, period_start))
+            """,
+                (feature, period_start),
+            )
             negative_signals = (await neg_cursor.fetchone())[0]
             await neg_cursor.close()
 
             # Явные feedback (ratings)
-            feedback_cursor = await conn.execute("""
+            feedback_cursor = await conn.execute(
+                """
                 SELECT feedback_text FROM ratings r
                 INNER JOIN requests req ON r.request_id = req.id
                 WHERE req.request_type = ? AND r.created_at >= ?
                 AND feedback_text IS NOT NULL
-            """, (feature, period_start))
+            """,
+                (feature, period_start),
+            )
             feedback_rows = await feedback_cursor.fetchall()
             await feedback_cursor.close()
 
@@ -493,7 +514,7 @@ class UserBehaviorTracker:
                 positive_signals=positive_signals,
                 negative_signals=negative_signals,
                 explicit_feedback=explicit_feedback,
-                net_sentiment=net_sentiment
+                net_sentiment=net_sentiment,
             )
 
     # ==================== ПОПУЛЯРНЫЕ ФИЧИ ====================
@@ -504,7 +525,8 @@ class UserBehaviorTracker:
             now = int(time.time())
             period_start = now - (days * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     feature,
                     COUNT(*) as uses,
@@ -516,18 +538,20 @@ class UserBehaviorTracker:
                 GROUP BY feature
                 ORDER BY uses DESC
                 LIMIT ?
-            """, (period_start, limit))
+            """,
+                (period_start, limit),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
             return [
                 {
-                    'feature': row[0],
-                    'uses': row[1],
-                    'unique_users': row[2],
-                    'avg_duration_ms': int(row[3] or 0),
-                    'success_rate': round(row[4], 2)
+                    "feature": row[0],
+                    "uses": row[1],
+                    "unique_users": row[2],
+                    "avg_duration_ms": int(row[3] or 0),
+                    "success_rate": round(row[4], 2),
                 }
                 for row in rows
             ]
@@ -539,17 +563,17 @@ class UserBehaviorTracker:
 
         # Все доступные фичи (из конфига или списка)
         all_features = [
-            'legal_question',
-            'voice_message',
-            'document_upload',
-            'document_summary',
-            'document_risks',
-            'document_chat',
-            'document_translate',
-            'document_anonymize',
-            'ocr',
-            'judicial_practice',
-            'document_draft'
+            "legal_question",
+            "voice_message",
+            "document_upload",
+            "document_summary",
+            "document_risks",
+            "document_chat",
+            "document_translate",
+            "document_anonymize",
+            "ocr",
+            "judicial_practice",
+            "document_draft",
         ]
 
         async with self.db.pool.acquire() as conn:
@@ -557,12 +581,15 @@ class UserBehaviorTracker:
             period_start = now - (days * 86400)
 
             # Получаем статистику по всем фичам
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT feature, COUNT(*) as uses
                 FROM behavior_events
                 WHERE timestamp >= ?
                 GROUP BY feature
-            """, (period_start,))
+            """,
+                (period_start,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
@@ -574,11 +601,13 @@ class UserBehaviorTracker:
             for feature in all_features:
                 uses = usage_map.get(feature, 0)
                 if uses < 10:  # порог недоиспользования
-                    underutilized.append({
-                        'feature': feature,
-                        'uses': uses,
-                        'status': 'unused' if uses == 0 else 'underutilized'
-                    })
+                    underutilized.append(
+                        {
+                            "feature": feature,
+                            "uses": uses,
+                            "status": "unused" if uses == 0 else "underutilized",
+                        }
+                    )
 
             return underutilized
 
@@ -590,7 +619,8 @@ class UserBehaviorTracker:
             now = int(time.time())
             period_start = now - (days * 86400)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT
                     CAST(strftime('%H', timestamp, 'unixepoch') AS INTEGER) as hour,
                     COUNT(*) as total_events,
@@ -600,16 +630,18 @@ class UserBehaviorTracker:
                 WHERE timestamp >= ?
                 GROUP BY hour
                 ORDER BY hour
-            """, (period_start,))
+            """,
+                (period_start,),
+            )
 
             rows = await cursor.fetchall()
             await cursor.close()
 
             return {
                 row[0]: {
-                    'total_events': row[1],
-                    'unique_users': row[2],
-                    'avg_duration_ms': int(row[3] or 0)
+                    "total_events": row[1],
+                    "unique_users": row[2],
+                    "avg_duration_ms": int(row[3] or 0),
                 }
                 for row in rows
             }
@@ -624,20 +656,23 @@ class UserBehaviorTracker:
         report = "<b>📊 ВОВЛЕЧЕННОСТЬ ПО ФИЧАМ</b>\n\n"
 
         for eng in engagements[:10]:  # топ-10
-            trend_emoji = {
-                'rising': '📈',
-                'stable': '➡️',
-                'declining': '📉',
-                'new': '🆕'
-            }.get(eng.trend, '➡️')
+            trend_emoji = {"rising": "📈", "stable": "➡️", "declining": "📉", "new": "🆕"}.get(
+                eng.trend, "➡️"
+            )
 
-            satisfaction_emoji = '😍' if eng.satisfaction_score > 75 else '😊' if eng.satisfaction_score > 50 else '😐'
+            satisfaction_emoji = (
+                "😍"
+                if eng.satisfaction_score > 75
+                else "😊" if eng.satisfaction_score > 50 else "😐"
+            )
 
             report += f"<b>{eng.feature_name}</b> {trend_emoji}\n"
             report += f"  • Использований: {eng.total_uses} ({eng.unique_users} польз.)\n"
             report += f"  • Успешность: {eng.success_rate:.1f}%\n"
             report += f"  • Повторное использование: {eng.repeat_usage_rate:.1f}%\n"
-            report += f"  • Удовлетворенность: {satisfaction_emoji} {eng.satisfaction_score:.0f}/100\n"
+            report += (
+                f"  • Удовлетворенность: {satisfaction_emoji} {eng.satisfaction_score:.0f}/100\n"
+            )
 
             if eng.abandonment_rate > 20:
                 report += f"  ⚠️ Высокий abandonment: {eng.abandonment_rate:.1f}%\n"
@@ -654,7 +689,9 @@ class UserBehaviorTracker:
         report = "<b>🔥 ТОЧКИ ТРЕНИЯ</b>\n\n"
 
         for friction in frictions[:5]:  # топ-5 самых критичных
-            impact_emoji = '🔴' if friction.impact_score > 70 else '🟡' if friction.impact_score > 40 else '🟢'
+            impact_emoji = (
+                "🔴" if friction.impact_score > 70 else "🟡" if friction.impact_score > 40 else "🟢"
+            )
 
             report += f"{impact_emoji} <b>{friction.location}</b>\n"
             report += f"  • Тип: {friction.friction_type}\n"

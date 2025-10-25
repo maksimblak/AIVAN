@@ -11,8 +11,6 @@ from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 
 from core.bot_app.status_manager import register_progressbar
 from core.bot_app.ui_components import Emoji
-from src.core.exceptions import ErrorContext, ErrorHandler
-from src.core.metrics import set_system_status
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.admin import register_admin_handlers
 from src.core.bot_app.documents import register_document_handlers
@@ -23,6 +21,8 @@ from src.core.bot_app.questions import process_question, register_question_handl
 from src.core.bot_app.retention import register_retention_handlers
 from src.core.bot_app.startup import RuntimeBundle, maybe_call, setup_bot_runtime
 from src.core.bot_app.voice import register_voice_handlers
+from src.core.exceptions import ErrorContext, ErrorHandler
+from src.core.metrics import set_system_status
 
 logger = logging.getLogger("ai-ivan.simple")
 
@@ -168,9 +168,18 @@ async def _graceful_shutdown(bot: Bot, runtime: RuntimeBundle) -> None:
         ("Bot session", lambda: bot.session.close()),
         ("Database", lambda: getattr(db, "close", None) and db.close()),
         ("Rate limiter", lambda: getattr(rate_limiter, "close", None) and rate_limiter.close()),
-        ("OpenAI service", lambda: getattr(openai_service, "close", None) and openai_service.close()),
-        ("Audio service", lambda: getattr(audio_service, "aclose", None) and audio_service.aclose()),
-        ("Response cache", lambda: getattr(response_cache, "close", None) and response_cache.close()),
+        (
+            "OpenAI service",
+            lambda: getattr(openai_service, "close", None) and openai_service.close(),
+        ),
+        (
+            "Audio service",
+            lambda: getattr(audio_service, "aclose", None) and audio_service.aclose(),
+        ),
+        (
+            "Response cache",
+            lambda: getattr(response_cache, "close", None) and response_cache.close(),
+        ),
     ]
 
     for service_name, close_func in services_to_close:
@@ -208,7 +217,14 @@ async def run_bot() -> None:
             userinfo = f"{quote(proxy_user, safe='')}:{quote(proxy_pass, safe='')}"
             netloc = f"{userinfo}@{parsed.hostname}{':' + str(parsed.port) if parsed.port else ''}"
             proxy_url = urlunparse(
-                (parsed.scheme, netloc, parsed.path or "", parsed.params, parsed.query, parsed.fragment),
+                (
+                    parsed.scheme,
+                    netloc,
+                    parsed.path or "",
+                    parsed.params,
+                    parsed.query,
+                    parsed.fragment,
+                ),
             )
         session = AiohttpSession(proxy=proxy_url)
 
@@ -246,7 +262,9 @@ async def run_bot() -> None:
     set_system_status("running")
     _log_startup_banner(runtime, cfg)
     if cfg.prometheus_port:
-        logger.info("Prometheus metrics available at http://localhost:%s/metrics", cfg.prometheus_port)
+        logger.info(
+            "Prometheus metrics available at http://localhost:%s/metrics", cfg.prometheus_port
+        )
 
     try:
         while True:
@@ -271,4 +289,3 @@ async def run_bot() -> None:
         set_system_status("stopping")
         await _graceful_shutdown(bot, runtime)
         logger.info("AI-Ivan shutdown complete")
-

@@ -2,12 +2,13 @@
 Pytest конфигурация и общие fixtures для тестов AIVAN
 """
 
-import pytest
 import asyncio
-import tempfile
 import os
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 
 # Настройка event loop для asyncio тестов
@@ -27,6 +28,7 @@ def temp_dir():
     yield temp_dir
     # Очистка после теста
     import shutil
+
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
@@ -44,17 +46,8 @@ def mock_openai_client():
     # Mock для chat completions
     client.chat.completions.create = AsyncMock()
     client.chat.completions.create.return_value = Mock(
-        choices=[
-            Mock(
-                message=Mock(content="Test response"),
-                finish_reason="stop"
-            )
-        ],
-        usage=Mock(
-            prompt_tokens=10,
-            completion_tokens=20,
-            total_tokens=30
-        )
+        choices=[Mock(message=Mock(content="Test response"), finish_reason="stop")],
+        usage=Mock(prompt_tokens=10, completion_tokens=20, total_tokens=30),
     )
 
     # Mock для audio
@@ -84,26 +77,26 @@ def sample_user_data():
             "user_id": 123,
             "is_admin": True,
             "trial_remaining": 10,
-            "subscription_until": 0
+            "subscription_until": 0,
         },
         "subscriber_user": {
             "user_id": 456,
             "is_admin": False,
             "trial_remaining": 5,
-            "subscription_until": 9999999999
+            "subscription_until": 9999999999,
         },
         "trial_user": {
             "user_id": 789,
             "is_admin": False,
             "trial_remaining": 3,
-            "subscription_until": 0
+            "subscription_until": 0,
         },
         "expired_user": {
             "user_id": 999,
             "is_admin": False,
             "trial_remaining": 0,
-            "subscription_until": 1234567890  # Past date
-        }
+            "subscription_until": 1234567890,  # Past date
+        },
     }
 
 
@@ -118,7 +111,7 @@ def mock_config():
         "admin_ids": {123, 456},
         "subscription_price": 300,
         "enable_voice": True,
-        "log_level": "DEBUG"
+        "log_level": "DEBUG",
     }
 
 
@@ -145,7 +138,7 @@ def sample_documents():
 
         Предмет договора: поставка товаров
         Цена: 50 000 рублей
-        """
+        """,
     }
 
 
@@ -170,6 +163,7 @@ def pytest_configure(config):
 def skip_if_no_openai_key():
     """Пропуск тестов если нет OpenAI API ключа"""
     import os
+
     if not os.getenv("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY not set")
 
@@ -178,11 +172,9 @@ def skip_if_no_openai_key():
 def skip_if_no_telegram_token():
     """Пропуск тестов если нет Telegram токена"""
     import os
+
     if not os.getenv("TELEGRAM_BOT_TOKEN"):
         pytest.skip("TELEGRAM_BOT_TOKEN not set")
-
-
-
 
 
 collect_ignore_glob = ["scripts/test_*.py"]

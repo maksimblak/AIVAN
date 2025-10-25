@@ -72,7 +72,16 @@ def build_practice_excel(
             metadata = getattr(match, "metadata", {}) if match else {}
             if not isinstance(metadata, Mapping):
                 continue
-            title_key = str(metadata.get("title") or metadata.get("name") or getattr(fragment, "header", "") or "").strip().lower()
+            title_key = (
+                str(
+                    metadata.get("title")
+                    or metadata.get("name")
+                    or getattr(fragment, "header", "")
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
             url_key = str(metadata.get("url") or metadata.get("link") or "").strip().lower()
             if not title_key and not url_key:
                 continue
@@ -140,8 +149,6 @@ def build_practice_excel(
                 if isinstance(norm_names, Sequence):
                     norms = "\n".join(str(item).strip() for item in norm_names if str(item).strip())
             applicability = metadata.get("applicability") or ""
-            court = metadata.get("court") or ""
-            date = metadata.get("date") or metadata.get("decision_date") or ""
             name_parts = [str(title or "").strip()]
             if case_number:
                 name_parts.append(str(case_number).strip())
@@ -164,7 +171,7 @@ def build_practice_excel(
                 link_cell.hyperlink = url
                 link_cell.style = "Hyperlink"
     else:
-        ws_cases.append(["Нет данных по судебной практике", "", "", "", ""]) 
+        ws_cases.append(["Нет данных по судебной практике", "", "", "", ""])
 
     column_widths = {
         "A": 52,  # Название/номер/ссылка
@@ -263,7 +270,9 @@ def build_risk_excel(
 
     recommendations = report.get("recommendations") or []
     if recommendations:
-        ws_overview.append(["Рекомендации", "\n".join(str(r).strip() for r in recommendations if str(r).strip())])
+        ws_overview.append(
+            ["Рекомендации", "\n".join(str(r).strip() for r in recommendations if str(r).strip())]
+        )
 
     ws_overview.column_dimensions["A"].width = 35
     ws_overview.column_dimensions["B"].width = 120
@@ -273,16 +282,18 @@ def build_risk_excel(
 
     def _build_risk_sheet(title: str, risks: Iterable[Mapping[str, Any]]) -> None:
         sheet = wb.create_sheet(title)
-        sheet.append([
-            "ID",
-            "Уровень",
-            "Описание",
-            "Фрагмент договора",
-            "Начало",
-            "Окончание",
-            "Источники права",
-            "Источник",
-        ])
+        sheet.append(
+            [
+                "ID",
+                "Уровень",
+                "Описание",
+                "Фрагмент договора",
+                "Начало",
+                "Окончание",
+                "Источники права",
+                "Источник",
+            ]
+        )
         for cell in sheet[1]:
             cell.font = Font(bold=True)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -291,16 +302,18 @@ def build_risk_excel(
             if not isinstance(risk, Mapping):
                 continue
             has_rows = True
-            sheet.append([
-                str(risk.get("id") or ""),
-                str(risk.get("risk_level") or risk.get("level") or ""),
-                str(risk.get("description") or ""),
-                str(risk.get("clause_text") or ""),
-                risk.get("start"),
-                risk.get("end"),
-                _format_law_refs(risk.get("law_refs") or []),
-                str(risk.get("source") or ""),
-            ])
+            sheet.append(
+                [
+                    str(risk.get("id") or ""),
+                    str(risk.get("risk_level") or risk.get("level") or ""),
+                    str(risk.get("description") or ""),
+                    str(risk.get("clause_text") or ""),
+                    risk.get("start"),
+                    risk.get("end"),
+                    _format_law_refs(risk.get("law_refs") or []),
+                    str(risk.get("source") or ""),
+                ]
+            )
         if not has_rows:
             sheet.append(["", "", "Данные отсутствуют", "", "", "", "", ""])
         for letter in ["B", "C", "D", "G", "H"]:
@@ -326,14 +339,16 @@ def build_risk_excel(
             if not isinstance(violation, Mapping):
                 continue
             span = violation.get("span") or {}
-            sheet.append([
-                str(violation.get("id") or ""),
-                str(violation.get("text") or ""),
-                span.get("start"),
-                span.get("end"),
-                _format_law_refs(violation.get("law_refs") or []),
-                str(violation.get("note") or ""),
-            ])
+            sheet.append(
+                [
+                    str(violation.get("id") or ""),
+                    str(violation.get("text") or ""),
+                    span.get("start"),
+                    span.get("end"),
+                    _format_law_refs(violation.get("law_refs") or []),
+                    str(violation.get("note") or ""),
+                ]
+            )
     else:
         sheet.append(["", "Нарушения не обнаружены", "", "", "", ""])
     for letter in ["B", "E", "F"]:

@@ -17,6 +17,7 @@ from typing import Any
 @dataclass
 class MRRBreakdown:
     """MRR разбивка по компонентам"""
+
     month: str  # "2025-01"
 
     # Core MRR components
@@ -43,6 +44,7 @@ class MRRBreakdown:
 @dataclass
 class ARRMetrics:
     """Annual Recurring Revenue метрики"""
+
     arr: int  # MRR × 12
     projected_arr: int  # С учетом текущих трендов
 
@@ -62,6 +64,7 @@ class ARRMetrics:
 @dataclass
 class RevenueForecasts:
     """Прогнозы revenue"""
+
     month: str
 
     # Conservative forecast (10th percentile)
@@ -82,6 +85,7 @@ class RevenueForecasts:
 @dataclass
 class UnitEconomics:
     """Unit economics расчеты"""
+
     # Customer Acquisition Cost
     cac: float  # Средняя стоимость привлечения клиента
 
@@ -124,7 +128,8 @@ class RevenueAnalytics:
 
         async with self.db.pool.acquire() as conn:
             # New MRR - первые платежи в этом месяце
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COALESCE(SUM(amount), 0) as new_mrr, COUNT(DISTINCT user_id) as new_customers
                 FROM payments
                 WHERE strftime('%Y-%m', created_at, 'unixepoch') = ?
@@ -134,7 +139,9 @@ class RevenueAnalytics:
                       WHERE strftime('%Y-%m', created_at, 'unixepoch') < ?
                         AND status = 'completed'
                   )
-            """, (month, month))
+            """,
+                (month, month),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -142,7 +149,8 @@ class RevenueAnalytics:
             new_customers = row[1] if row else 0
 
             # Expansion MRR - повторные платежи от существующих клиентов
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COALESCE(SUM(amount), 0) as expansion_mrr
                 FROM payments
                 WHERE strftime('%Y-%m', created_at, 'unixepoch') = ?
@@ -152,7 +160,9 @@ class RevenueAnalytics:
                       WHERE strftime('%Y-%m', created_at, 'unixepoch') < ?
                         AND status = 'completed'
                   )
-            """, (month, month))
+            """,
+                (month, month),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -161,7 +171,8 @@ class RevenueAnalytics:
             # Churn MRR - пользователи кто платил в предыдущем месяце но не в текущем
             prev_month = self._get_previous_month(month)
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COALESCE(SUM(prev_amount), 0) as churn_mrr, COUNT(*) as churned
                 FROM (
                     SELECT DISTINCT p1.user_id, p1.amount as prev_amount
@@ -174,7 +185,9 @@ class RevenueAnalytics:
                             AND status = 'completed'
                       )
                 )
-            """, (prev_month, month))
+            """,
+                (prev_month, month),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -185,12 +198,15 @@ class RevenueAnalytics:
             contraction_mrr = 0
 
             # Total MRR - все активные подписки в этом месяце
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COALESCE(SUM(amount), 0) as total, COUNT(DISTINCT user_id) as customers
                 FROM payments
                 WHERE strftime('%Y-%m', created_at, 'unixepoch') = ?
                   AND status = 'completed'
-            """, (month,))
+            """,
+                (month,),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -201,12 +217,15 @@ class RevenueAnalytics:
             net_new_mrr = new_mrr + expansion_mrr - contraction_mrr - churn_mrr
 
             # MRR Growth Rate
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COALESCE(SUM(amount), 0) as prev_mrr
                 FROM payments
                 WHERE strftime('%Y-%m', created_at, 'unixepoch') = ?
                   AND status = 'completed'
-            """, (prev_month,))
+            """,
+                (prev_month,),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -217,17 +236,22 @@ class RevenueAnalytics:
             arpu = total_mrr / total_paying if total_paying > 0 else 0
 
             # Customer churn rate
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT COUNT(DISTINCT user_id) as prev_customers
                 FROM payments
                 WHERE strftime('%Y-%m', created_at, 'unixepoch') = ?
                   AND status = 'completed'
-            """, (prev_month,))
+            """,
+                (prev_month,),
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
             prev_customers = row[0] if row else 0
-            customer_churn_rate = (churned_customers / prev_customers * 100) if prev_customers > 0 else 0
+            customer_churn_rate = (
+                (churned_customers / prev_customers * 100) if prev_customers > 0 else 0
+            )
 
             return MRRBreakdown(
                 month=month,
@@ -242,7 +266,7 @@ class RevenueAnalytics:
                 churned_customers=churned_customers,
                 total_paying_customers=total_paying,
                 arpu=arpu,
-                customer_churn_rate=customer_churn_rate
+                customer_churn_rate=customer_churn_rate,
             )
 
     def _get_previous_month(self, month: str) -> str:
@@ -283,7 +307,7 @@ class RevenueAnalytics:
             projected_arr=projected_arr,
             quick_ratio=quick_ratio,
             cac_payback_months=cac_payback_months,
-            burn_multiple=burn_multiple
+            burn_multiple=burn_multiple,
         )
 
     async def get_revenue_forecast(self, months_ahead: int = 12) -> list[RevenueForecasts]:
@@ -297,7 +321,7 @@ class RevenueAnalytics:
         current = datetime.now()
 
         for i in range(6, 0, -1):
-            month_dt = current - timedelta(days=30*i)
+            month_dt = current - timedelta(days=30 * i)
             month_str = month_dt.strftime("%Y-%m")
             try:
                 mrr = await self.get_mrr_breakdown(month_str)
@@ -325,7 +349,7 @@ class RevenueAnalytics:
         forecasts = []
 
         for month_offset in range(1, months_ahead + 1):
-            future_month = (current + timedelta(days=30*month_offset)).strftime("%Y-%m")
+            future_month = (current + timedelta(days=30 * month_offset)).strftime("%Y-%m")
 
             # Conservative: growth_rate - 1 std dev
             conservative_growth = avg_growth_rate * 0.7
@@ -341,15 +365,17 @@ class RevenueAnalytics:
             # Confidence уменьшается с горизонтом прогноза
             confidence = max(0.3, 1.0 - (month_offset / months_ahead) * 0.7)
 
-            forecasts.append(RevenueForecasts(
-                month=future_month,
-                mrr_forecast_low=mrr_low,
-                mrr_forecast_mid=mrr_mid,
-                mrr_forecast_high=mrr_high,
-                confidence=confidence,
-                assumed_churn_rate=avg_churn_rate,
-                assumed_growth_rate=avg_growth_rate
-            ))
+            forecasts.append(
+                RevenueForecasts(
+                    month=future_month,
+                    mrr_forecast_low=mrr_low,
+                    mrr_forecast_mid=mrr_mid,
+                    mrr_forecast_high=mrr_high,
+                    confidence=confidence,
+                    assumed_churn_rate=avg_churn_rate,
+                    assumed_growth_rate=avg_growth_rate,
+                )
+            )
 
         return forecasts
 
@@ -361,7 +387,8 @@ class RevenueAnalytics:
         """
         async with self.db.pool.acquire() as conn:
             # Average monthly churn rate (за последние 6 месяцев)
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT AVG(monthly_churn) as avg_churn
                 FROM (
                     SELECT
@@ -384,7 +411,8 @@ class RevenueAnalytics:
                       AND status = 'completed'
                     GROUP BY month
                 )
-            """)
+            """
+            )
             row = await cursor.fetchone()
             await cursor.close()
 
@@ -423,7 +451,7 @@ class RevenueAnalytics:
                 payback_period=payback_period,
                 gross_margin=gross_margin,
                 monthly_churn=monthly_churn,
-                avg_customer_lifetime_months=avg_lifetime_months
+                avg_customer_lifetime_months=avg_lifetime_months,
             )
 
     async def get_mrr_history(self, months: int = 12) -> list[MRRBreakdown]:
@@ -432,7 +460,7 @@ class RevenueAnalytics:
         current = datetime.now()
 
         for i in range(months, 0, -1):
-            month_dt = current - timedelta(days=30*i)
+            month_dt = current - timedelta(days=30 * i)
             month_str = month_dt.strftime("%Y-%m")
 
             try:
@@ -460,7 +488,7 @@ class RevenueAnalytics:
             }
         """
         # Runway = cash / abs(monthly_burn)
-        runway_months = current_cash / abs(monthly_burn) if monthly_burn < 0 else float('inf')
+        runway_months = current_cash / abs(monthly_burn) if monthly_burn < 0 else float("inf")
 
         end_date = datetime.now() + timedelta(days=30 * runway_months)
 
@@ -481,7 +509,10 @@ class RevenueAnalytics:
             # N = log(breakeven_mrr / current_mrr) / log(1 + growth)
             if current_mrr > 0 and current_mrr < breakeven_mrr:
                 import math
-                months_to_breakeven = math.log(breakeven_mrr / current_mrr) / math.log(1 + monthly_growth)
+
+                months_to_breakeven = math.log(breakeven_mrr / current_mrr) / math.log(
+                    1 + monthly_growth
+                )
                 months_to_breakeven = int(months_to_breakeven)
             else:
                 months_to_breakeven = None  # Уже breakeven или не растет
@@ -489,10 +520,10 @@ class RevenueAnalytics:
             months_to_breakeven = None
 
         return {
-            'runway_months': int(runway_months),
-            'runway_end_date': end_date.strftime("%Y-%m-%d"),
-            'breakeven_mrr': breakeven_mrr,
-            'months_to_breakeven': months_to_breakeven,
-            'current_mrr': current_mrr,
-            'mrr_growth_rate': mrr_data.mrr_growth_rate
+            "runway_months": int(runway_months),
+            "runway_end_date": end_date.strftime("%Y-%m-%d"),
+            "breakeven_mrr": breakeven_mrr,
+            "months_to_breakeven": months_to_breakeven,
+            "current_mrr": current_mrr,
+            "mrr_growth_rate": mrr_data.mrr_growth_rate,
         }

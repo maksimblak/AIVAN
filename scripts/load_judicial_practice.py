@@ -22,13 +22,12 @@ from typing import Any
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.core.settings import AppSettings
 from src.core.rag.embedding_service import EmbeddingService
 from src.core.rag.vector_store import QdrantVectorStore
+from src.core.settings import AppSettings
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 def load_jsonl(file_path: Path) -> list[dict[str, Any]]:
     """Загрузить данные из JSONL файла."""
     cases = []
-    with open(file_path, 'r', encoding='utf-8') as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -46,7 +45,7 @@ def load_jsonl(file_path: Path) -> list[dict[str, Any]]:
                 if not isinstance(case, dict):
                     logger.warning(f"Line {line_num}: expected dict, got {type(case)}")
                     continue
-                if 'text' not in case:
+                if "text" not in case:
                     logger.warning(f"Line {line_num}: missing 'text' field")
                     continue
                 cases.append(case)
@@ -94,15 +93,17 @@ async def load_to_qdrant(
     logger.info(f"Подключение к Qdrant: collection={collection}")
 
     # Получаем тексты для эмбеддинга
-    texts = [case['text'] for case in cases]
+    texts = [case["text"] for case in cases]
 
     # Создаём эмбеддинги батчами
     logger.info(f"Создание эмбеддингов для {len(texts)} документов...")
     all_vectors = []
 
     for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        logger.info(f"Обработка батча {i // batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}")
+        batch = texts[i : i + batch_size]
+        logger.info(
+            f"Обработка батча {i // batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
+        )
         vectors = await embedding_service.embed(batch)
         all_vectors.extend(vectors)
 
@@ -119,20 +120,20 @@ async def load_to_qdrant(
         ids = []
         for idx, case in enumerate(cases):
             payload = {
-                "text": case['text'],
-                "case_number": case.get('case_number', ''),
-                "court": case.get('court', ''),
-                "date": case.get('date', ''),
-                "url": case.get('url', ''),
-                "title": case.get('title', ''),
-                "region": case.get('region', ''),
+                "text": case["text"],
+                "case_number": case.get("case_number", ""),
+                "court": case.get("court", ""),
+                "date": case.get("date", ""),
+                "url": case.get("url", ""),
+                "title": case.get("title", ""),
+                "region": case.get("region", ""),
             }
             # Удаляем пустые поля
             payload = {k: v for k, v in payload.items() if v}
             payloads.append(payload)
 
             # Генерируем ID из номера дела или индекса
-            case_id = case.get('case_number', f"case_{idx}")
+            case_id = case.get("case_number", f"case_{idx}")
             ids.append(case_id)
 
         # Загружаем в Qdrant
@@ -152,20 +153,10 @@ async def load_to_qdrant(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Загрузка судебной практики в Qdrant'
-    )
+    parser = argparse.ArgumentParser(description="Загрузка судебной практики в Qdrant")
+    parser.add_argument("--input", type=Path, required=True, help="Путь к JSONL файлу с делами")
     parser.add_argument(
-        '--input',
-        type=Path,
-        required=True,
-        help='Путь к JSONL файлу с делами'
-    )
-    parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=64,
-        help='Размер батча для обработки (default: 64)'
+        "--batch-size", type=int, default=64, help="Размер батча для обработки (default: 64)"
     )
 
     args = parser.parse_args()
@@ -195,5 +186,5 @@ async def main() -> None:
     await load_to_qdrant(cases, settings=settings, batch_size=args.batch_size)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())

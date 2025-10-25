@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Tuple
 
 from src.core.di_container import create_container
-from src.core.payments import convert_rub_to_xtr
-from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
-from src.core.subscription_plans import get_default_subscription_plans
-from src.core.settings import AppSettings
-from src.core.rag.judicial_rag import JudicialPracticeRAG
 from src.core.garant_api import GarantAPIClient
+from src.core.payments import convert_rub_to_xtr
+from src.core.rag.judicial_rag import JudicialPracticeRAG
+from src.core.runtime import AppRuntime, DerivedRuntime, SubscriptionPlanPricing, WelcomeMedia
+from src.core.settings import AppSettings
+from src.core.subscription_plans import get_default_subscription_plans
 
 
 def _discover_welcome_media(settings: AppSettings) -> WelcomeMedia | None:
@@ -55,7 +55,9 @@ def _calculate_plan_stars(price_rub: float, settings: AppSettings) -> int:
     )
 
 
-def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None) -> Tuple[AppRuntime, object]:
+def build_runtime(
+    settings: AppSettings, *, logger: logging.Logger | None = None
+) -> Tuple[AppRuntime, object]:
     """Construct base runtime context and DI container."""
     logger = logger or logging.getLogger("ai-ivan.simple")
 
@@ -69,14 +71,16 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
         for plan in plan_catalog
     )
     plan_map = {info.plan.plan_id: info for info in plan_infos}
-    default_plan = plan_map.get('base_1m') or (plan_infos[0] if plan_infos else None)
+    default_plan = plan_map.get("base_1m") or (plan_infos[0] if plan_infos else None)
 
     fallback_price_rub_kopeks = int(float(settings.subscription_price_rub) * 100)
     fallback_price_stars = _calculate_plan_stars(float(settings.subscription_price_rub), settings)
 
     derived = DerivedRuntime(
         welcome_media=_discover_welcome_media(settings),
-        subscription_price_rub_kopeks=(default_plan.price_rub_kopeks if default_plan else fallback_price_rub_kopeks),
+        subscription_price_rub_kopeks=(
+            default_plan.price_rub_kopeks if default_plan else fallback_price_rub_kopeks
+        ),
         dynamic_price_xtr=(default_plan.price_stars if default_plan else fallback_price_stars),
         admin_ids=set(settings.admin_ids),
         subscription_plans=plan_infos,
@@ -87,13 +91,13 @@ def build_runtime(settings: AppSettings, *, logger: logging.Logger | None = None
     container = create_container(settings)
     runtime = AppRuntime(settings=settings, logger=logger, derived=derived)
 
-    from src.core.db_advanced import DatabaseAdvanced
+    from core.bot_app.ratelimit import RateLimiter
     from src.core.access import AccessService
     from src.core.audio_service import AudioService
+    from src.core.db_advanced import DatabaseAdvanced
     from src.core.openai_service import OpenAIService
     from src.core.payments import CryptoPayProvider, RoboKassaProvider, YooKassaProvider
     from src.core.session_store import SessionStore
-    from core.bot_app.ratelimit import RateLimiter
 
     runtime.db = container.get(DatabaseAdvanced)
     runtime.access_service = container.get(AccessService)

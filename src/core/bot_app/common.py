@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-
 from src.core.bot_app import context as ctx
+from src.core.exceptions import ErrorContext, ValidationException
 from src.core.session_store import UserSession
 from src.core.validation import InputValidator
-from src.core.exceptions import ValidationException, ErrorContext
-
 
 __all__ = [
     "ensure_valid_user_id",
@@ -46,4 +44,3 @@ def get_safe_db_method(method_name: str, default_return=None):
     if db is None or not hasattr(db, method_name):
         return None
     return getattr(db, method_name)
-

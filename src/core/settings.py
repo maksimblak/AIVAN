@@ -31,7 +31,9 @@ class AppSettings(BaseModel):
     telegram_provider_token_rub: str = Field(default="", alias="TELEGRAM_PROVIDER_TOKEN_RUB")
     subscription_price_rub: int = Field(default=300, alias="SUBSCRIPTION_PRICE_RUB")
 
-    telegram_provider_token_stars: str = Field(default="STARS", alias="TELEGRAM_PROVIDER_TOKEN_STARS")
+    telegram_provider_token_stars: str = Field(
+        default="STARS", alias="TELEGRAM_PROVIDER_TOKEN_STARS"
+    )
     subscription_price_xtr: int = Field(default=3000, alias="SUBSCRIPTION_PRICE_XTR")
 
     admin_ids: list[int] = Field(default_factory=list, alias="ADMIN_IDS")
@@ -52,7 +54,9 @@ class AppSettings(BaseModel):
     yookassa_tax_system_code: int | None = Field(default=None, alias="YOOKASSA_TAX_SYSTEM_CODE")
     yookassa_vat_code: int | None = Field(default=None, alias="YOOKASSA_VAT_CODE")
     yookassa_payment_mode: str | None = Field(default="full_payment", alias="YOOKASSA_PAYMENT_MODE")
-    yookassa_payment_subject: str | None = Field(default="service", alias="YOOKASSA_PAYMENT_SUBJECT")
+    yookassa_payment_subject: str | None = Field(
+        default="service", alias="YOOKASSA_PAYMENT_SUBJECT"
+    )
 
     user_sessions_max: int = Field(default=10_000, alias="USER_SESSIONS_MAX")
     user_session_ttl_seconds: int = Field(default=3600, alias="USER_SESSION_TTL_SECONDS")
@@ -92,7 +96,9 @@ class AppSettings(BaseModel):
     garant_api_timeout: float = Field(default=15.0, alias="GARANT_API_TIMEOUT")
     garant_api_result_limit: int = Field(default=3, alias="GARANT_API_RESULT_LIMIT")
     garant_api_snippet_limit: int = Field(default=2, alias="GARANT_API_SNIPPET_LIMIT")
-    garant_document_base_url: str | None = Field(default="https://d.garant.ru", alias="GARANT_DOCUMENT_BASE_URL")
+    garant_document_base_url: str | None = Field(
+        default="https://d.garant.ru", alias="GARANT_DOCUMENT_BASE_URL"
+    )
     garant_api_verify_ssl: bool = Field(default=True, alias="GARANT_API_VERIFY_SSL")
     garant_api_use_query_language: bool = Field(default=True, alias="GARANT_API_USE_QUERY_LANGUAGE")
     garant_api_sutyazhnik_enabled: bool = Field(
@@ -128,7 +134,9 @@ class AppSettings(BaseModel):
 
     document_storage_quota_mb: int | None = Field(default=None, alias="DOCUMENTS_STORAGE_QUOTA_MB")
     document_cleanup_hours: int = Field(default=24, alias="DOCUMENTS_CLEANUP_HOURS")
-    document_cleanup_interval_seconds: float = Field(default=3600.0, alias="DOCUMENTS_CLEANUP_INTERVAL_SECONDS")
+    document_cleanup_interval_seconds: float = Field(
+        default=3600.0, alias="DOCUMENTS_CLEANUP_INTERVAL_SECONDS"
+    )
     documents_s3_bucket: str | None = Field(default=None, alias="DOCUMENTS_S3_BUCKET")
     documents_s3_prefix: str = Field(default="documents", alias="DOCUMENTS_S3_PREFIX")
     documents_s3_region: str | None = Field(default=None, alias="DOCUMENTS_S3_REGION")

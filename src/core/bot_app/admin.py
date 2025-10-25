@@ -7,9 +7,9 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from src.core.exceptions import ValidationException
 from src.core.bot_app import context as simple_context
 from src.core.bot_app.common import ensure_valid_user_id
+from src.core.exceptions import ValidationException
 
 __all__ = ["register_admin_handlers"]
 
@@ -53,4 +53,3 @@ async def cmd_error_stats(message: Message) -> None:
 def register_admin_handlers(dp: Dispatcher) -> None:
     """Register administrative commands."""
     dp.message.register(cmd_error_stats, Command("errors"))
-

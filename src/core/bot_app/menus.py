@@ -10,7 +10,13 @@ from aiogram import Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from core.bot_app.ui_components import Emoji, sanitize_telegram_html
 from src.core.bot_app import context as ctx
@@ -82,19 +88,23 @@ def _extract_start_payload(message: Message) -> str:
 
 
 def _main_menu_text() -> str:
-    return (
-        "🏠 <b>Главное меню</b>\n"
-        f"{HEAVY_DIVIDER}\n\n"
-        "Выберите действие:"
-    )
+    return "🏠 <b>Главное меню</b>\n" f"{HEAVY_DIVIDER}\n\n" "Выберите действие:"
 
 
 def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⚖️ Юридический вопрос", callback_data="legal_question")],
-            [InlineKeyboardButton(text="🔍 Поиск и анализ судебной практики", callback_data="search_practice")],
-            [InlineKeyboardButton(text="🗂️ Работа с документами", callback_data="document_processing")],
+            [
+                InlineKeyboardButton(
+                    text="🔍 Поиск и анализ судебной практики", callback_data="search_practice"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗂️ Работа с документами", callback_data="document_processing"
+                )
+            ],
             [
                 InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile"),
                 InlineKeyboardButton(text="💬 Поддержка", callback_data="help_info"),
@@ -184,7 +194,9 @@ async def cmd_start(message: Message) -> None:
     try:
         user_id = ensure_valid_user_id(message.from_user.id, context="cmd_start")
     except ValidationException as exc:
-        context = ErrorContext(function_name="cmd_start", chat_id=message.chat.id if message.chat else None)
+        context = ErrorContext(
+            function_name="cmd_start", chat_id=message.chat.id if message.chat else None
+        )
         if error_handler:
             await error_handler.handle_exception(exc, context)
         else:
@@ -219,7 +231,9 @@ async def cmd_start(message: Message) -> None:
             except DatabaseException as exc:
                 logger.error("Failed to apply referral code for user %s: %s", user_id, exc)
             except Exception as exc:  # noqa: BLE001
-                logger.error("Unexpected error applying referral code for user %s: %s", user_id, exc)
+                logger.error(
+                    "Unexpected error applying referral code for user %s: %s", user_id, exc
+                )
             else:
                 if applied:
                     referral_feedback = (
@@ -236,9 +250,7 @@ async def cmd_start(message: Message) -> None:
                         f"{Emoji.WARNING} Нельзя использовать собственный реферальный код."
                     )
                 elif reason in {"already_linked", "already_has_referrer"}:
-                    referral_feedback = (
-                        f"{Emoji.IDEA} Реферальный код уже был активирован ранее."
-                    )
+                    referral_feedback = f"{Emoji.IDEA} Реферальный код уже был активирован ранее."
 
     get_user_session(user_id)
 
@@ -281,13 +293,13 @@ async def cmd_start(message: Message) -> None:
             _USER_NAME_PLACEHOLDER,
             safe_user_name,
         )
-    
+
         media_sent = await _try_send_welcome_media(
             message=message,
             caption_html=welcome_html,
             keyboard=None,
         )
-    
+
         if not media_sent:
             await message.answer(welcome_html, parse_mode=ParseMode.HTML)
 
@@ -297,7 +309,9 @@ async def cmd_start(message: Message) -> None:
             except DatabaseException as exc:
                 logger.warning("Failed to mark welcome as shown for user %s: %s", user_id, exc)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Unexpected error marking welcome as shown for user %s: %s", user_id, exc)
+                logger.warning(
+                    "Unexpected error marking welcome as shown for user %s: %s", user_id, exc
+                )
 
     await message.answer(
         _main_menu_text(),
@@ -341,7 +355,9 @@ def _profile_menu_keyboard(
         cancel_label = subscribe_label or "❌ Отменить подписку"
         cancel_button = InlineKeyboardButton(text=cancel_label, callback_data="cancel_subscription")
         back_button = InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")
-        return InlineKeyboardMarkup(inline_keyboard=[[change_button], [cancel_button], [back_button]])
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[change_button], [cancel_button], [back_button]]
+        )
 
     first_label = subscribe_label or "💳 Оформить подписку"
     return InlineKeyboardMarkup(
@@ -349,7 +365,9 @@ def _profile_menu_keyboard(
             [InlineKeyboardButton(text=first_label, callback_data="get_subscription")],
             [
                 InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-                InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program"),
+                InlineKeyboardButton(
+                    text="👥 Реферальная программа", callback_data="referral_program"
+                ),
             ],
             [InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")],
         ]
@@ -399,9 +417,7 @@ async def handle_my_profile_callback(callback: CallbackQuery) -> None:
                     purchase_ts = int(getattr(user_record, "subscription_last_purchase_at", 0) or 0)
                     if purchase_ts:
                         purchase_dt = datetime.fromtimestamp(purchase_ts)
-                        status_text = (
-                            f"подписка оформлена {purchase_dt:%d.%m.%y} (доступ до {until_dt:%d.%m.%y})"
-                        )
+                        status_text = f"подписка оформлена {purchase_dt:%d.%m.%y} (доступ до {until_dt:%d.%m.%y})"
                     else:
                         status_text = f"подписка активна до {until_dt:%d.%m.%y}"
 
@@ -444,9 +460,7 @@ async def handle_my_profile_callback(callback: CallbackQuery) -> None:
                     try:
                         await message.delete()
                     except TelegramBadRequest:
-                        logger.debug(
-                            "Failed to delete profile menu message %s", message.message_id
-                        )
+                        logger.debug("Failed to delete profile menu message %s", message.message_id)
                         try:
                             await message.edit_reply_markup(reply_markup=None)
                         except TelegramBadRequest:
@@ -794,7 +808,9 @@ async def handle_copy_referral_callback(callback: CallbackQuery) -> None:
                     if fallback_username:
                         referral_link, _ = _build_referral_link(referral_code)
                 if referral_link:
-                    await callback.answer(f"📋 Ссылка скопирована!\n{referral_link}", show_alert=True)
+                    await callback.answer(
+                        f"📋 Ссылка скопирована!\n{referral_link}", show_alert=True
+                    )
                     return
                 await callback.answer(f"📋 Код скопирован!\nref_{share_code}", show_alert=True)
                 return
@@ -1206,10 +1222,14 @@ async def handle_help_info_callback(callback: CallbackQuery) -> None:
         support_text = "\n".join(support_text_lines).replace("@support_username", support_contact)
 
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")]]
+            inline_keyboard=[
+                [InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_to_main")]
+            ]
         )
 
-        await callback.message.answer(support_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await callback.message.answer(
+            support_text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+        )
         logger.info("Support info requested by user %s", callback.from_user.id)
 
     except Exception as exc:
@@ -1231,7 +1251,9 @@ async def cmd_status(message: Message) -> None:
     try:
         user_id = ensure_valid_user_id(message.from_user.id, context="cmd_status")
     except ValidationException as exc:
-        context = ErrorContext(function_name="cmd_status", chat_id=message.chat.id if message.chat else None)
+        context = ErrorContext(
+            function_name="cmd_status", chat_id=message.chat.id if message.chat else None
+        )
         if error_handler:
             await error_handler.handle_exception(exc, context)
         else:

@@ -30,9 +30,9 @@ async def validate_dependencies() -> bool:
     print("\n>> Checking mandatory dependencies")
     try:
         import aiogram  # noqa: F401
-        import openai  # noqa: F401
         import aiosqlite  # noqa: F401
         import httpx  # noqa: F401
+        import openai  # noqa: F401
         import pytest  # noqa: F401
     except ImportError as exc:
         print(f"FAILED: missing required dependency -> {exc}")

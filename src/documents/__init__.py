@@ -7,12 +7,12 @@ from .anonymizer import DocumentAnonymizer
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .document_chat import DocumentChat
 from .document_manager import DocumentManager
-from .storage_backends import ArtifactUploader, NoopArtifactUploader, S3ArtifactUploader
+from .lawsuit_analyzer import LawsuitAnalyzer
 from .ocr_converter import OCRConverter
 from .risk_analyzer import RiskAnalyzer
+from .storage_backends import ArtifactUploader, NoopArtifactUploader, S3ArtifactUploader
 from .summarizer import DocumentSummarizer
 from .translator import DocumentTranslator
-from .lawsuit_analyzer import LawsuitAnalyzer
 
 __all__ = [
     "DocumentManager",

@@ -2,13 +2,12 @@
 Админ-команды для метрик PMF/NPS
 """
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.core.admin_modules.admin_utils import FEATURE_KEYS, edit_or_answer, require_admin
 from src.core.admin_modules.pmf_metrics import PMFMetrics
-
 
 pmf_router = Router(name="pmf_admin")
 
@@ -51,12 +50,14 @@ async def cmd_pmf(message: Message, db, admin_ids: list[int]):
     text += f"  Суперактивные: {usage.power_user_percentage:.1f}%\n"
     text += f"  Удержание L28: {usage.l28_retention:.1f}%\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
-        [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
+            [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
+            [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")],
+        ]
+    )
 
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
@@ -97,7 +98,7 @@ def _format_trend(trend: str) -> str:
         "improving": "📈 Улучшается",
         "stable": "➡️ Стабильно",
         "declining": "📉 Ухудшается",
-        "insufficient_data": "❓ Недостаточно данных"
+        "insufficient_data": "❓ Недостаточно данных",
     }
     return emoji_map.get(trend, trend)
 
@@ -136,12 +137,14 @@ async def handle_pmf_refresh(callback: CallbackQuery, db, admin_ids: list[int]):
     text += f"  Суперактивные: {usage.power_user_percentage:.1f}%\n"
     text += f"  Удержание L28: {usage.l28_retention:.1f}%\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
-        [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
+            [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
+            [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
 
@@ -185,9 +188,9 @@ async def handle_nps_details(callback: CallbackQuery, db, admin_ids: list[int]):
     else:
         text += "  ✅ Хорошо: используйте промоутеров для рекомендаций\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -201,12 +204,14 @@ async def handle_feature_pmf(callback: CallbackQuery, db, admin_ids: list[int]):
 
     buttons = []
     for feature in features:
-        buttons.append([
-            InlineKeyboardButton(
-                text=feature.replace("_", " ").title(),
-                callback_data=f"pmf:feature_details:{feature}"
-            )
-        ])
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=feature.replace("_", " ").title(),
+                    callback_data=f"pmf:feature_details:{feature}",
+                )
+            ]
+        )
 
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")])
 
@@ -257,10 +262,16 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
         text += "  • Рассмотреть отключение функции\n"
         text += "  • Освободить ресурсы для более перспективных функций\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад к списку функций", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="pmf:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад к списку функций", callback_data="pmf:feature_pmf"
+                )
+            ],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="pmf:back")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -268,12 +279,7 @@ async def handle_feature_details(callback: CallbackQuery, db, admin_ids: list[in
 
 def _pmf_rating_emoji(rating: str) -> str:
     """Emoji для PMF rating"""
-    emoji_map = {
-        "strong": "🌟",
-        "moderate": "✅",
-        "weak": "⚠️",
-        "kill": "🗑️"
-    }
+    emoji_map = {"strong": "🌟", "moderate": "✅", "weak": "⚠️", "kill": "🗑️"}
     return emoji_map.get(rating, "")
 
 
@@ -288,13 +294,20 @@ async def handle_send_survey(callback: CallbackQuery, db, admin_ids: list[int]):
     text += "• Группа риска — могут уйти\n"
     text += "• Все платящие — все пользователи с оплатой\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌟 Суперактивные", callback_data="pmf:survey:power_users")],
-        [InlineKeyboardButton(text="💎 Конвертировавшиеся из триала", callback_data="pmf:survey:trial_converters")],
-        [InlineKeyboardButton(text="⚠️ Группа риска", callback_data="pmf:survey:at_risk")],
-        [InlineKeyboardButton(text="💰 Все платящие", callback_data="pmf:survey:all_paid")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌟 Суперактивные", callback_data="pmf:survey:power_users")],
+            [
+                InlineKeyboardButton(
+                    text="💎 Конвертировавшиеся из триала",
+                    callback_data="pmf:survey:trial_converters",
+                )
+            ],
+            [InlineKeyboardButton(text="⚠️ Группа риска", callback_data="pmf:survey:at_risk")],
+            [InlineKeyboardButton(text="💰 Все платящие", callback_data="pmf:survey:all_paid")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()
@@ -311,13 +324,16 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
     # Получить пользователей сегмента
     async with db.pool.acquire() as conn:
         if segment == "all_paid":
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT DISTINCT user_id
                 FROM payments
                 WHERE status = 'completed'
-            """)
+            """
+            )
         elif segment == "power_users":
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT user_id
                 FROM users
                 WHERE total_requests > 50
@@ -325,16 +341,20 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
                       SELECT COUNT(*) FROM payments
                       WHERE payments.user_id = users.user_id AND status = 'completed'
                   ) >= 2
-            """)
+            """
+            )
         elif segment == "trial_converters":
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT DISTINCT user_id
                 FROM payments
                 WHERE status = 'completed'
                   AND created_at > strftime('%s', 'now', '-7 days')
-            """)
+            """
+            )
         elif segment == "at_risk":
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT user_id
                 FROM users
                 WHERE total_requests > 20
@@ -343,7 +363,8 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
                       SELECT COUNT(*) FROM payments
                       WHERE payments.user_id = users.user_id AND status = 'completed'
                   ) >= 1
-            """)
+            """
+            )
         else:
             await edit_or_answer(callback, "❌ Неизвестный сегмент", parse_mode=None)
             return
@@ -366,9 +387,9 @@ async def handle_survey_segment(callback: CallbackQuery, db, admin_ids: list[int
     text += f"Отправлено: {sent_count} пользователям\n\n"
     text += "Пользователи получат опрос при следующем взаимодействии с ботом."
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="pmf:back")]]
+    )
 
     await edit_or_answer(callback, text, keyboard)
 
@@ -405,12 +426,14 @@ async def handle_back_to_main(callback: CallbackQuery, db, admin_ids: list[int])
     text += f"  Суперактивные: {usage.power_user_percentage:.1f}%\n"
     text += f"  Удержание L28: {usage.l28_retention:.1f}%\n"
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
-        [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
-        [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Детализация NPS", callback_data="pmf:nps_details")],
+            [InlineKeyboardButton(text="🎯 PMF по функциям", callback_data="pmf:feature_pmf")],
+            [InlineKeyboardButton(text="📤 Отправить NPS-опрос", callback_data="pmf:send_survey")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="pmf:refresh")],
+        ]
+    )
 
     await edit_or_answer(callback, text, keyboard)
     await callback.answer()

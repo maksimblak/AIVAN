@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-from src.core.settings import AppSettings
-
 import sys
+
+from src.core.settings import AppSettings
 
 _LEVELS = {
     "CRITICAL": logging.CRITICAL,

@@ -1,13 +1,14 @@
 # src/bot/status_manager.py
 from __future__ import annotations
-import asyncio
-import time
-import math
-from typing import Optional, Callable, List, Dict
-from html import escape as esc
 
-from aiogram import Dispatcher, Router, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import asyncio
+import math
+import time
+from html import escape as esc
+from typing import Callable, Dict, List, Optional
+
+from aiogram import Dispatcher, F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 __all__ = ["ProgressStatus", "progress_router", "register_progressbar"]
 
@@ -74,7 +75,9 @@ class ProgressStatus:
         self.bold_current = bool(bold_current)
         self.hide_steps_on_complete = bool(hide_steps_on_complete)
         self.display_total_seconds = (
-            int(display_total_seconds) if display_total_seconds and display_total_seconds > 0 else None
+            int(display_total_seconds)
+            if display_total_seconds and display_total_seconds > 0
+            else None
         )
 
         self.message_id: Optional[int] = None
@@ -233,11 +236,19 @@ class ProgressStatus:
         if not self.show_context_toggle:
             return None
         title = "Отображать контекстные вопросы: " + ("Вкл" if self.context_enabled else "Выкл")
-        return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=title, callback_data=f"ctx:{self.chat_id}:{self.message_id}")
-        ]])
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=title, callback_data=f"ctx:{self.chat_id}:{self.message_id}"
+                    )
+                ]
+            ]
+        )
 
-    def _render(self, *, completed: bool = False, failed: bool = False, note: str | None = None) -> str:
+    def _render(
+        self, *, completed: bool = False, failed: bool = False, note: str | None = None
+    ) -> str:
         header = "✅ ГОТОВО" if completed else "❌ ОШИБКА" if failed else "📱 ВЫПОЛНЕНИЕ..."
         pct = max(0, min(100, int(self.current_percent)))
         duration_display = self.duration_text(pct)
@@ -291,6 +302,7 @@ class ProgressStatus:
     @staticmethod
     def _norm(s: str) -> str:
         import re
+
         s = re.sub(r"[^\w\sА-Яа-яЁё-]+", "", s, flags=re.UNICODE)
         s = re.sub(r"\s+", " ", s).strip().lower()
         return s

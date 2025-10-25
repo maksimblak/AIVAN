@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
+import uuid
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
+from urllib.parse import urlencode
+
+import httpx
+
 from src.core.app_context import get_settings
 from src.core.db_advanced import TransactionStatus
 from src.core.settings import AppSettings
-
-from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
-import hashlib
-from typing import Any
-import secrets
-import uuid
-from urllib.parse import urlencode
-import xml.etree.ElementTree as ET
-
-import httpx
 
 from .crypto_pay import create_crypto_invoice_async
 
@@ -188,7 +188,9 @@ class RoboKassaProvider:
             amount_minor = None
             if amount_text:
                 try:
-                    decimal_amount = Decimal(amount_text).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    decimal_amount = Decimal(amount_text).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
                     amount_minor = int(decimal_amount * 100)
                 except Exception:  # noqa: BLE001
                     amount_minor = None
@@ -260,7 +262,9 @@ class YooKassaProvider:
 
         headers = {"Idempotence-Key": str(uuid.uuid4())}
         timeout = httpx.Timeout(30.0, connect=10.0, read=20.0)
-        async with httpx.AsyncClient(auth=(self.shop_id, self.secret_key), timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            auth=(self.shop_id, self.secret_key), timeout=timeout
+        ) as client:
             try:
                 response = await client.post(self._API_URL, json=request_body, headers=headers)
                 response.raise_for_status()
@@ -298,7 +302,9 @@ class YooKassaProvider:
 
         url = f"{self._API_URL}/{payment_id}"
         timeout = httpx.Timeout(30.0, connect=10.0, read=20.0)
-        async with httpx.AsyncClient(auth=(self.shop_id, self.secret_key), timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            auth=(self.shop_id, self.secret_key), timeout=timeout
+        ) as client:
             try:
                 response = await client.get(url)
                 response.raise_for_status()
@@ -315,7 +321,9 @@ class YooKassaProvider:
             try:
                 value = data["amount"].get("value")
                 if value is not None:
-                    decimal_amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    decimal_amount = Decimal(str(value)).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
                     paid_amount_minor = int(decimal_amount * 100)
             except Exception:  # noqa: BLE001
                 paid_amount_minor = None

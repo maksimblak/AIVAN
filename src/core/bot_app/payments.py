@@ -16,6 +16,7 @@ from aiogram.types import (
 )
 
 from core.bot_app.ui_components import Emoji
+
 try:
     from src.core.db_advanced import TransactionStatus
 except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
@@ -26,14 +27,16 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
         COMPLETED = "completed"
         FAILED = "failed"
         CANCELLED = "cancelled"
-from src.core.payments import convert_rub_to_xtr
+
+
 from src.core.bot_app import context as ctx
+from src.core.payments import convert_rub_to_xtr
+from src.core.runtime import SubscriptionPlanPricing
 from src.core.subscription_payments import (
     SubscriptionPayloadError,
     build_subscription_payload,
     parse_subscription_payload,
 )
-from src.core.runtime import SubscriptionPlanPricing
 
 logger = logging.getLogger("ai-ivan.simple.payments")
 
@@ -231,7 +234,9 @@ async def handle_cancel_subscription_callback(callback: CallbackQuery) -> None:
         await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
-def _plan_details_keyboard(plan_info: SubscriptionPlanPricing) -> tuple[InlineKeyboardMarkup, list[str]]:
+def _plan_details_keyboard(
+    plan_info: SubscriptionPlanPricing,
+) -> tuple[InlineKeyboardMarkup, list[str]]:
     rows: list[list[InlineKeyboardButton]] = []
     unavailable: list[str] = []
 
@@ -272,7 +277,9 @@ def _plan_details_keyboard(plan_info: SubscriptionPlanPricing) -> tuple[InlineKe
     else:
         unavailable.append("🪙 Криптовалюта — временно недоступна")
 
-    if ctx.robokassa_provider is not None and getattr(ctx.robokassa_provider, "is_available", False):
+    if ctx.robokassa_provider is not None and getattr(
+        ctx.robokassa_provider, "is_available", False
+    ):
         rows.append(
             [
                 InlineKeyboardButton(
@@ -495,7 +502,9 @@ async def handle_verify_payment_callback(callback: CallbackQuery) -> None:
         )
         return
 
-    plan_info = get_plan_pricing(payload.plan_id) if payload.plan_id else ctx.DEFAULT_SUBSCRIPTION_PLAN
+    plan_info = (
+        get_plan_pricing(payload.plan_id) if payload.plan_id else ctx.DEFAULT_SUBSCRIPTION_PLAN
+    )
     if plan_info is None:
         await callback.message.answer(
             f"{Emoji.ERROR} Не удалось определить тариф. Свяжитесь с поддержкой.",
@@ -521,9 +530,7 @@ async def handle_verify_payment_callback(callback: CallbackQuery) -> None:
 
     until_dt = datetime.fromtimestamp(new_until)
     balance_text = (
-        f"Остаток запросов: {max(0, new_balance)}"
-        if plan_info.plan.request_quota
-        else "Безлимит"
+        f"Остаток запросов: {max(0, new_balance)}" if plan_info.plan.request_quota else "Безлимит"
     )
     success_text = (
         f"{Emoji.SUCCESS} Оплата подтверждена!\n\n"
@@ -534,12 +541,16 @@ async def handle_verify_payment_callback(callback: CallbackQuery) -> None:
     await callback.message.answer(success_text, parse_mode=ParseMode.HTML)
 
 
-async def _send_rub_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+async def _send_rub_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
     from aiogram.types import LabeledPrice  # local import to avoid top-level circular
 
     cfg = ctx.settings()
     if not ctx.RUB_PROVIDER_TOKEN:
-        await message.answer(f"{Emoji.WARNING} Оплата картой временно недоступна.", parse_mode=ParseMode.HTML)
+        await message.answer(
+            f"{Emoji.WARNING} Оплата картой временно недоступна.", parse_mode=ParseMode.HTML
+        )
         return
 
     payload = build_subscription_payload(plan_info.plan.plan_id, "rub", user_id)
@@ -569,11 +580,15 @@ async def _send_rub_invoice(message: Message, plan_info: SubscriptionPlanPricing
     )
 
 
-async def _send_stars_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+async def _send_stars_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
     from aiogram.types import LabeledPrice  # local import
 
     if not ctx.STARS_PROVIDER_TOKEN:
-        await message.answer(f"{Emoji.WARNING} Telegram Stars временно недоступны.", parse_mode=ParseMode.HTML)
+        await message.answer(
+            f"{Emoji.WARNING} Telegram Stars временно недоступны.", parse_mode=ParseMode.HTML
+        )
         return
 
     stars_amount = plan_stars_amount(plan_info)
@@ -634,12 +649,18 @@ def _external_payment_keyboard(provider: str, payment_id: str) -> InlineKeyboard
                     callback_data=f"verify_payment:{provider}:{payment_id}",
                 )
             ],
-            [InlineKeyboardButton(text=f"{Emoji.BACK} Назад к тарифам", callback_data="buy_catalog")],
+            [
+                InlineKeyboardButton(
+                    text=f"{Emoji.BACK} Назад к тарифам", callback_data="buy_catalog"
+                )
+            ],
         ]
     )
 
 
-async def _send_robokassa_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+async def _send_robokassa_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
     provider = ctx.robokassa_provider
     if provider is None or not getattr(provider, "is_available", False):
         await message.answer(
@@ -707,7 +728,7 @@ async def _send_robokassa_invoice(message: Message, plan_info: SubscriptionPlanP
     payment_text = (
         f"🏦 <b>RoboKassa</b>\n\n"
         f"1. Нажмите на ссылку и оплатите счет картой или через СБП.\n"
-        f"2. После оплаты вернитесь и нажмите кнопку \"Проверить оплату\".\n\n"
+        f'2. После оплаты вернитесь и нажмите кнопку "Проверить оплату".\n\n'
         f"{creation.url}"
     )
     await message.answer(
@@ -718,7 +739,9 @@ async def _send_robokassa_invoice(message: Message, plan_info: SubscriptionPlanP
     )
 
 
-async def _send_yookassa_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+async def _send_yookassa_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
     provider = ctx.yookassa_provider
     if provider is None or not getattr(provider, "is_available", False):
         await message.answer(
@@ -786,7 +809,7 @@ async def _send_yookassa_invoice(message: Message, plan_info: SubscriptionPlanPr
     payment_text = (
         f"💳 <b>YooKassa</b>\n\n"
         f"1. Перейдите по ссылке и оплатите счет.\n"
-        f"2. После оплаты вернитесь и нажмите кнопку \"Проверить оплату\".\n\n"
+        f'2. После оплаты вернитесь и нажмите кнопку "Проверить оплату".\n\n'
         f"{creation.url}"
     )
     await message.answer(
@@ -797,7 +820,9 @@ async def _send_yookassa_invoice(message: Message, plan_info: SubscriptionPlanPr
     )
 
 
-async def _send_crypto_invoice(message: Message, plan_info: SubscriptionPlanPricing, user_id: int) -> None:
+async def _send_crypto_invoice(
+    message: Message, plan_info: SubscriptionPlanPricing, user_id: int
+) -> None:
     provider = ctx.crypto_provider
     if provider is None:
         await message.answer(
@@ -878,7 +903,9 @@ async def pre_checkout(pre: PreCheckoutQuery) -> None:
             await pre.answer(ok=False, error_message="Некорректная сумма оплаты")
             return
 
-        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(expected_amount):
+        if pre.currency.upper() != expected_currency or int(pre.total_amount) != int(
+            expected_amount
+        ):
             await pre.answer(ok=False, error_message="Некорректные параметры оплаты")
             return
 
@@ -919,7 +946,9 @@ async def on_successful_payment(message: Message) -> None:
             plan_info = ctx.DEFAULT_SUBSCRIPTION_PLAN
 
         cfg = ctx.settings()
-        duration_days = plan_info.plan.duration_days if plan_info else max(1, int(cfg.sub_duration_days or 30))
+        duration_days = (
+            plan_info.plan.duration_days if plan_info else max(1, int(cfg.sub_duration_days or 30))
+        )
         quota = plan_info.plan.request_quota if plan_info else 0
         plan_id = (
             plan_info.plan.plan_id
@@ -933,7 +962,9 @@ async def on_successful_payment(message: Message) -> None:
 
         db = ctx.db
         if db is not None and sp.telegram_payment_charge_id:
-            exists = await db.transaction_exists_by_telegram_charge_id(sp.telegram_payment_charge_id)
+            exists = await db.transaction_exists_by_telegram_charge_id(
+                sp.telegram_payment_charge_id
+            )
             if exists:
                 return
 
@@ -999,4 +1030,3 @@ def register_payment_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(handle_ignore_callback, F.data == "ignore")
     dp.pre_checkout_query.register(pre_checkout)
     dp.message.register(on_successful_payment, F.successful_payment)
-

@@ -120,7 +120,9 @@ class GuidedFlowState:
             "step_order": [step.value for step in self.step_order],
             "completed_steps": [step.value for step in self.completed_steps],
             "next_step": next_step.value if next_step else None,
-            "last_prompted_step": self.last_prompted_step.value if self.last_prompted_step else None,
+            "last_prompted_step": (
+                self.last_prompted_step.value if self.last_prompted_step else None
+            ),
             "collected_inputs": {
                 step.value: data.copy() for step, data in self.collected_inputs.items()
             },

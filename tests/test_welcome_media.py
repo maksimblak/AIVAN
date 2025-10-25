@@ -4,8 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.core.bot_app import menus as menus
-from src.core.bot_app import context as ctx
+from src.core.bot_app import context as ctx, menus as menus
 from src.core.runtime import WelcomeMedia
 
 
@@ -40,7 +39,9 @@ class DummyMessage:
 
 
 def _prepare_session_store():
-    return SimpleNamespace(get_or_create=lambda *_: SimpleNamespace(pending_feedback_request_id=None))
+    return SimpleNamespace(
+        get_or_create=lambda *_: SimpleNamespace(pending_feedback_request_id=None)
+    )
 
 
 @pytest.mark.asyncio
@@ -89,4 +90,3 @@ async def test_cmd_start_sends_welcome_video(tmp_path):
     assert message._videos == [clip]
     assert not message._photos
     assert message._texts, "welcome text should follow the media"
-

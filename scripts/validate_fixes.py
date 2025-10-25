@@ -7,6 +7,7 @@ import re
 import sys
 from pathlib import Path
 
+
 def check_user_message_fixes():
     """Проверка исправления user_message → user_text"""
     print("🔍 Проверка исправления параметров LLM вызовов...")
@@ -15,16 +16,16 @@ def check_user_message_fixes():
         "src/documents/translator.py",
         "src/documents/summarizer.py",
         "src/documents/risk_analyzer.py",
-        "src/documents/document_chat.py"
+        "src/documents/document_chat.py",
     ]
 
     issues = []
     for file_path in files_to_check:
         path = Path(file_path)
         if path.exists():
-            content = path.read_text(encoding='utf-8')
+            content = path.read_text(encoding="utf-8")
             # Ищем проблемные вызовы user_message= в контексте ask_legal
-            pattern = r'ask_legal\([^)]*user_message='
+            pattern = r"ask_legal\([^)]*user_message="
             matches = re.findall(pattern, content)
             if matches:
                 issues.append(f"❌ {file_path}: найдены вызовы с user_message")
@@ -44,7 +45,7 @@ def check_path_traversal_fix():
     if not base_file.exists():
         return False, ["❌ src/documents/base.py не найден"]
 
-    content = base_file.read_text(encoding='utf-8')
+    content = base_file.read_text(encoding="utf-8")
 
     # Проверяем наличие метода _sanitize_filename
     if "_sanitize_filename" not in content:
@@ -55,7 +56,7 @@ def check_path_traversal_fix():
         return False, ["❌ _sanitize_filename не используется в save_document"]
 
     # Проверяем что старый небезопасный код заменен
-    if 'original_name.replace(\' \', \'_\')' in content:
+    if "original_name.replace(' ', '_')" in content:
         return False, ["❌ Остался небезопасный код замены пробелов"]
 
     print("✅ Path traversal исправлен")
@@ -70,14 +71,14 @@ def check_html_markdown_fixes():
     if not manager_file.exists():
         return False, ["❌ src/documents/document_manager.py не найден"]
 
-    content = manager_file.read_text(encoding='utf-8')
+    content = manager_file.read_text(encoding="utf-8")
 
     issues = []
 
     # Проверяем что markdown ** заменен на HTML <b>
     markdown_patterns = [
-        r'\*\*[^*]+\*\*',  # **текст**
-        r'\*[^*]+\*(?!\*)', # *текст* (но не **)
+        r"\*\*[^*]+\*\*",  # **текст**
+        r"\*[^*]+\*(?!\*)",  # *текст* (но не **)
     ]
 
     for pattern in markdown_patterns:
@@ -85,9 +86,9 @@ def check_html_markdown_fixes():
         if matches:
             # Исключаем комментарии и строки
             actual_issues = []
-            lines = content.split('\n')
+            lines = content.split("\n")
             for i, line in enumerate(lines):
-                if re.search(pattern, line) and not line.strip().startswith('#') and 'f"' in line:
+                if re.search(pattern, line) and not line.strip().startswith("#") and 'f"' in line:
                     actual_issues.append(f"Строка {i+1}: {line.strip()}")
 
             if actual_issues:
@@ -98,7 +99,7 @@ def check_html_markdown_fixes():
         issues.append("❌ html_escape не импортирован или не используется")
 
     # Проверяем что ошибки в format_result_for_telegram исправлены
-    if '**Ошибка обработки**' in content:
+    if "**Ошибка обработки**" in content:
         issues.append("❌ Остался markdown в error сообщениях")
 
     if issues:

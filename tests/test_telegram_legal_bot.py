@@ -15,8 +15,7 @@ if "src.core.launcher" not in sys.modules:
 
 import pytest
 
-from src.telegram_legal_bot import healthcheck
-from src.telegram_legal_bot import main as main_module
+from src.telegram_legal_bot import healthcheck, main as main_module
 
 
 def test_main_is_missing_detects_gaps() -> None:
@@ -85,7 +84,9 @@ def test_healthcheck_check_db_path_creates_directory(tmp_path) -> None:
     assert result["path"] == str(target)
 
 
-def test_healthcheck_check_db_path_reports_permission_issue(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_healthcheck_check_db_path_reports_permission_issue(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target = tmp_path / "db.sqlite"
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +100,9 @@ def test_healthcheck_check_db_path_reports_permission_issue(tmp_path, monkeypatc
     assert any("not writable" in issue for issue in result["issues"])
 
 
-def test_healthcheck_check_db_path_handles_creation_failure(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_healthcheck_check_db_path_handles_creation_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target = tmp_path / "subdir" / "db.sqlite"
 
     def _failing_mkdir(self, parents=False, exist_ok=False):
@@ -115,7 +118,9 @@ def test_healthcheck_check_db_path_handles_creation_failure(tmp_path, monkeypatc
 
 
 def test_healthcheck_optional_services_statuses() -> None:
-    configured = SimpleNamespace(redis_url="redis://localhost", enable_prometheus=False, prometheus_port=None)
+    configured = SimpleNamespace(
+        redis_url="redis://localhost", enable_prometheus=False, prometheus_port=None
+    )
     result_ok = healthcheck._check_optional_services(configured)
     assert result_ok["status"] == "pass"
 
@@ -163,7 +168,11 @@ def test_healthcheck_run_checks_warns(tmp_path, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_healthcheck_run_checks_handles_settings_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(healthcheck, "get_settings", lambda force_reload=True: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        healthcheck,
+        "get_settings",
+        lambda force_reload=True: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
 
     exit_code, payload = healthcheck.run_checks()
 
@@ -192,5 +201,3 @@ def test_healthcheck_main_outputs_payload(monkeypatch: pytest.MonkeyPatch) -> No
     buffer.seek(0)
     payload = buffer.read()
     assert '"status": "fail"' in payload
-
-

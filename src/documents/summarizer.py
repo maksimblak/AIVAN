@@ -7,14 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
-from src.core.settings import AppSettings
-
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
+
+from src.core.settings import AppSettings
 
 from .base import DocumentProcessor, DocumentResult, ProcessingError
 from .utils import FileFormatHandler, TextProcessor
@@ -269,14 +269,24 @@ class DocumentSummarizer(DocumentProcessor):
         if output_formats:
             result_payload["requested_formats"] = list(dict.fromkeys(output_formats))
 
-        await _notify("completed", 100, key_points=len(summary_data.get("key_points") or []), deadlines=len(summary_data.get("deadlines") or []), penalties=len(summary_data.get("penalties") or []))
+        await _notify(
+            "completed",
+            100,
+            key_points=len(summary_data.get("key_points") or []),
+            deadlines=len(summary_data.get("deadlines") or []),
+            penalties=len(summary_data.get("penalties") or []),
+        )
 
         return DocumentResult.success_result(data=result_payload, message="Саммари подготовлено")
 
     # ------------------------ LLM / локальная агрегация ------------------------
 
-    async def _create_summary_llm(self, text: str, detail_level: str, language: str) -> dict[str, Any]:
-        chunks = TextProcessor.split_into_chunks(text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap)
+    async def _create_summary_llm(
+        self, text: str, detail_level: str, language: str
+    ) -> dict[str, Any]:
+        chunks = TextProcessor.split_into_chunks(
+            text, max_chunk_size=self.chunk_size, overlap=self.chunk_overlap
+        )
         chunk_results: list[dict[str, Any]] = []
 
         for idx, chunk in enumerate(chunks, start=1):
@@ -291,15 +301,26 @@ class DocumentSummarizer(DocumentProcessor):
 
         if len(chunk_results) == 1:
             structured = chunk_results[0]["summary"]
-            return {"summary": structured, "processing_info": {"chunks_processed": 1, "strategy": "single"}}
+            return {
+                "summary": structured,
+                "processing_info": {"chunks_processed": 1, "strategy": "single"},
+            }
 
         aggregated = await self._aggregate_chunks_llm(chunk_results, detail_level, language)
-        return {"summary": aggregated, "processing_info": {"chunks_processed": len(chunk_results), "strategy": "aggregate"}}
+        return {
+            "summary": aggregated,
+            "processing_info": {"chunks_processed": len(chunk_results), "strategy": "aggregate"},
+        }
 
-    async def _create_summary_local(self, text: str, detail_level: str, language: str) -> dict[str, Any]:
+    async def _create_summary_local(
+        self, text: str, detail_level: str, language: str
+    ) -> dict[str, Any]:
         """Полностью локальная, безопасная версия саммари (без обращения к API)."""
         struct = self._local_summarize(text, detail_level=detail_level, language=language)
-        return {"summary": struct.__dict__, "processing_info": {"chunks_processed": 1, "strategy": "local"}}
+        return {
+            "summary": struct.__dict__,
+            "processing_info": {"chunks_processed": 1, "strategy": "local"},
+        }
 
     async def _summarize_chunk_llm(
         self,
@@ -323,7 +344,9 @@ class DocumentSummarizer(DocumentProcessor):
             + chunk_text
         )
 
-        response = await self._ask_llm(system="Ты структурируешь юридические тексты.", user=user_message)
+        response = await self._ask_llm(
+            system="Ты структурируешь юридические тексты.", user=user_message
+        )
         parsed = self._parse_summary_response(response, language)
         parsed["language"] = parsed.get("language") or language
         parsed = self._trim_struct(parsed)
@@ -424,7 +447,9 @@ class DocumentSummarizer(DocumentProcessor):
             line_str = line.strip()
             if not line_str:
                 continue
-            if re.match(r"^(\d+[.)]|[-–—*•])\s+", line_str) or (":" in line_str and len(line_str) < 200):
+            if re.match(r"^(\d+[.)]|[-–—*•])\s+", line_str) or (
+                ":" in line_str and len(line_str) < 200
+            ):
                 bullets.append(line_str)
             if len(bullets) >= self.max_key_items:
                 break
@@ -502,6 +527,7 @@ class DocumentSummarizer(DocumentProcessor):
 
     def _trim_struct(self, data: dict[str, Any]) -> dict[str, Any]:
         """Обрезаем списки до лимита и чистим пустяки."""
+
         def _clean_list(values: list[str]) -> list[str]:
             return [v.strip() for v in values if isinstance(v, str) and v.strip()]
 
@@ -604,9 +630,14 @@ class DocumentSummarizer(DocumentProcessor):
         return meta
 
     def _empty_struct(self, language: str) -> dict[str, Any]:
-        return {"summary": "", "key_points": [], "deadlines": [], "penalties": [], "actions": [], "language": language}
+        return {
+            "summary": "",
+            "key_points": [],
+            "deadlines": [],
+            "penalties": [],
+            "actions": [],
+            "language": language,
+        }
 
 
 __all__ = ["DocumentSummarizer"]
-
-

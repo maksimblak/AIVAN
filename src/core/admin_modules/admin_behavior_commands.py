@@ -13,7 +13,12 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from src.core.admin_modules.admin_utils import back_keyboard, parse_user_id, render_dashboard, require_admin
+from src.core.admin_modules.admin_utils import (
+    back_keyboard,
+    parse_user_id,
+    render_dashboard,
+    require_admin,
+)
 from src.core.user_behavior_tracker import UserBehaviorTracker
 
 logger = logging.getLogger(__name__)
@@ -27,11 +32,15 @@ def create_behavior_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Популярные фичи", callback_data="behavior:popular"),
-                InlineKeyboardButton(text="💔 Заброшенные фичи", callback_data="behavior:abandoned"),
+                InlineKeyboardButton(
+                    text="💔 Заброшенные фичи", callback_data="behavior:abandoned"
+                ),
             ],
             [
                 InlineKeyboardButton(text="🔥 Точки трения", callback_data="behavior:friction"),
-                InlineKeyboardButton(text="😊 Отзывы по функциям", callback_data="behavior:feedback"),
+                InlineKeyboardButton(
+                    text="😊 Отзывы по функциям", callback_data="behavior:feedback"
+                ),
             ],
             [
                 InlineKeyboardButton(text="🛣️ Путь пользователя", callback_data="behavior:journey"),
@@ -39,7 +48,9 @@ def create_behavior_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🎯 Вовлеченность", callback_data="behavior:engagement"),
-                InlineKeyboardButton(text="📉 Недоиспользуемые", callback_data="behavior:underutilized"),
+                InlineKeyboardButton(
+                    text="📉 Недоиспользуемые", callback_data="behavior:underutilized"
+                ),
             ],
             [
                 InlineKeyboardButton(text="« Назад", callback_data="admin_refresh"),
@@ -62,7 +73,7 @@ async def cmd_behavior(message: Message, db, admin_ids: set[int]):
 
     summary += "<b>📊 Топ-5 фичей за неделю:</b>\n"
     for i, feat in enumerate(top_features, 1):
-        emoji = '🔥' if i == 1 else '⭐' if i <= 3 else '✅'
+        emoji = "🔥" if i == 1 else "⭐" if i <= 3 else "✅"
         summary += f"{emoji} {feat['feature']}: {feat['uses']} использований ({feat['unique_users']} польз.)\n"
 
     summary += f"\n<b>🔥 Точек трения найдено:</b> {len(frictions)}\n"
@@ -89,22 +100,22 @@ async def handle_popular_features(callback: CallbackQuery, db, admin_ids: set[in
     output = "<b>📊 ПОПУЛЯРНЫЕ ФИЧИ (30 дней)</b>\n\n"
 
     for i, feat in enumerate(top_features, 1):
-        medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f"{i}."
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
 
         output += f"{medal} <b>{feat['feature']}</b>\n"
         output += f"   • Использований: {feat['uses']}\n"
         output += f"   • Уникальных пользователей: {feat['unique_users']}\n"
         output += f"   • Успешность: {feat['success_rate']:.1f}%\n"
 
-        if feat['avg_duration_ms'] > 0:
+        if feat["avg_duration_ms"] > 0:
             output += f"   • Среднее время: {feat['avg_duration_ms'] / 1000:.1f}с\n"
 
         output += "\n"
 
     # Выводы
     if top_features:
-        total_uses = sum(f['uses'] for f in top_features)
-        top_3_uses = sum(f['uses'] for f in top_features[:3])
+        total_uses = sum(f["uses"] for f in top_features)
+        top_3_uses = sum(f["uses"] for f in top_features[:3])
         concentration = (top_3_uses / total_uses * 100) if total_uses > 0 else 0
 
         output += "<b>💡 Выводы:</b>\n"
@@ -133,13 +144,13 @@ async def handle_friction_points(callback: CallbackQuery, db, admin_ids: set[int
         output += "\n<b>🔧 Рекомендуемые действия:</b>\n"
 
         for friction in frictions[:3]:
-            if friction.friction_type == 'error':
+            if friction.friction_type == "error":
                 output += f"• {friction.location}: исправить баги, улучшить обработку ошибок\n"
-            elif friction.friction_type == 'abandon':
+            elif friction.friction_type == "abandon":
                 output += f"• {friction.location}: упростить интерфейс, добавить подсказки\n"
-            elif friction.friction_type == 'timeout':
+            elif friction.friction_type == "timeout":
                 output += f"• {friction.location}: оптимизировать производительность\n"
-            elif friction.friction_type == 'confusion':
+            elif friction.friction_type == "confusion":
                 output += f"• {friction.location}: улучшить вводное обучение, добавить понятное руководство\n"
 
     async def build_dashboard():
@@ -168,8 +179,8 @@ async def handle_engagement(callback: CallbackQuery, db, admin_ids: set[int]):
         output += f"• Средняя удовлетворенность: {avg_satisfaction:.0f}/100\n\n"
 
         # Классификация фич
-        rising = [e for e in engagements if e.trend == 'rising']
-        declining = [e for e in engagements if e.trend == 'declining']
+        rising = [e for e in engagements if e.trend == "rising"]
+        declining = [e for e in engagements if e.trend == "declining"]
 
         if rising:
             output += f"📈 Растущие фичи: {', '.join(e.feature_name for e in rising)}\n"
@@ -195,8 +206,8 @@ async def handle_underutilized(callback: CallbackQuery, db, admin_ids: set[int])
     if not underutilized:
         output += "✅ Все фичи активно используются!\n"
     else:
-        unused = [f for f in underutilized if f['status'] == 'unused']
-        low_use = [f for f in underutilized if f['status'] == 'underutilized']
+        unused = [f for f in underutilized if f["status"] == "unused"]
+        low_use = [f for f in underutilized if f["status"] == "underutilized"]
 
         if unused:
             output += "<b>🚫 Совсем не используются (0 использований):</b>\n"
@@ -240,7 +251,9 @@ async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
 
     # Находим пиковые часы
     if hourly_stats:
-        sorted_hours = sorted(hourly_stats.items(), key=lambda x: x[1]['total_events'], reverse=True)
+        sorted_hours = sorted(
+            hourly_stats.items(), key=lambda x: x[1]["total_events"], reverse=True
+        )
 
         output += "<b>🔥 Топ-5 пиковых часов:</b>\n"
         for hour, stats in sorted_hours[:5]:
@@ -248,10 +261,10 @@ async def handle_peak_hours(callback: CallbackQuery, db, admin_ids: set[int]):
 
         output += "\n<b>📊 Распределение по времени суток:</b>\n"
 
-        morning = sum(stats['total_events'] for h, stats in hourly_stats.items() if 6 <= h < 12)
-        day = sum(stats['total_events'] for h, stats in hourly_stats.items() if 12 <= h < 18)
-        evening = sum(stats['total_events'] for h, stats in hourly_stats.items() if 18 <= h < 24)
-        night = sum(stats['total_events'] for h, stats in hourly_stats.items() if h < 6)
+        morning = sum(stats["total_events"] for h, stats in hourly_stats.items() if 6 <= h < 12)
+        day = sum(stats["total_events"] for h, stats in hourly_stats.items() if 12 <= h < 18)
+        evening = sum(stats["total_events"] for h, stats in hourly_stats.items() if 18 <= h < 24)
+        night = sum(stats["total_events"] for h, stats in hourly_stats.items() if h < 6)
 
         total = morning + day + evening + night
 
@@ -287,10 +300,18 @@ async def handle_feature_feedback(callback: CallbackQuery, db, admin_ids: set[in
     output = "<b>😊 ОТЗЫВЫ ПО ФИЧАМ</b>\n\n"
 
     for feat in top_features:
-        feature_name = feat['feature']
+        feature_name = feat["feature"]
         feedback = await tracker.get_feature_feedback(feature_name, days=30)
 
-        sentiment_emoji = '😍' if feedback.net_sentiment > 50 else '😊' if feedback.net_sentiment > 0 else '😐' if feedback.net_sentiment > -50 else '😞'
+        sentiment_emoji = (
+            "😍"
+            if feedback.net_sentiment > 50
+            else (
+                "😊"
+                if feedback.net_sentiment > 0
+                else "😐" if feedback.net_sentiment > -50 else "😞"
+            )
+        )
 
         output += f"<b>{feature_name}</b> {sentiment_emoji}\n"
         output += f"  👍 Положительных: {feedback.positive_signals}\n"
@@ -323,7 +344,9 @@ async def handle_user_journey(callback: CallbackQuery, db, admin_ids: set[int]):
     output += "<code>/journey &lt;ID пользователя&gt;</code>\n\n"
 
     output += "<b>📊 Типичные паттерны:</b>\n"
-    output += "• Успешный путь: регистрация → пробный период → первый вопрос → голосовой режим → оплата\n"
+    output += (
+        "• Успешный путь: регистрация → пробный период → первый вопрос → голосовой режим → оплата\n"
+    )
     output += "• Проблемный путь: регистрация → пробный период → ошибка → отказ\n\n"
 
     output += "<i>Используйте команду /journey с конкретным ID пользователя для деталей</i>"
@@ -363,7 +386,7 @@ async def cmd_user_journey(message: Message, db, admin_ids: set[int]):
         output += f"\n<b>📍 Путь ({len(journey.journey_steps)} шагов):</b>\n"
 
         for step in journey.journey_steps[:15]:  # первые 15 шагов
-            emoji = '✅' if step['success'] else '❌'
+            emoji = "✅" if step["success"] else "❌"
             output += f"{step['step_number']}. {emoji} {step['feature']}\n"
 
         if len(journey.journey_steps) > 15:
@@ -384,7 +407,7 @@ async def back_to_behavior_menu(callback: CallbackQuery, db, admin_ids: set[int]
 
     summary += "<b>📊 Топ-5 фичей за неделю:</b>\n"
     for i, feat in enumerate(top_features, 1):
-        emoji = '🔥' if i == 1 else '⭐' if i <= 3 else '✅'
+        emoji = "🔥" if i == 1 else "⭐" if i <= 3 else "✅"
         summary += f"{emoji} {feat['feature']}: {feat['uses']} использований\n"
 
     summary += f"\n<b>🔥 Точек трения:</b> {len(frictions)}\n"

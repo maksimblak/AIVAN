@@ -2,9 +2,11 @@
 Тесты для сервиса контроля доступа
 """
 
-import pytest
 from unittest.mock import AsyncMock, Mock
-from src.core.access import AccessService, AccessDecision
+
+import pytest
+
+from src.core.access import AccessDecision, AccessService
 from src.core.db_advanced import UserRecord
 
 
@@ -31,7 +33,7 @@ class TestAccessService:
             trial_remaining=5,
             subscription_until=0,
             created_at=1234567890,
-            updated_at=1234567890
+            updated_at=1234567890,
         )
         mock_db.ensure_user.return_value = user_record
 
@@ -53,7 +55,7 @@ class TestAccessService:
             trial_remaining=5,
             subscription_until=9999999999,  # Future date
             created_at=1234567890,
-            updated_at=1234567890
+            updated_at=1234567890,
         )
         mock_db.ensure_user.return_value = user_record
         mock_db.has_active_subscription.return_value = True
@@ -76,7 +78,7 @@ class TestAccessService:
             subscription_until=9999999999,
             created_at=1234567890,
             updated_at=1234567890,
-            subscription_plan='base_1m',
+            subscription_plan="base_1m",
             subscription_requests_balance=0,
         )
         mock_db.ensure_user.return_value = user_record
@@ -86,7 +88,7 @@ class TestAccessService:
 
         assert decision.allowed is False
         assert decision.has_subscription is True
-        assert decision.subscription_plan == 'base_1m'
+        assert decision.subscription_plan == "base_1m"
         assert decision.subscription_requests_remaining == 0
 
     @pytest.mark.asyncio
@@ -99,7 +101,7 @@ class TestAccessService:
             trial_remaining=5,
             subscription_until=0,
             created_at=1234567890,
-            updated_at=1234567890
+            updated_at=1234567890,
         )
         mock_db.ensure_user.return_value = user_record
         mock_db.has_active_subscription.return_value = False
@@ -124,7 +126,7 @@ class TestAccessService:
             trial_remaining=0,
             subscription_until=0,
             created_at=1234567890,
-            updated_at=1234567890
+            updated_at=1234567890,
         )
         mock_db.ensure_user.return_value = user_record
         mock_db.has_active_subscription.return_value = False
@@ -148,7 +150,7 @@ class TestAccessService:
             trial_remaining=5,
             subscription_until=0,
             created_at=1234567890,
-            updated_at=1234567890
+            updated_at=1234567890,
         )
         mock_db.ensure_user.return_value = user_record
 
@@ -169,7 +171,7 @@ class TestAccessService:
             trial_remaining=5,
             subscription_until=0,
             created_at=1234567890,
-            updated_at=1234567890
+            updated_at=1234567890,
         )
         mock_db.ensure_user.return_value = user_record
 

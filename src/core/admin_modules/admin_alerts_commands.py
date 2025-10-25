@@ -2,14 +2,18 @@
 Admin commands для Automated Alerts
 """
 
+from html import escape as html_escape
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from html import escape as html_escape
 
 from src.core.admin_modules.admin_utils import edit_or_answer, require_admin
-from src.core.admin_modules.automated_alerts import AlertConfig, AutomatedAlerts, group_alerts_by_severity
-
+from src.core.admin_modules.automated_alerts import (
+    AlertConfig,
+    AutomatedAlerts,
+    group_alerts_by_severity,
+)
 
 alerts_router = Router(name="alerts_admin")
 
@@ -25,6 +29,7 @@ def _build_no_alerts_view() -> tuple[str, InlineKeyboardMarkup]:
         ]
     )
     return text, keyboard
+
 
 def _build_overview_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -98,11 +103,11 @@ def _build_category_text(category: str, alerts: list) -> str:
     }
 
     header = {
-        'revenue': '💰 <b>Алерты по выручке</b>',
-        'retention': '🎯 <b>Алерты по удержанию</b>',
-        'pmf': '📊 <b>Алерты PMF</b>',
-        'technical': '⚙️ <b>Технические алерты</b>'
-    }.get(category, '📋 <b>Алерты</b>')
+        "revenue": "💰 <b>Алерты по выручке</b>",
+        "retention": "🎯 <b>Алерты по удержанию</b>",
+        "pmf": "📊 <b>Алерты PMF</b>",
+        "technical": "⚙️ <b>Технические алерты</b>",
+    }.get(category, "📋 <b>Алерты</b>")
     if not alerts:
         return f"{header} ✅ В этой категории сейчас нет алертов"
 

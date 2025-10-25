@@ -8,8 +8,8 @@ import asyncio
 import inspect
 import logging
 import time
-from collections import deque
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -101,7 +101,6 @@ class HealthCheck(ABC):
         self.last_result = result
         return result
 
-
     def _update_counters(self, status: HealthStatus) -> None:
         """Обновляет статистику по категориям статусов."""
         if status == HealthStatus.HEALTHY:
@@ -133,6 +132,7 @@ class HealthCheck(ABC):
             "success_rate": success_rate,
             "last_check": self.last_result.to_dict() if self.last_result else None,
         }
+
 
 # Конкретные реализации health check'ов
 
@@ -230,6 +230,7 @@ class OpenAIHealthCheck(HealthCheck):
             return HealthCheckResult(
                 status=HealthStatus.UNHEALTHY, message=f"OpenAI service error: {str(e)}"
             )
+
 
 class SessionStoreHealthCheck(HealthCheck):
     """Проверка здоровья session store"""

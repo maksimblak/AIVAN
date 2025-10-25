@@ -141,6 +141,15 @@ message templates defined in `NOTIFICATION_SCENARIOS`. Metrics, admin dashboards
 suite live in `tests/test_retention_notifier.py`. See `docs/RETENTION_QUICKSTART.md` for operating
 procedures.
 
+## Additional Guides
+- `docs/SCALING.md` - enabling the optional Redis-backed service registry, load balancer, and session
+  affinity.
+- `docs/BACKGROUND_TASKS.md` - understanding the built-in cleanup jobs and how to register custom
+  tasks.
+- `docs/EXCEL_EXPORT.md` - generating XLSX attachments for RAG answers and admin exports.
+- `docs/ADMIN_ANALYTICS.md` - retention/cohort/PMF tooling available to admins inside Telegram.
+- `docs/PROJECT_VALIDATION.md` - running `scripts/validate_project.py` to mirror CI checks locally.
+
 ## Support & Questions
 - Consult `docs/DEPLOYMENT.md`, `docs/security_monitoring.md`, and `docs/voice_mode.md` for common
   operational scenarios.

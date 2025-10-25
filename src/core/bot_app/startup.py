@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from aiogram import Bot, Dispatcher
 
+from core.bot_app.ratelimit import RateLimiter
 from core.bot_app.retention_notifier import RetentionNotifier
 from src.core.access import AccessService
 from src.core.admin_modules.admin_commands import setup_admin_commands
@@ -20,6 +21,7 @@ from src.core.background_tasks import (
     MetricsCollectionTask,
     SessionCleanupTask,
 )
+from src.core.bot_app import context as simple_context
 from src.core.cache import ResponseCache, create_cache_backend
 from src.core.db_advanced import DatabaseAdvanced
 from src.core.exceptions import ErrorHandler, ErrorType
@@ -31,14 +33,12 @@ from src.core.health import (
     SessionStoreHealthCheck,
     SystemResourcesHealthCheck,
 )
-from src.core.middlewares.error_middleware import ErrorHandlingMiddleware
 from src.core.metrics import init_metrics, set_system_status
+from src.core.middlewares.error_middleware import ErrorHandlingMiddleware
 from src.core.openai_service import OpenAIService
 from src.core.payments import CryptoPayProvider
 from src.core.scaling import LoadBalancer, ScalingManager, ServiceRegistry, SessionAffinity
 from src.core.session_store import SessionStore
-from src.core.bot_app import context as simple_context
-from core.bot_app.ratelimit import RateLimiter
 from src.documents.document_manager import DocumentManager
 
 __all__ = ["RuntimeBundle", "maybe_call", "setup_bot_runtime"]
@@ -320,9 +320,7 @@ async def setup_bot_runtime(
         if getattr(garant_client, "enabled", False):
             limits = await garant_client.get_limits()  # type: ignore[attr-defined]
             if limits:
-                summary = ", ".join(
-                    f"{item.title}: {item.value}" for item in limits[:5]
-                )
+                summary = ", ".join(f"{item.title}: {item.value}" for item in limits[:5])
                 logger.info("Garant API limits: %s", summary)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to fetch Garant limits: %s", exc)

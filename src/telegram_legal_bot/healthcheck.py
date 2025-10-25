@@ -9,7 +9,6 @@ from typing import Any
 from src.core.app_context import get_settings
 from src.core.settings import AppSettings
 
-
 PLACEHOLDER_PREFIXES = ("__REQUIRED", "changeme", "<REPLACE", "REPLACE_ME")
 
 
@@ -130,4 +129,3 @@ def main() -> None:
 
 if __name__ == "__main__":  # pragma: no cover - manual execution
     main()
-

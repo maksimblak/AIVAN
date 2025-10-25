@@ -8,11 +8,12 @@ import asyncio
 import logging
 import traceback
 from collections.abc import Callable
-from functools import wraps
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from functools import wraps
 from typing import Any
+
 
 # Типы ошибок
 class ErrorType(Enum):

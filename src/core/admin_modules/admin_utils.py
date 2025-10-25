@@ -2,14 +2,13 @@
 Shared utilities для admin commands
 """
 
-import inspect
 import contextlib
+import inspect
 import logging
-
 from functools import wraps
 from typing import Any, Callable
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +23,7 @@ FEATURE_KEYS = [
     "contract_analysis",
 ]
 
+
 def require_admin(func):
     """
     Decorator для проверки admin доступа
@@ -37,7 +37,9 @@ def require_admin(func):
     try:
         target_param = next(iter(signature.parameters.values()))
     except StopIteration as exc:
-        raise RuntimeError("require_admin expects a handler with at least one positional argument") from exc
+        raise RuntimeError(
+            "require_admin expects a handler with at least one positional argument"
+        ) from exc
 
     target_name = target_param.name
 
@@ -45,11 +47,13 @@ def require_admin(func):
     async def wrapper(*args, **kwargs):
         bound = signature.bind_partial(*args, **kwargs)
         target = bound.arguments.get(target_name)
-        admin_ids_arg = bound.arguments.get('admin_ids')
+        admin_ids_arg = bound.arguments.get("admin_ids")
         global _GLOBAL_ADMIN_IDS
 
         if target is None:
-            raise RuntimeError("require_admin decorator requires a target argument (Message or CallbackQuery)")
+            raise RuntimeError(
+                "require_admin decorator requires a target argument (Message or CallbackQuery)"
+            )
 
         if admin_ids_arg is None:
             admin_ids_arg = _GLOBAL_ADMIN_IDS
@@ -57,8 +61,8 @@ def require_admin(func):
         if admin_ids_arg is None:
             raise RuntimeError("require_admin decorator requires an 'admin_ids' argument")
 
-        user = getattr(target, 'from_user', None)
-        user_id = getattr(user, 'id', None)
+        user = getattr(target, "from_user", None)
+        user_id = getattr(user, "id", None)
 
         if user_id is None:
             if isinstance(target, CallbackQuery):
@@ -67,7 +71,7 @@ def require_admin(func):
                 await target.answer("⚠️ Доступ запрещен")
             return None
 
-        container = admin_ids_arg if hasattr(admin_ids_arg, '__contains__') else set(admin_ids_arg)
+        container = admin_ids_arg if hasattr(admin_ids_arg, "__contains__") else set(admin_ids_arg)
 
         if user_id not in container:
             if isinstance(target, CallbackQuery):
@@ -82,9 +86,7 @@ def require_admin(func):
 
 
 async def render_dashboard(
-    dashboard_builder: Callable,
-    target: Message | CallbackQuery,
-    **kwargs
+    dashboard_builder: Callable, target: Message | CallbackQuery, **kwargs
 ) -> None:
     """
     Универсальная функция для рендеринга dashboard
@@ -109,7 +111,6 @@ async def render_dashboard(
     text, keyboard = await dashboard_builder(**kwargs)
 
     await edit_or_answer(target, text, keyboard)
-
 
 
 async def edit_or_answer(
@@ -168,6 +169,7 @@ def handle_errors(error_message: str = "Ошибка выполнения"):
             # код который может упасть
             ...
     """
+
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -176,7 +178,9 @@ def handle_errors(error_message: str = "Ошибка выполнения"):
             except Exception:
                 logger.exception("%s (handler=%s)", error_message, func.__name__)
                 return None
+
         return wrapper
+
     return decorator
 
 
@@ -187,11 +191,10 @@ def back_keyboard(callback_data: str = "admin_refresh") -> InlineKeyboardMarkup:
     )
 
 
-
-
 def set_admin_ids(admin_ids: set[int]) -> None:
     global _GLOBAL_ADMIN_IDS
     _GLOBAL_ADMIN_IDS = set(admin_ids)
+
 
 __all__ = (
     "back_keyboard",

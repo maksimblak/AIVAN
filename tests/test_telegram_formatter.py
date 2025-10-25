@@ -2,7 +2,6 @@
 
 from core.bot_app.openai_gateway import format_legal_response_text
 
-
 _ALLOWED_TAG_REGEX = re.compile(
     r"""
     (?:
@@ -39,7 +38,7 @@ def test_formatter_produces_telegram_safe_html():
     expected = (
         "<b>Plan</b><br><br>First paragraph<br>"
         "\u2022 Alpha<br>\u2022 Beta<br><br>"
-        "Afterbad<a href=\"https://valid\">ok</a><tg-spoiler>secret"
+        'Afterbad<a href="https://valid">ok</a><tg-spoiler>secret'
     )
 
     assert formatted == expected

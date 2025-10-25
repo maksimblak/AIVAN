@@ -9,16 +9,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from core.bot_app.ui_components import Emoji
 from src.core.bot_app import context as ctx
 from src.core.bot_app.formatting import (
+    _format_currency,
+    _format_datetime,
     _format_response_time,
     _format_stat_row,
     _format_trend_value,
 )
-from src.core.bot_app.formatting import _format_currency, _format_datetime
 from src.core.bot_app.payments import get_plan_pricing
-from src.core.subscription_payments import (
-    SubscriptionPayloadError,
-    parse_subscription_payload,
-)
+from src.core.subscription_payments import SubscriptionPayloadError, parse_subscription_payload
 
 PERIOD_OPTIONS: Sequence[int] = (7, 30, 90)
 PROGRESS_BAR_LENGTH = 10
@@ -64,7 +62,11 @@ def _is_document_request_type(request_type: str | None) -> bool:
     if not request_type:
         return False
     normalized = request_type.lower()
-    return normalized.startswith(DOCUMENT_REQUEST_PREFIXES) or normalized in DOCUMENT_REQUEST_ALIASES
+    return (
+        normalized.startswith(DOCUMENT_REQUEST_PREFIXES) or normalized in DOCUMENT_REQUEST_ALIASES
+    )
+
+
 DAY_NAMES: Mapping[str, str] = {
     "0": "Пн",
     "1": "Вт",
@@ -260,7 +262,9 @@ def build_recommendations(
     if period_requests == 0:
         tips.append("Задайте боту первый вопрос — начните с /start или загрузите документ.")
     elif period_requests < previous_requests:
-        tips.append("Активность снизилась — попробуйте использовать подборки или вопросы к документам.")
+        tips.append(
+            "Активность снизилась — попробуйте использовать подборки или вопросы к документам."
+        )
 
     if not tips:
         tips.append("Продолжайте спрашивать — бот быстрее реагирует на частые запросы.")
@@ -291,7 +295,9 @@ __all__ = [
 def build_stats_keyboard(has_subscription: bool) -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
     if not has_subscription:
-        buttons.append([InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")])
+        buttons.append(
+            [InlineKeyboardButton(text="💳 Оформить подписку", callback_data="get_subscription")]
+        )
     buttons.append([InlineKeyboardButton(text="🔙 Назад к профилю", callback_data="my_profile")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -352,12 +358,9 @@ async def generate_user_stats_response(
 
     period_requests = int(stats.get("period_requests", 0) or 0)
     previous_requests = int(stats.get("previous_period_requests", 0) or 0)
-    period_successful = int(stats.get("period_successful", 0) or 0)
     previous_successful = int(stats.get("previous_period_successful", 0) or 0)  # noqa: F841
     period_tokens = int(stats.get("period_tokens", 0) or 0)  # noqa: F841
     avg_response_time_ms = int(stats.get("avg_response_time_ms", 0) or 0)
-
-    success_rate = (period_successful / period_requests * 100) if period_requests else 0.0  # noqa: F841
 
     day_counts = stats.get("day_of_week_counts") or {}
     hour_counts = stats.get("hour_of_day_counts") or {}
@@ -434,7 +437,9 @@ async def generate_user_stats_response(
             "",
             "📈 <b>Активность</b>",
             "",
-            _format_stat_row("  📝 Запросов", _format_trend_value(period_requests, previous_requests)),
+            _format_stat_row(
+                "  📝 Запросов", _format_trend_value(period_requests, previous_requests)
+            ),
             _format_stat_row(
                 "  ⏱️ Среднее время ответа",
                 _format_response_time(avg_response_time_ms),
@@ -444,16 +449,32 @@ async def generate_user_stats_response(
     )
 
     if day_primary != "—":
-        lines.append(_format_stat_row("  📅 Активный день", describe_primary_summary(day_primary, "обращений")))
+        lines.append(
+            _format_stat_row(
+                "  📅 Активный день", describe_primary_summary(day_primary, "обращений")
+            )
+        )
         if day_secondary.strip():
-            lines.append(_format_stat_row("  📆 Другие дни", describe_secondary_summary(day_secondary, "обращений")))
+            lines.append(
+                _format_stat_row(
+                    "  📆 Другие дни", describe_secondary_summary(day_secondary, "обращений")
+                )
+            )
     else:
         lines.append(_format_stat_row("  📅 Активный день", "нет данных"))
 
     if hour_primary != "—":
-        lines.append(_format_stat_row("  🕐 Активный час", describe_primary_summary(hour_primary, "обращений")))
+        lines.append(
+            _format_stat_row(
+                "  🕐 Активный час", describe_primary_summary(hour_primary, "обращений")
+            )
+        )
         if hour_secondary.strip():
-            lines.append(_format_stat_row("  🕑 Другие часы", describe_secondary_summary(hour_secondary, "обращений")))
+            lines.append(
+                _format_stat_row(
+                    "  🕑 Другие часы", describe_secondary_summary(hour_secondary, "обращений")
+                )
+            )
     else:
         lines.append(_format_stat_row("  🕐 Активный час", "нет данных"))
 
@@ -484,7 +505,9 @@ async def generate_user_stats_response(
         lines.append(_format_stat_row("  💰 Сумма", _format_currency(amount_minor, currency)))
         translated_status = translate_payment_status(last_transaction.get("status", "unknown"))
         lines.append(_format_stat_row("  📊 Статус", translated_status))
-        lines.append(_format_stat_row("  📅 Дата", _format_datetime(last_transaction.get("created_at"))))
+        lines.append(
+            _format_stat_row("  📅 Дата", _format_datetime(last_transaction.get("created_at")))
+        )
         payload_raw = last_transaction.get("payload")
         if payload_raw:
             try:
@@ -497,4 +520,3 @@ async def generate_user_stats_response(
 
     keyboard = build_stats_keyboard(has_subscription)
     return "\n".join(lines), keyboard
-

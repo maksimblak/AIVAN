@@ -33,9 +33,13 @@ def main() -> None:
                 import uvloop  # type: ignore
 
                 uvloop.install()
-                logging.getLogger("ai-ivan.simple").info("uvloop installed for improved performance")
+                logging.getLogger("ai-ivan.simple").info(
+                    "uvloop installed for improved performance"
+                )
             except ImportError:
-                logging.getLogger("ai-ivan.simple").info("uvloop not available, using default event loop")
+                logging.getLogger("ai-ivan.simple").info(
+                    "uvloop not available, using default event loop"
+                )
 
         asyncio.run(_run_async())
     except KeyboardInterrupt:
@@ -47,5 +51,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

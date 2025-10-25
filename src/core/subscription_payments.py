@@ -28,7 +28,9 @@ class SubscriptionPayloadError(ValueError):
     """Raised when payload cannot be parsed."""
 
 
-def build_subscription_payload(plan_id: str, method: str, user_id: int, *, timestamp: int | None = None) -> str:
+def build_subscription_payload(
+    plan_id: str, method: str, user_id: int, *, timestamp: int | None = None
+) -> str:
     """Create payload string for new subscription purchase."""
 
     if ":" in plan_id:
