@@ -278,6 +278,53 @@ class GarantAPIClient:
             return snippets[:trimmed_limit]
         return snippets
 
+    async def export_document_html(self, *, topic: int) -> list[str]:
+        """Load full document HTML split by items/pages."""
+        if not self.enabled:
+            return []
+        response = await self._client.get(f"/v2/topic/{int(topic)}/html")
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("items") if isinstance(data, dict) else None
+        pages: list[str] = []
+        if isinstance(items, Iterable):
+            for item in items:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        pages.append(text)
+        return pages
+
+    async def export_block_html(self, *, topic: int, entry: int) -> str | None:
+        """Load single entry/block HTML."""
+        if not self.enabled:
+            return None
+        response = await self._client.get(f"/v2/topic/{int(topic)}/entry/{int(entry)}/html")
+        response.raise_for_status()
+        data = response.json()
+        text = data.get("text") if isinstance(data, dict) else None
+        if isinstance(text, str) and text.strip():
+            return text
+        return None
+
+    async def download_rtf(self, *, topic: int) -> bytes:
+        """Download document as RTF."""
+        response = await self._client.get(f"/v2/topic/{int(topic)}/download")
+        response.raise_for_status()
+        return response.content
+
+    async def download_odt(self, *, topic: int) -> bytes:
+        """Download document as ODT."""
+        response = await self._client.get(f"/v2/topic/{int(topic)}/download-odt")
+        response.raise_for_status()
+        return response.content
+
+    async def download_pdf(self, *, topic: int) -> bytes:
+        """Download document as PDF."""
+        response = await self._client.get(f"/v2/topic/{int(topic)}/download-pdf")
+        response.raise_for_status()
+        return response.content
+
     async def search_with_snippets(
         self,
         query: str,
@@ -358,6 +405,56 @@ class GarantAPIClient:
                 if title:
                     results.append(GarantAPIClient.LimitInfo(title=title, value=value, names=names))
         return results
+
+    async def get_export_quota(self) -> int | None:
+        """Return remaining quota for export family (HTML/PDF/ODT/RTF)."""
+        try:
+            limits = await self.get_limits()
+        except Exception:
+            return None
+        for item in limits:
+            label = (item.title or "").strip().lower()
+            if label == "экспорт":
+                return int(item.value)
+        return None
+
+    async def has_export_quota(self, *, required: int = 1) -> bool:
+        quota = await self.get_export_quota()
+        if quota is None:
+            return True
+        return quota >= max(1, required)
+
+    async def get_document_text(
+        self,
+        *,
+        topic: int,
+        entry: int | None = None,
+        max_chars: int | None = None,
+    ) -> str | None:
+        """Return concatenated HTML body for a topic/entry respecting export quota."""
+        if not self.enabled:
+            return None
+        if not await self.has_export_quota():
+            if self._log_debug:
+                logger.debug("Export quota exhausted; skip full text for topic=%s", topic)
+            return None
+        try:
+            text: str | None
+            if entry is not None:
+                text = await self.export_block_html(topic=int(topic), entry=int(entry))
+            else:
+                pages = await self.export_document_html(topic=int(topic))
+                text = "\n".join(pages)
+            text = (text or "").strip()
+            if not text:
+                return None
+            if max_chars and len(text) > max_chars:
+                return text[: max_chars].rstrip() + "..."
+            return text
+        except Exception:
+            if self._log_debug:
+                logger.debug("Full text unavailable for topic=%s entry=%s", topic, entry, exc_info=True)
+            return None
 
     def format_limits(
         self,

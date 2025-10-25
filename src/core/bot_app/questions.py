@@ -28,6 +28,7 @@ from src.core.bot_app.feedback import (
     handle_pending_feedback,
     send_rating_request,
 )
+from src.core.docx_export import build_practice_docx
 from src.core.excel_export import build_practice_excel
 from src.core.exceptions import (
     ErrorContext,
@@ -148,6 +149,57 @@ def _ensure_json_block_appended(
         return current_text
     suffix = f"\n\n```json\n{block}\n```"
     return current_text + suffix
+
+
+async def _fetch_full_texts_for_fragments(
+    garant_client,
+    fragments: Sequence[Any],
+    *,
+    max_items: int = 6,
+    char_limit: int = 200_000,
+) -> dict[int, str]:
+    """Attempt to pull full HTML texts for top Garant fragments."""
+    results: dict[int, str] = {}
+    if not getattr(garant_client, "enabled", False):
+        return results
+    try:
+        quota = await garant_client.get_export_quota()
+        if isinstance(quota, int):
+            max_items = min(max_items, max(0, quota))
+    except Exception:
+        pass
+    if max_items <= 0:
+        return results
+
+    seen_topics: set[int] = set()
+    for fragment in fragments or []:
+        if len(results) >= max_items:
+            break
+        match = getattr(fragment, "match", None)
+        metadata = getattr(match, "metadata", {}) if match else {}
+        if not isinstance(metadata, Mapping):
+            continue
+        topic = metadata.get("topic")
+        entry = metadata.get("entry")
+        try:
+            topic = int(topic) if topic is not None else None
+        except Exception:
+            topic = None
+        if topic is None or topic in seen_topics:
+            continue
+        seen_topics.add(topic)
+        try:
+            text = await garant_client.get_document_text(
+                topic=topic,
+                entry=entry,
+                max_chars=char_limit,
+            )
+        except Exception as fulltext_error:  # noqa: BLE001
+            logger.debug("Failed to fetch full text for topic %s: %s", topic, fulltext_error)
+            text = None
+        if text:
+            results[topic] = text
+    return results
 
 
 def _build_structured_cases_from_fragments(
@@ -1296,6 +1348,38 @@ async def process_question(
                     caption="📊 Отчёт по судебной практике (XLSX)",
                     parse_mode=ParseMode.HTML,
                 )
+                try:
+                    full_texts = {}
+                    garant_client_current = getattr(simple_context, "garant_client", None)
+                    if getattr(garant_client_current, "enabled", False):
+                        full_texts = await _fetch_full_texts_for_fragments(
+                            garant_client_current,
+                            rag_fragments,
+                            max_items=6,
+                            char_limit=200_000,
+                        )
+                    practice_docx_path = await asyncio.to_thread(
+                        build_practice_docx,
+                        summary_html=excel_source,
+                        fragments=rag_fragments,
+                        structured=structured_payload,
+                        full_texts=full_texts,
+                        file_stub="practice_fulltext",
+                    )
+                    await message.answer_document(
+                        FSInputFile(str(practice_docx_path)),
+                        caption="📄 Полные тексты/карточки дел (DOCX)",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except RuntimeError as docx_error:
+                    if "python-docx" in str(docx_error).lower():
+                        await message.answer("📄 DOCX-экспорт недоступен (нет python-docx).")
+                except Exception:
+                    logger.warning("Failed to build practice DOCX", exc_info=True)
+                finally:
+                    with suppress(Exception):
+                        if "practice_docx_path" in locals() and practice_docx_path:
+                            practice_docx_path.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to build practice Excel", exc_info=True)
             finally:
@@ -1438,3 +1522,5 @@ async def process_question(
 def register_question_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_question_with_attachments, F.photo | F.document)
     dp.message.register(process_question, F.text & ~F.text.startswith("/"))
+
+
