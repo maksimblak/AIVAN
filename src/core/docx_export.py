@@ -32,6 +32,21 @@ def _temp_path(stem: str, suffix: str = ".docx") -> Path:
     return Path(tempfile.gettempdir()) / f"{safe}_{uuid.uuid4().hex}{suffix}"
 
 
+_TOPIC_RE = re.compile(r"/document/(\d+)")
+
+
+def _topic_from_url(url: str) -> int | None:
+    if not url:
+        return None
+    match = _TOPIC_RE.search(url)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
 def _setup_page_and_styles(doc) -> None:
     from docx.shared import Pt, Cm  # type: ignore
 
@@ -255,7 +270,11 @@ def build_practice_docx(
                 norms_text = str(norms_raw or "").strip()
             topic = case.get("topic")
             try:
-                topic = int(topic) if topic is not None else None
+                if topic is None:
+                    topic_candidate = _topic_from_url(url)
+                    topic = int(topic_candidate) if topic_candidate is not None else None
+                else:
+                    topic = int(topic)
             except Exception:
                 topic = None
 
