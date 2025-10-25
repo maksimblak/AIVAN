@@ -36,26 +36,39 @@ def _temp_path(stem: str, suffix: str = ".docx") -> Path:
 
 def _setup_page_and_styles(doc) -> None:
     from docx.shared import Pt, Cm  # type: ignore
+    from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
 
-    for section in doc.sections:
-        section.left_margin = Cm(2)
-        section.right_margin = Cm(2)
-        section.top_margin = Cm(2)
-        section.bottom_margin = Cm(2)
+    # Поля
+    for s in doc.sections:
+        s.left_margin = Cm(2)
+        s.right_margin = Cm(2)
+        s.top_margin = Cm(2)
+        s.bottom_margin = Cm(2)
 
+    # Normal: Times New Roman 12, 1.15, после 6пт, без отступа "перед"
     try:
         normal = doc.styles["Normal"]
         normal.font.name = "Times New Roman"
         normal.font.size = Pt(12)
+        pf = normal.paragraph_format
+        pf.line_spacing = 1.15
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(6)
+        pf.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     except Exception:
         pass
 
+    # Заголовки — жирные, TNR, «держаться с следующим»
     for name, size in (("Heading 1", 16), ("Heading 2", 14), ("Heading 3", 13)):
         try:
-            style = doc.styles[name]
-            style.font.name = "Times New Roman"
-            style.font.size = Pt(size)
-            style.font.bold = True
+            st = doc.styles[name]
+            st.font.name = "Times New Roman"
+            st.font.size = Pt(size)
+            st.font.bold = True
+            pf = st.paragraph_format
+            pf.space_before = Pt(6)
+            pf.space_after = Pt(4)
+            pf.keep_with_next = True
         except Exception:
             continue
 
@@ -94,16 +107,37 @@ def _add_hyperlink(paragraph, text: str, url: str) -> None:
     paragraph._p.append(hyperlink)
 
 
+def _remove_paragraph(p):
+    p._element.getparent().remove(p._element)
+
+
+def _tidy_document(doc) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+    from docx.shared import Pt  # type: ignore
+
+    for p in list(doc.paragraphs):
+        text = (p.text or "").strip().replace("\xa0", " ")
+        if text in {"—", "-", "•", "*"} or (text.isdigit() and len(text) <= 3):
+            _remove_paragraph(p)
+            continue
+
+        if not p.style or not p.style.name.startswith("Heading"):
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            pf = p.paragraph_format
+            if pf.line_spacing is None:
+                pf.line_spacing = 1.15
+            if pf.space_after is None:
+                pf.space_after = Pt(6)
+        else:
+            p.paragraph_format.keep_with_next = True
+
+
 class _HTML2Docx(HTMLParser):
     def __init__(self, doc):
         super().__init__(convert_charrefs=True)
         self.doc = doc
         self.paragraph = None
-        self.bold = False
-        self.italic = False
-        self.underline = False
-        self.code = False
-        self.pre = False
+        self.bold = self.italic = self.underline = self.code = self.pre = False
         self.list_stack: list[str] = []
         self.href: str | None = None
 
@@ -112,15 +146,25 @@ class _HTML2Docx(HTMLParser):
             self.paragraph = self.doc.add_paragraph(style=style) if style else self.doc.add_paragraph()
         return self.paragraph
 
+    def _clean_data(self, data: str) -> str:
+        data = data.replace("\xa0", " ").replace("\u00AD", "")
+        if not self.pre:
+            data = re.sub(r"\s+", " ", data)
+        return data
+
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
-        if tag in {"p", "div"}:
+        if tag == "p":
             self.paragraph = self.doc.add_paragraph()
         elif tag in {"h1", "h2", "h3"}:
             style = {"h1": "Heading 1", "h2": "Heading 2", "h3": "Heading 3"}[tag]
             self.paragraph = self.doc.add_paragraph(style=style)
+        elif tag == "div":
+            return
         elif tag == "br":
-            self._ensure_paragraph().add_run("\n")
+            from docx.enum.text import WD_BREAK  # type: ignore
+
+            self._ensure_paragraph().add_run().add_break(WD_BREAK.LINE)
         elif tag in {"b", "strong"}:
             self.bold = True
         elif tag in {"i", "em"}:
@@ -132,11 +176,21 @@ class _HTML2Docx(HTMLParser):
         elif tag == "pre":
             self.pre = True
             self.paragraph = self.doc.add_paragraph()
+        elif tag == "blockquote":
+            self.paragraph = self.doc.add_paragraph()
+            try:
+                pf = self.paragraph.paragraph_format
+                from docx.shared import Cm  # type: ignore
+
+                pf.left_indent = Cm(1)
+                pf.right_indent = Cm(1)
+            except Exception:
+                pass
         elif tag == "a":
             self.href = None
-            for attr_name, attr_value in attrs:
-                if attr_name.lower() == "href":
-                    self.href = make_url(attr_value)
+            for k, v in attrs:
+                if k.lower() == "href":
+                    self.href = make_url(v)
                     break
         elif tag == "ul":
             self.list_stack.append("ul")
@@ -148,11 +202,10 @@ class _HTML2Docx(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
-        if tag in {"p", "div", "li", "pre", "h1", "h2", "h3"}:
+        if tag in {"p", "li", "pre", "h1", "h2", "h3", "blockquote"}:
             self.paragraph = None
-        elif tag in {"ul", "ol"}:
-            if self.list_stack and self.list_stack[-1] == tag:
-                self.list_stack.pop()
+        elif tag in {"ul", "ol"} and self.list_stack and self.list_stack[-1] == tag:
+            self.list_stack.pop()
         elif tag in {"b", "strong"}:
             self.bold = False
         elif tag in {"i", "em"}:
@@ -169,6 +222,14 @@ class _HTML2Docx(HTMLParser):
     def handle_data(self, data):
         if not data:
             return
+        data = self._clean_data(data)
+        if not data:
+            return
+        if not self.pre:
+            s = data.strip()
+            if s in {"—", "-", "•", "*"} or (s.isdigit() and len(s) <= 3):
+                return
+
         paragraph = self._ensure_paragraph()
         if self.href:
             _add_hyperlink(paragraph, data.strip(), self.href)
@@ -339,5 +400,6 @@ def build_practice_docx(
                 doc.add_paragraph("Полный текст недоступен через API, используйте ссылку выше.").italic = True
 
     output = _temp_path(file_stub or "practice_fulltext")
+    _tidy_document(doc)
     doc.save(str(output))
     return output
