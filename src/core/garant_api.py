@@ -516,7 +516,6 @@ class GarantAPIClient:
                 requested_kinds = ["301", "302"]
         else:
             requested_kinds = [k for k in kinds if k]
-
         payload: dict[str, Any] = {
             "text": query,
             "count": max(1, min(count or self._sutyazhnik_count, 1000)),
