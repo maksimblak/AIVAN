@@ -136,7 +136,7 @@ class _HTML2Docx(HTMLParser):
             self.href = None
             for attr_name, attr_value in attrs:
                 if attr_name.lower() == "href":
-                    self.href = attr_value
+                    self.href = make_url(attr_value)
                     break
         elif tag == "ul":
             self.list_stack.append("ul")
@@ -317,7 +317,7 @@ def build_practice_docx(
             if url:
                 paragraph = doc.add_paragraph()
                 paragraph.add_run("Ссылка: ")
-                _add_hyperlink(paragraph, "перейти", url)
+                _add_hyperlink(paragraph, url, url)
             if facts:
                 doc.add_paragraph("Выдержка", style="Heading 3")
                 _render_html(doc, facts)

@@ -162,15 +162,6 @@ async def _fetch_full_texts_for_fragments(
     results: dict[int, str] = {}
     if not getattr(garant_client, "enabled", False):
         return results
-    try:
-        quota = await garant_client.get_export_quota()
-        if isinstance(quota, int):
-            max_items = min(max_items, max(0, quota))
-    except Exception:
-        pass
-    if max_items <= 0:
-        return results
-
     seen_topics: set[int] = set()
     for fragment in fragments or []:
         if len(results) >= max_items:
@@ -189,11 +180,10 @@ async def _fetch_full_texts_for_fragments(
             continue
         seen_topics.add(topic)
         try:
-            text = await garant_client.get_document_text(
-                topic=topic,
-                entry=entry,
-                max_chars=char_limit,
+            getter = getattr(garant_client, "get_document_html", None) or getattr(
+                garant_client, "get_document_text"
             )
+            text = await getter(topic=topic, entry=entry, max_chars=char_limit)
         except Exception as fulltext_error:  # noqa: BLE001
             logger.debug("Failed to fetch full text for topic %s: %s", topic, fulltext_error)
             text = None
@@ -212,15 +202,6 @@ async def _fetch_full_texts_for_cases(
     """Fetch full texts specifically for structured cases (DOCX)."""
     results: dict[int, str] = {}
     if not getattr(garant_client, "enabled", False):
-        return results
-
-    try:
-        quota = await garant_client.get_export_quota()
-        if isinstance(quota, int):
-            max_items = min(max_items, max(0, quota))
-    except Exception:
-        pass
-    if max_items <= 0:
         return results
 
     topic_re = re.compile(r"/document/(\d+)")
@@ -246,11 +227,10 @@ async def _fetch_full_texts_for_cases(
         seen_topics.add(topic)
         entry = case.get("entry")
         try:
-            text = await garant_client.get_document_text(
-                topic=topic,
-                entry=entry,
-                max_chars=char_limit,
+            getter = getattr(garant_client, "get_document_html", None) or getattr(
+                garant_client, "get_document_text"
             )
+            text = await getter(topic=topic, entry=entry, max_chars=char_limit)
         except Exception as fulltext_error:  # noqa: BLE001
             logger.debug("Failed to fetch full text for topic %s: %s", topic, fulltext_error)
             text = None
