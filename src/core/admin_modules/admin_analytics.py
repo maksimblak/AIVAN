@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+import statistics
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -47,6 +48,24 @@ class ChurnMetrics:
     retention_rate: float
     avg_requests_before_churn: float
     churn_by_usage: dict[str, int]  # low/medium/high usage
+
+
+DEFAULT_LOW_USAGE_THRESHOLD = 10.0
+DEFAULT_HIGH_USAGE_THRESHOLD = 30.0
+
+
+def _calculate_usage_thresholds(values: list[float]) -> tuple[float, float]:
+    """Return (low, high) cutoffs for churn usage buckets."""
+    if len(values) >= 3:
+        try:
+            low, high = statistics.quantiles(values, n=3, method="inclusive")
+            # Ensure thresholds are sane and strictly increasing
+            low = max(low, 0.0)
+            high = max(high, low + 1.0)
+            return low, high
+        except statistics.StatisticsError:
+            pass
+    return DEFAULT_LOW_USAGE_THRESHOLD, DEFAULT_HIGH_USAGE_THRESHOLD
 
 
 METRIC_LABELS: dict[str, str] = {
@@ -586,13 +605,13 @@ class AdminAnalytics:
             )
 
     async def get_churn_metrics(self, period_days: int = 30) -> ChurnMetrics:
-        """Метрики оттока"""
+        """??????? ??????"""
 
         async with self.db.pool.acquire() as conn:
             now = int(time.time())
             period_start = now - (period_days * 86400)
 
-            # Истекшие подписки за период
+            # ???????? ???????? ?? ??????
             cursor = await conn.execute(
                 """
                 SELECT
@@ -617,13 +636,51 @@ class AdminAnalytics:
             renewed = row[1] or 0
             churned = total_expired - renewed
 
+            avg_requests_before_churn = 0.0
+            churn_usage_buckets = {"low": 0, "medium": 0, "high": 0}
+
+            if churned > 0:
+                cursor = await conn.execute(
+                    """
+                    SELECT
+                        u.user_id,
+                        COALESCE(u.total_requests, 0) as total_requests
+                    FROM users u
+                    LEFT JOIN (
+                        SELECT DISTINCT user_id
+                        FROM payments
+                        WHERE created_at >= ? AND status = 'completed'
+                    ) renewed ON u.user_id = renewed.user_id
+                    WHERE u.subscription_until >= ?
+                      AND u.subscription_until < ?
+                      AND renewed.user_id IS NULL
+                    """,
+                    (period_start, period_start, now),
+                )
+                churn_rows = await cursor.fetchall()
+                await cursor.close()
+
+                request_values = [max(0.0, float(row[1] or 0)) for row in churn_rows]
+                if request_values:
+                    avg_requests_before_churn = round(
+                        sum(request_values) / len(request_values), 1
+                    )
+                    low_thr, high_thr = _calculate_usage_thresholds(request_values)
+                    for value in request_values:
+                        if value <= low_thr:
+                            churn_usage_buckets["low"] += 1
+                        elif value <= high_thr:
+                            churn_usage_buckets["medium"] += 1
+                        else:
+                            churn_usage_buckets["high"] += 1
+
             return ChurnMetrics(
                 total_expired=total_expired,
                 renewed_count=renewed,
                 churned_count=churned,
                 retention_rate=round((renewed / max(total_expired, 1)) * 100, 2),
-                avg_requests_before_churn=0.0,  # TODO: рассчитать
-                churn_by_usage={},  # TODO: рассчитать
+                avg_requests_before_churn=avg_requests_before_churn,
+                churn_by_usage=churn_usage_buckets,
             )
 
     async def get_daily_stats(self, days: int = 7) -> list[dict[str, Any]]:
