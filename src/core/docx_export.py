@@ -38,8 +38,10 @@ def _setup_page_and_styles(doc) -> None:
     from docx.shared import Pt, Cm  # type: ignore
     from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
 
-    # Поля
+    # A4 строго
     for s in doc.sections:
+        s.page_width = Cm(21.0)
+        s.page_height = Cm(29.7)
         s.left_margin = Cm(2)
         s.right_margin = Cm(2)
         s.top_margin = Cm(2)
@@ -111,9 +113,17 @@ def _remove_paragraph(p):
     p._element.getparent().remove(p._element)
 
 
+def _is_list_paragraph(p) -> bool:
+    try:
+        name = p.style.name if p.style else ""
+        return "List" in name or "Список" in name
+    except Exception:
+        return False
+
+
 def _tidy_document(doc) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
-    from docx.shared import Pt  # type: ignore
+    from docx.shared import Pt, Cm  # type: ignore
 
     for p in list(doc.paragraphs):
         text = (p.text or "").strip().replace("\xa0", " ")
@@ -128,8 +138,66 @@ def _tidy_document(doc) -> None:
                 pf.line_spacing = 1.15
             if pf.space_after is None:
                 pf.space_after = Pt(6)
+
+            if not _is_list_paragraph(p):
+                left_ind = getattr(pf, "left_indent", None)
+                if left_ind is None or not left_ind or getattr(left_ind, "pt", 0) == 0:
+                    if text:
+                        pf.first_line_indent = Cm(1.25)
         else:
             p.paragraph_format.keep_with_next = True
+
+
+def _autonumber_headings(doc) -> None:
+    """
+    Пронумеровать Heading 1/2/3 как 1 / 1.1 / 1.1.1.
+    Если заголовок уже начинается с цифр, повторно не нумеруем.
+    """
+    import re
+
+    counters = [0, 0, 0]
+
+    def level_of(p):
+        name = p.style.name if p.style else ""
+        if name == "Heading 1":
+            return 1
+        if name == "Heading 2":
+            return 2
+        if name == "Heading 3":
+            return 3
+        return 0
+
+    for p in doc.paragraphs:
+        lv = level_of(p)
+        if not lv:
+            continue
+
+        s = (p.text or "").strip()
+        if re.match(r"^\d+(?:\.\d+)*\s", s):
+            try:
+                parts = list(map(int, s.split()[0].split(".")))
+                counters[0] = parts[0]
+                counters[1] = parts[1] if len(parts) > 1 else 0
+                counters[2] = parts[2] if len(parts) > 2 else 0
+            except Exception:
+                pass
+            continue
+
+        if lv == 1:
+            counters[0] += 1
+            counters[1] = 0
+            counters[2] = 0
+            num = f"{counters[0]}"
+        elif lv == 2:
+            counters[1] += 1
+            counters[2] = 0
+            num = f"{counters[0]}.{counters[1]}"
+        else:
+            counters[2] += 1
+            num = f"{counters[0]}.{counters[1]}.{counters[2]}"
+
+        tail = s
+        p.text = f"{num} {tail}".strip()
 
 
 class _HTML2Docx(HTMLParser):
@@ -400,6 +468,7 @@ def build_practice_docx(
                 doc.add_paragraph("Полный текст недоступен через API, используйте ссылку выше.").italic = True
 
     output = _temp_path(file_stub or "practice_fulltext")
+    _autonumber_headings(doc)
     _tidy_document(doc)
     doc.save(str(output))
     return output
