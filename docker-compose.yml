@@ -68,6 +68,28 @@ services:
           memory: 512M
           cpus: '0.5'
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: aivan-qdrant
+    restart: unless-stopped
+    environment:
+      - QDRANT__STORAGE__KEEP_UPPER_STORAGE=true
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - aivan-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
   redis:
     image: redis:7-alpine
     container_name: aivan-redis
@@ -125,6 +147,8 @@ services:
       - prometheus
 
 volumes:
+  qdrant_data:
+    driver: local
   redis_data:
     driver: local
   prometheus_data:

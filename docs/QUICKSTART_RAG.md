@@ -4,13 +4,19 @@ Follow this checklist to enable Retrieval-Augmented Generation (RAG) for judicia
 It assumes you are running Qdrant locally; see `docs/RAG_SETUP.md` for advanced tuning.
 
 ## 1. Start Qdrant locally
-```bash
-docker run -d \
-  --name qdrant \
-  -p 6333:6333 -p 6334:6334 \
-  -v $(pwd)/qdrant_storage:/qdrant/storage \
-  qdrant/qdrant:latest
-```
+- **If you already use `docker compose` for the bot** (recommended):
+  ```bash
+  docker compose up -d qdrant
+  ```
+  Data is persisted in the named volume `qdrant_data` (host path `./qdrant_data` by default).
+- **Standalone Docker run**:
+  ```bash
+  docker run -d \
+    --name qdrant \
+    -p 6333:6333 -p 6334:6334 \
+    -v $(pwd)/qdrant_storage:/qdrant/storage \
+    qdrant/qdrant:latest
+  ```
 Qdrant Cloud also works—copy the HTTPS URL and API key.
 
 ## 2. Prepare a dataset

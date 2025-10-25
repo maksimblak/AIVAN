@@ -76,6 +76,9 @@ Redis-backed caches (optional), and the document storage backends in `src/docume
    docker build -t aivan-bot .
    docker run --env-file .env --volume $(pwd)/data:/app/data aivan-bot
    ```
+   For Retrieval-Augmented Generation (RAG) support the stack now includes a `qdrant` service:
+   `docker compose up -d qdrant` will start the vector DB with its data persisted under
+   `./qdrant_data` (via the named volume).
 
 See `docs/DEPLOYMENT.md` for the full production checklist.
 
@@ -133,6 +136,8 @@ Each variable accepts empty strings; `AppSettings` normalises blanks to `None` w
 ## RAG & Data Loading
 - Quickstart: `docs/QUICKSTART_RAG.md` walks through launching Qdrant, populating data with
   `scripts/load_judicial_practice.py`, and verifying matches via `scripts/test_rag.py`.
+  When using Docker Compose just run `docker compose up -d qdrant` instead of the standalone
+  `docker run` command from the guide.
 - Deep dive: `docs/RAG_SETUP.md` covers collection design, payload schema, and production tuning.
 
 ## Retention & Engagement
