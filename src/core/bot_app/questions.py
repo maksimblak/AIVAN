@@ -259,6 +259,28 @@ async def _fetch_full_texts_for_cases(
     return results
 
 
+def _normalize_case_links(
+    cases: list[dict[str, Any]] | Sequence[Mapping[str, Any]],
+    *,
+    base: str = "https://d.garant.ru",
+) -> None:
+    if not cases:
+        return
+    base = (base or "https://d.garant.ru").rstrip("/")
+    for case in cases:
+        if not isinstance(case, Mapping):
+            continue
+        url = str(case.get("url") or "")
+        if url.startswith("/#/"):
+            abs_url = f"{base}{url}"
+            if isinstance(case, dict):
+                case["url"] = abs_url
+                case["link"] = abs_url
+        elif url.startswith("http"):
+            if isinstance(case, dict):
+                case.setdefault("link", url)
+
+
 def _build_structured_cases_from_fragments(
     fragments: Sequence[Any],
     *,
@@ -1413,6 +1435,14 @@ async def process_question(
                     if getattr(garant_client_current, "enabled", False):
                         cases_for_doc = structured_payload.get("cases") if isinstance(structured_payload, Mapping) else None
                         if isinstance(cases_for_doc, Sequence) and cases_for_doc:
+                            try:
+                                _normalize_case_links(
+                                    cases_for_doc,
+                                    base=getattr(garant_client_current, "document_base_url", "https://d.garant.ru")
+                                    or "https://d.garant.ru",
+                                )
+                            except Exception:
+                                pass
                             full_texts = await _fetch_full_texts_for_cases(
                                 garant_client_current,
                                 cases_for_doc,

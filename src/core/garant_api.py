@@ -508,10 +508,19 @@ class GarantAPIClient:
         if not query:
             return []
 
+        if kinds is None:
+            lower = query.lower()
+            if any(token in lower for token in ("уголов", "ук рф", "упк", "ст. 105", "ст 105")):
+                requested_kinds = ["301", "302", "303"]
+            else:
+                requested_kinds = ["301", "302"]
+        else:
+            requested_kinds = [k for k in kinds if k]
+
         payload: dict[str, Any] = {
             "text": query,
             "count": max(1, min(count or self._sutyazhnik_count, 1000)),
-            "kind": list(kinds or self._sutyazhnik_kinds) or ["301", "302", "303"],
+            "kind": (self._sutyazhnik_kinds or requested_kinds) or requested_kinds,
         }
 
         try:

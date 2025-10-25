@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import tempfile
@@ -30,21 +30,6 @@ def _html_to_plain(text: str) -> str:
 def _temp_path(stem: str, suffix: str = ".docx") -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_") or "export"
     return Path(tempfile.gettempdir()) / f"{safe}_{uuid.uuid4().hex}{suffix}"
-
-
-_TOPIC_RE = re.compile(r"/document/(\d+)")
-
-
-def _topic_from_url(url: str) -> int | None:
-    if not url:
-        return None
-    match = _TOPIC_RE.search(url)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except Exception:
-        return None
 
 
 def _setup_page_and_styles(doc) -> None:
@@ -90,17 +75,17 @@ def _add_hyperlink(paragraph, text: str, url: str) -> None:
     hyperlink = OxmlElement("w:hyperlink")
     hyperlink.set(qn("r:id"), r_id)
 
-    new_run = OxmlElement("w:r")
+    run = OxmlElement("w:r")
     r_pr = OxmlElement("w:rPr")
     r_style = OxmlElement("w:rStyle")
     r_style.set(qn("w:val"), "Hyperlink")
     r_pr.append(r_style)
-    new_run.append(r_pr)
+    run.append(r_pr)
 
     text_elem = OxmlElement("w:t")
     text_elem.text = text or url
-    new_run.append(text_elem)
-    hyperlink.append(new_run)
+    run.append(text_elem)
+    hyperlink.append(run)
     paragraph._p.append(hyperlink)
 
 
@@ -202,6 +187,21 @@ def _render_html(doc, html: str):
     parser.close()
 
 
+_TOPIC_RE = re.compile(r"/document/(\d+)")
+
+
+def _topic_from_url(url: str) -> int | None:
+    if not url:
+        return None
+    match = _TOPIC_RE.search(url)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
 def build_practice_docx(
     *,
     summary_html: str,
@@ -210,7 +210,6 @@ def build_practice_docx(
     full_texts: Mapping[int, str] | None = None,
     file_stub: str | None = None,
 ) -> Path:
-    """DOCX: summary → карточки → полный текст с поддержкой HTML."""
     Document, Pt, Cm = _require_docx()
     full_texts = dict(full_texts or {})
 
@@ -260,7 +259,7 @@ def build_practice_docx(
         for idx, case in enumerate(cases, start=1):
             title = str(case.get("title") or "").strip()
             case_number = str(case.get("case_number") or "").strip()
-            url = str(case.get("url") or "").strip()
+            url = str(case.get("link") or case.get("url") or "").strip()
             facts = str(case.get("facts") or "").strip()
             holding = str(case.get("holding") or "").strip()
             norms_raw = case.get("norms")
@@ -297,7 +296,9 @@ def build_practice_docx(
                     doc.add_paragraph(line, style="List Bullet")
 
             doc.add_paragraph("Полный текст", style="Heading 3")
-            body = full_texts.get(topic) if isinstance(topic, int) else None
+            body = str(case.get("fulltext_html") or "").strip()
+            if not body and isinstance(topic, int):
+                body = full_texts.get(topic)
             if body:
                 _render_html(doc, body)
             else:
