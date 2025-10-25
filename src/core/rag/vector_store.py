@@ -2,10 +2,12 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Sequence, Union
+import uuid
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qmodels
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +42,13 @@ class QdrantVectorStore:
 
         self.collection = collection
         self.score_threshold = score_threshold
+        insecure = (url or "").startswith("http://") or (host in {"localhost", "127.0.0.1"})
+        safe_api_key = None if insecure else api_key
         self._client = AsyncQdrantClient(
             url=url,
             host=host,
             port=port,
-            api_key=api_key,
+            api_key=safe_api_key,
             prefer_grpc=prefer_grpc,
             timeout=timeout,
         )
@@ -66,6 +70,20 @@ class QdrantVectorStore:
                 query_filter=filters,
                 with_payload=with_payload,
             )
+        except UnexpectedResponse as exc:
+            if "doesn't exist" in str(exc).lower():
+                await self.ensure_collection(len(vector))
+                points = await self._client.search(
+                    collection_name=self.collection,
+                    query_vector=list(vector),
+                    limit=limit,
+                    score_threshold=self.score_threshold,
+                    query_filter=filters,
+                    with_payload=with_payload,
+                )
+            else:
+                logger.error("Qdrant search failed: %s", exc)
+                raise
         except Exception as exc:  # noqa: BLE001
             logger.error("Qdrant search failed: %s", exc)
             raise
@@ -88,7 +106,7 @@ class QdrantVectorStore:
         vectors: Iterable[Sequence[float]],
         payloads: Iterable[dict[str, Any]],
         *,
-        ids: Iterable[str] | None = None,
+        ids: Iterable[Union[int, str]] | None = None,
         batch_size: int = 64,
     ) -> None:
         """Utility helper for bulk upserts (used by background ingestion scripts)."""
@@ -107,6 +125,11 @@ class QdrantVectorStore:
         for idx, vector in enumerate(vector_list):
             payload = payload_list[idx]
             point_id = id_list[idx] if id_list is not None else None
+            if isinstance(point_id, str):
+                try:
+                    uuid.UUID(point_id)
+                except Exception:
+                    point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, point_id))
             point = qmodels.PointStruct(id=point_id, vector=vector, payload=payload)
             all_points.append(point)
 

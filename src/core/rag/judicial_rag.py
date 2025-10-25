@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 import logging
 import re
 from dataclasses import dataclass
@@ -132,7 +133,7 @@ class JudicialPracticeRAG:
             return 0
 
         cap = max(0, int(max_items))
-        items: list[tuple[str, str, dict[str, Any]]] = []
+        items: list[tuple[object, str, dict[str, Any]]] = []
         seen_ids: set[str] = set()
 
         for fragment in list(fragments)[:cap]:
@@ -152,17 +153,16 @@ class JudicialPracticeRAG:
             url = str(metadata.get("url") or metadata.get("link") or "").strip()
 
             if isinstance(topic, int):
-                point_id = f"garant:doc:{topic}"
-                if entry is not None:
-                    point_id += f":entry:{entry}"
+                point_id: object = int(topic)
             else:
-                base = url or title
-                digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
-                point_id = f"garant:hash:{digest}"
+                base = url or title or "garant"
+                if entry is not None:
+                    base += f"#entry:{entry}"
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"garant:{base}"))
 
-            if point_id in seen_ids:
+            if str(point_id) in seen_ids:
                 continue
-            seen_ids.add(point_id)
+            seen_ids.add(str(point_id))
 
             parts = [
                 title,
@@ -196,7 +196,7 @@ class JudicialPracticeRAG:
         if not self.enabled or not results or not max_items:
             return 0
 
-        items: list[tuple[str, str, dict[str, Any]]] = []
+        items: list[tuple[object, str, dict[str, Any]]] = []
         seen_ids: set[str] = set()
         court_cap = max(0, int(max_items))
         norm_cap = court_cap
@@ -226,10 +226,10 @@ class JudicialPracticeRAG:
                 if topic is None or not name:
                     continue
 
-                point_id = f"garant:doc:{int(topic)}"
-                if point_id in seen_ids:
+                point_id: object = int(topic)
+                if str(point_id) in seen_ids:
                     continue
-                seen_ids.add(point_id)
+                seen_ids.add(str(point_id))
 
                 case_number, decision_date = self._parse_title_bits(name)
                 payload: dict[str, Any] = {
@@ -264,10 +264,10 @@ class JudicialPracticeRAG:
                     url = _abs(getattr(norm, "url", "") or "")
                     if topic is None or not name:
                         continue
-                    norm_id = f"garant:norm:{int(topic)}"
-                    if norm_id in seen_ids:
+                    norm_id: object = str(uuid.uuid5(uuid.NAMESPACE_URL, f"garant:norm:{int(topic)}"))
+                    if str(norm_id) in seen_ids:
                         continue
-                    seen_ids.add(norm_id)
+                    seen_ids.add(str(norm_id))
                     payload = {
                         "doc_type": "norm",
                         "source": "garant_sutyazhnik",
@@ -298,7 +298,7 @@ class JudicialPracticeRAG:
             return 0
 
         cap = max(0, int(max_items))
-        items: list[tuple[str, str, dict[str, Any]]] = []
+        items: list[tuple[object, str, dict[str, Any]]] = []
         seen_ids: set[str] = set()
 
         def _abs(url: str) -> str:
@@ -319,10 +319,10 @@ class JudicialPracticeRAG:
             if topic is None or not name:
                 continue
 
-            point_id = f"garant:doc:{int(topic)}"
-            if point_id in seen_ids:
+            point_id: object = int(topic)
+            if str(point_id) in seen_ids:
                 continue
-            seen_ids.add(point_id)
+            seen_ids.add(str(point_id))
 
             snippets = list(getattr(result, "snippets", []) or [])
             entry = getattr(snippets[0], "entry", None) if snippets else None
@@ -370,7 +370,7 @@ class JudicialPracticeRAG:
             date_match.group(1) if date_match else None,
         )
 
-    async def _upsert_items(self, items: list[tuple[str, str, dict[str, Any]]]) -> int:
+    async def _upsert_items(self, items: list[tuple[object, str, dict[str, Any]]]) -> int:
         assert self._embedding_service is not None
         assert self._vector_store is not None
 
