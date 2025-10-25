@@ -1,70 +1,150 @@
-# AIVAN – Telegram Legal Assistant
+# AIVAN - Telegram Legal Assistant
 
-Modern Telegram бот для юридических консультаций с поддержкой OpenAI, документов, RAG-поиска и голосового взаимодействия. Репозиторий подготовлен для безопасного релиза и локальной разработки с Poetry и Docker.
+AIVAN is a production-ready Telegram bot that helps users prepare legal documents, analyse cases,
+and answer legal questions with OpenAI models, OCR tooling, and Retrieval-Augmented Generation
+(RAG). The codebase bundles subscriptions, payments, retention, observability, and background
+tasks so the bot can run unattended in production.
 
-## Возможности
-- Диалог с GPT‑моделью (стриминг ответов, статус анимации, rich UI-компоненты).
-- Обработка документов: OCR (PaddleOCR/Tesseract), анонимизация, анализ исков, генерация сводок и черновиков.
-- RAG по судебной практике (Qdrant) и внутренним материалам.
-- Платёжные функции: подписки, CryptoPay, Telegram Stars, Robokassa, YooKassa.
-- Наблюдаемость: Prometheus-метрики, healthchecks, фоновый мониторинг и алёрты.
+## Highlights
+- **Conversational legal copilot** - rich `/start` menu, status animations, streaming answers, voice
+  mode, and message validation driven by `src/core/bot_app` and `src/core/openai_service.py`.
+- **Document automation** - OCR, anonymisation, lawsuit analysis, risk scoring, and document
+  drafting powered by `src/documents/*` and the aiogram handlers in
+  `src/core/bot_app/documents.py`.
+- **Payments & access control** - CryptoPay, Telegram Stars, Robokassa, and YooKassa plus trials
+  and subscriptions (see `src/core/payments.py`, `subscription_*`, and `core/bot_app/payments.py`).
+- **RAG pipeline** - optional Qdrant vector store with OpenAI embeddings (see `src/core/rag/*`
+  and `docs/QUICKSTART_RAG.md`).
+- **Retention & analytics** - automated win-back notifications, admin queries, and Excel exports
+  built into `src/core/bot_app/retention_notifier.py` and `src/core/admin_modules/*`.
+- **Observability & safety** - Prometheus metrics, structured health checks, anti-abuse input
+  validation, background tasks, and scaling helpers (`src/core/metrics.py`, `health.py`,
+  `validation.py`, `background_tasks.py`, `scaling.py`).
 
-## Структура проекта
-- `src/telegram_legal_bot` — CLI-энтрипоинт и healthcheck.
-- `src/core` — конфигурация (`settings.py`), DI, расширенная БД (`db_advanced.py`), кэш, метрики, фоновые задачи, RAG.
-- `src/bot` — шлюз OpenAI, промпты, управление статусами/стримингом, удержание пользователей.
-- `src/documents` — инструменты OCR, анонимизация, риск-оценка и менеджмент файлов.
-- `scripts/` — тестовые и диагностические утилиты (`run_tests.py`, `validate_project.py`, `load_judicial_practice.py`).
-- `tests/` — pytest-сценарии (юнит и интеграционные), ориентир для новых тестов.
+## Architecture Overview
 
-## Быстрый старт
-```bash
-poetry install --with dev
-cp .env.example .env  # заполните секреты через секрет-менеджер
-poetry run telegram-legal-bot
+```
+Telegram Updates
+    ↓
+aiogram dispatcher (src/core/bot_app/* handlers)
+    ↓
+Access / rate limits / session store ──┬── OpenAIService + AudioService
+                                        ├── DocumentManager (OCR, drafter, analyzers)
+                                        ├── Payments (CryptoPay / Robokassa / YooKassa / Stars)
+                                        ├── RAG & Garant API clients
+                                        └── Background + retention services
 ```
 
-### Docker
-```bash
-docker compose up --build aivan
-```
-Параметры окружения прокидываются из секретного файла (`--env-file`), а данные сохраняются в `./data` и `./logs`.
+Configuration is centralised in `src/core/settings.AppSettings`, injected via the DI container
+(`src/core/di_container.py`) and exposed at runtime through `src/core/bootstrap.py` and
+`src/core/bot_app/context.py`. Shared data flows through `DatabaseAdvanced` (SQLite by default),
+Redis-backed caches (optional), and the document storage backends in `src/documents/storage_backends.py`.
 
-## Конфигурация
-Все значения собираются через `AppSettings` (`src/core/settings.py`). Минимальные переменные:
-- `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` — обязательно.
-- `DB_PATH` — путь к SQLite (по умолчанию `data/bot.sqlite3`).
-- Платёжные токены (`CRYPTO_PAY_TOKEN`, `TELEGRAM_PROVIDER_TOKEN_*`) включают премиум-функции.
-- Для RAG выставьте `RAG_ENABLED=true` и координаты Qdrant (`docs/RAG_SETUP.md`).
+## Repository Layout
+| Path | Purpose |
+|------|---------|
+| `src/telegram_legal_bot` | Entrypoints (`main.py`) and health check CLI. |
+| `src/core` | Runtime service layer: DI, OpenAI, payments, metrics, scaling, health checks, excel export, etc. |
+| `src/core/bot_app` | aiogram bot application (menus, questions, documents, payments, retention, admin). |
+| `src/documents` | OCR, translation, anonymisation, drafter, lawsuit/risk analysis pipelines. |
+| `data/` | Local assets (SQLite, fixtures). |
+| `docs/` | Operational guides (deployment, RAG, retention, monitoring, voice mode). |
+| `scripts/` | Automation utilities (`run_tests.py`, `validate_project.py`, `load_judicial_practice.py`, `test_rag.py`). |
+| `tests/` | Pytest suite (async-friendly, mirrors src layout). |
 
-Перечень и описание переменных смотрите в `.env.example`. **Не храните реальные ключи в репозитории** — используйте секрет-менеджер и GitHub Actions secrets.
+## Getting Started
+1. **Requirements**: Python 3.12+, Poetry 1.8+, Docker (for parity), OpenAI API key, Telegram bot token.
+2. **Install dependencies**:
+   ```bash
+   poetry install --with dev
+   cp .env.example .env  # update secrets locally
+   ```
+3. **Run the bot**:
+   ```bash
+   poetry run telegram-legal-bot
+   ```
+4. **Smoke test & CI-equivalent checks**:
+   ```bash
+   poetry run python scripts/run_tests.py          # lint + type-check + pytest
+   poetry run pytest -k documents                  # example focused test run
+   poetry run python scripts/validate_project.py   # dependency + settings sanity
+   ```
+5. **Docker**:
+   ```bash
+   docker compose up --build bot
+   # or
+   docker build -t aivan-bot .
+   docker run --env-file .env --volume $(pwd)/data:/app/data aivan-bot
+   ```
 
-## Тестирование и качество
-- Запуск полного пайплайна: `poetry run python scripts/run_tests.py`.
-- Раздельные проверки:
-  - `poetry run pytest`
-  - `poetry run ruff check src tests`
-  - `poetry run black --check src tests`
-  - `poetry run mypy src tests`
-- Для ключевых потоков (платежи, retention, документы) есть тесты в `tests/` и `tests/unit/`.
+See `docs/DEPLOYMENT.md` for the full production checklist.
 
-## Наблюдаемость и эксплуатация
-- Healthcheck: `python -m telegram_legal_bot.healthcheck`.
-- Prometheus-метрики доступны при `ENABLE_PROMETHEUS=1` и `PROMETHEUS_PORT` (см. `docker-compose.yml`).
-- Скрипт `scripts/validate_project.py` выполняет bootstrap-проверки (DI, БД, зависимости).
+## Configuration Reference
+Key `.env` variables loaded by `AppSettings`:
 
-## Release checklist
-1. Смените все секреты, присутствовавшие в предыдущих коммитах (`TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` и т.д.).
-2. Убедитесь, что локальные `.env` и SQLite базы не попадают в коммиты (`.gitignore` уже настроен).
-3. `poetry run python scripts/run_tests.py` — должен завершиться без ошибок.
-4. Соберите образ: `docker build -t aivan-bot .` и выполните healthcheck.
-5. Заполните релизное описание (фичи, миграции, известные ограничения) и загрузите артефакты.
+| Area | Variables |
+|------|-----------|
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SUPPORT_USERNAME`, optional proxy credentials (`TELEGRAM_PROXY_*`). |
+| OpenAI | `OPENAI_API_KEY`, `USE_STREAMING`, `USE_STATUS_ANIMATION`, default model knobs in `src/core/openai_service.py`. |
+| Database / cache | `DB_PATH`, `DB_MAX_CONNECTIONS`, `CACHE_BACKEND`, `CACHE_TTL`, optional `REDIS_URL`. |
+| Access & trials | `TRIAL_REQUESTS`, `SUB_DURATION_DAYS`, `ADMIN_IDS` (comma-separated). |
+| Payments | `TELEGRAM_PROVIDER_TOKEN_RUB`, `TELEGRAM_PROVIDER_TOKEN_STARS`, `CRYPTO_PAY_TOKEN`, `ROBOKASSA_*`, `YOOKASSA_*`. |
+| Voice mode | `ENABLE_VOICE_MODE`, `VOICE_STT_MODEL`, `VOICE_TTS_MODEL`, `VOICE_TTS_VOICE(_MALE)`, `VOICE_TTS_SPEED`, `VOICE_MAX_DURATION_SECONDS`. |
+| RAG | `RAG_ENABLED`, `RAG_QDRANT_URL` or (`RAG_QDRANT_HOST`/`PORT`), `RAG_QDRANT_API_KEY`, `RAG_COLLECTION`, `RAG_TOP_K`, `RAG_SCORE_THRESHOLD`, `RAG_CONTEXT_CHAR_LIMIT`. |
+| Observability | `ENABLE_PROMETHEUS`, `PROMETHEUS_PORT`, `ENABLE_SYSTEM_MONITORING`, health/cleanup intervals. |
+| Integrations | `GARANT_API_BASE_URL`, `GARANT_API_TOKEN`, `GARANT_API_ENV`, etc. |
 
-## Контрибуции
-Перед PR:
-- Прогоните форматирование (`black`, `isort`) и линтеры (`ruff`, `mypy`).
-- Добавьте тесты к новой функциональности.
-- Опишите изменения, приложите логи/скриншоты для UI и ссылку на задачу.
+Each variable accepts empty strings; `AppSettings` normalises blanks to `None` where sensible.
 
-Обратная связь и вопросы — через issues или support@aivan.ai.
+## Document Automation Stack
+- **Uploads & OCR**: `src/core/bot_app/documents.py` routes photos, PDFs, and archives through
+  `src/documents/ocr_converter.py`, anonymisation, translation, and summarisation pipelines.
+- **Document drafter**: `generate_document` and `plan_document` (`src/documents/document_drafter.py`)
+  convert user briefs into Markdown plans and DOCX outputs (via `python-docx`). Telegram handlers
+  handle turn-by-turn clarifications, voice inputs, and attachments.
+- **Lawsuit & risk analysis**: `src/documents/lawsuit_analyzer.py`, `risk_analyzer.py`, and
+  `document_chat.py` expose analysis reports, structured plans, and follow-up chat sessions.
+- **RAG context**: when enabled, `JudicialPracticeRAG` injects relevant case excerpts into prompts.
 
+## Observability & Operations
+- **Metrics**: `src/core/metrics.py` exports counters/gauges/histograms to Prometheus (`/metrics`
+  HTTP server) or an in-memory fallback. Key metrics include `telegram_messages_total`,
+  `openai_requests_total`, `payment_transactions_total`, `security_violations_total`, and
+  `system_status`.
+- **Health checks**: `python -m telegram_legal_bot.healthcheck` runs the same checks triggered in
+  production (DB, OpenAI, session store, rate limiter, system resources).
+- **Background tasks**: `src/core/background_tasks.py` defines cleanup jobs for the database, cache,
+  sessions, document storage, and metrics. `RetentionNotifier` runs hourly alongside those tasks.
+- **Security monitoring**: `src/core/validation.py` sanitises user prompts (XSS/SQL/spam) and
+  increments the security metrics. See `docs/security_monitoring.md` for triage tips.
+- **Scaling hooks**: `src/core/scaling.py` provides optional service registry + load balancer if you
+  point the bot at Redis for shared session affinity.
+
+## Development Workflow
+- Formatters: `poetry run black .` and `poetry run isort .` (Black profile, 100 columns).
+- Linting: `poetry run ruff check src tests` (E/F rules by default).
+- Typing: `poetry run mypy src tests` (core/documents/bot packages are temporarily ignored).
+- Tests: `poetry run pytest`, or targeted modules via `-k`. Async tests use `pytest-asyncio`.
+- Tooling: `scripts/run_tests.py` bundles lint + type + tests; `scripts/validate_project.py` validates
+  settings, dependencies, and migrations.
+- Git: keep commits small, run tests before pushing, and follow lower-case imperative messages
+  (e.g., `add retention notifier metrics`).
+
+## RAG & Data Loading
+- Quickstart: `docs/QUICKSTART_RAG.md` walks through launching Qdrant, populating data with
+  `scripts/load_judicial_practice.py`, and verifying matches via `scripts/test_rag.py`.
+- Deep dive: `docs/RAG_SETUP.md` covers collection design, payload schema, and production tuning.
+
+## Retention & Engagement
+`RetentionNotifier` (started inside `core/bot_app/startup.py`) scans the `users` table and sends
+message templates defined in `NOTIFICATION_SCENARIOS`. Metrics, admin dashboards, and a helper test
+suite live in `tests/test_retention_notifier.py`. See `docs/RETENTION_QUICKSTART.md` for operating
+procedures.
+
+## Support & Questions
+- Consult `docs/DEPLOYMENT.md`, `docs/security_monitoring.md`, and `docs/voice_mode.md` for common
+  operational scenarios.
+- For new integrations, mirror the existing structure: put shared services under `src/core`,
+  telegram handlers under `src/core/bot_app`, and data processors under `src/documents`.
+
+Feel free to open issues or send questions to `support@aivan.ai`.

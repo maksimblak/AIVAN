@@ -1,48 +1,57 @@
 # RAG Quickstart
 
-Сборка Retrieval-Augmented Generation над юридическими кейсами позволяет боту ссылаться на судебную практику при ответах.
+Follow this checklist to enable Retrieval-Augmented Generation (RAG) for judicial practice snippets.
+It assumes you are running Qdrant locally; see `docs/RAG_SETUP.md` for advanced tuning.
 
-## 1. Запуск Qdrant локально
+## 1. Start Qdrant locally
 ```bash
 docker run -d \
+  --name qdrant \
   -p 6333:6333 -p 6334:6334 \
   -v $(pwd)/qdrant_storage:/qdrant/storage \
-  qdrant/qdrant
+  qdrant/qdrant:latest
 ```
+Qdrant Cloud also works—copy the HTTPS URL and API key.
 
-## 2. Настройка окружения
-Добавьте в `.env` или секрет-менеджер:
+## 2. Prepare a dataset
+Create a JSONL file with at least the `text` field (see `data/judicial_cases_example.jsonl`):
+```jsonl
+{"text": "Суть дела ...", "case_number": "A40-12345/2024", "court": "АС г. Москвы", "date": "2024-05-10", "url": "https://..."}
+```
+Optional metadata such as `title`, `region`, `tags`, or `law_articles` will be stored inside Qdrant.
+
+## 3. Configure `.env`
 ```env
 RAG_ENABLED=true
 RAG_QDRANT_URL=http://localhost:6333
 RAG_COLLECTION=judicial_practice
 RAG_TOP_K=6
 RAG_SCORE_THRESHOLD=0.65
+RAG_CONTEXT_CHAR_LIMIT=8000
+RAG_EMBEDDING_MODEL=text-embedding-3-large
 ```
-При использовании Qdrant Cloud добавьте `RAG_QDRANT_API_KEY`.
+If you use Qdrant Cloud, set `RAG_QDRANT_API_KEY` and switch to HTTPS.
 
-## 3. Загрузка корпуса
-Подготовьте JSONL с полями `text`, `case_number`, `court`, `date`, `url` (см. пример в `data/judicial_cases_example.jsonl`) и выполните:
+## 4. Load documents
 ```bash
 poetry run python scripts/load_judicial_practice.py --input data/judicial_cases_example.jsonl
 ```
-Скрипт создаст коллекцию, рассчитает эмбеддинги (через OpenAI) и загрузит документы в Qdrant.
+The loader embeds texts with OpenAI, ensures the collection exists, and upserts vectors in batches.
+You can re-run the script; upserts are idempotent when `case_number` stays stable.
 
-## 4. Локальная проверка
-```bash
-poetry run telegram-legal-bot
-```
-Задайте вопрос в духе «Какая практика по спорам с контрагентами о поставках?» и убедитесь, что ответ содержит выдержки и ссылки.
+## 5. Verify
+- Run `poetry run telegram-legal-bot` and ask a question that references your dataset. The bot will
+  mention “[case N] ...” blocks if RAG context was attached.
+- Tail the logs for `Judicial RAG search failed` or `Cache HIT for ask_legal` entries.
+- Optionally call `poetry run python scripts/test_rag.py --question "..."` to exercise the pipeline
+  without Telegram.
 
-## 5. Диагностика
-- Проверить коллекции: `curl http://localhost:6333/collections`.
-- Проверить количество документов: `curl http://localhost:6333/collections/judicial_practice`.
-- Логи загрузки — в `logs/load_judicial_practice.log` (создаётся автоматически).
+## 6. Troubleshooting
+- Ensure `OPENAI_API_KEY` is present; the loader and runtime both create embeddings.
+- Inspect Qdrant collections via `curl http://localhost:6333/collections`.
+- Lower `RAG_SCORE_THRESHOLD` if no snippets are returned; reduce `RAG_TOP_K` if prompts become too
+  long.
+- Use `RAG_CONTEXT_CHAR_LIMIT` to cap the final prompt size; when set to `0` the limit is disabled.
 
-## 6. Тюнинг
-- `RAG_TOP_K` — сколько документов подтягивать на ответ.
-- `RAG_SCORE_THRESHOLD` — минимальный скор; понизьте, если ответы не содержат фактов.
-- `RAG_CONTEXT_CHAR_LIMIT` — ограничение длины вставляемых выдержек.
-
-Если RAG недоступен (Qdrant не запущен или сеть закрыта), бот автоматически продолжит работу без расширения контекстом.
-
+Once the quickstart works, move on to `docs/RAG_SETUP.md` for schema design, filtering, and
+production hardening tips.
