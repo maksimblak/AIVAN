@@ -7,6 +7,7 @@ import re
 import time
 from contextlib import asynccontextmanager, suppress
 from html import escape as html_escape
+from itertools import islice
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
@@ -56,6 +57,18 @@ QUESTION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024  # 4MB per attachment
 LONG_TEXT_HINT_THRESHOLD = 700  # heuristic порог для подсказки про длинные тексты
 TELEGRAM_HTML_SAFE_LIMIT = 3900
 _JSON_BLOCK_RE = re.compile(r"```json[\s\S]*?```", re.IGNORECASE)
+
+_TOPIC_RE = re.compile(r"/document/(\d+)")
+
+
+def _topic_from_url(url: str) -> int | None:
+    match = _TOPIC_RE.search(url or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
 
 
 @asynccontextmanager
@@ -192,51 +205,57 @@ async def _fetch_full_texts_for_fragments(
     return results
 
 
-async def _fetch_full_texts_for_cases(
-    garant_client,
-    cases: Sequence[Mapping[str, Any]],
+async def inject_fulltexts_for_cases(
+    garant: "GarantAPIClient",
+    cases: list[dict],
     *,
-    max_items: int = 10,
-    char_limit: int = 200_000,
+    max_chars: int = 200_000,
 ) -> dict[int, str]:
-    """Fetch full texts specifically for structured cases (DOCX)."""
-    results: dict[int, str] = {}
-    if not getattr(garant_client, "enabled", False):
-        return results
+    """
+    Fetch HTML for structured cases, store it in place, and return {topic: html}.
+    Respects the current "Export" quota by limiting the number of network calls.
+    """
+    full_texts: dict[int, str] = {}
+    if not cases or not getattr(garant, "has_export_quota", None):
+        return full_texts
 
-    topic_re = re.compile(r"/document/(\d+)")
-    seen_topics: set[int] = set()
-    for case in cases or []:
-        if len(results) >= max_items:
-            break
+    try:
+        quota = await garant.get_export_quota()
+    except Exception:
+        quota = None
+
+    to_fetch: list[tuple[int, Any, dict]] = []
+    for case in cases:
+        url = str(case.get("url") or case.get("link") or "")
         topic = case.get("topic")
-        url = str(case.get("url") or "")
         if topic is None and url:
-            match = topic_re.search(url)
-            if match:
-                try:
-                    topic = int(match.group(1))
-                except Exception:
-                    topic = None
+            topic = _topic_from_url(url)
         try:
             topic = int(topic) if topic is not None else None
         except Exception:
             topic = None
-        if topic is None or topic in seen_topics:
+        if not topic:
             continue
-        seen_topics.add(topic)
         entry = case.get("entry")
+        if case.get("fulltext_html"):
+            full_texts[topic] = str(case["fulltext_html"])
+            continue
+        to_fetch.append((topic, entry, case))
+
+    if isinstance(quota, int):
+        to_fetch = list(islice(to_fetch, max(0, quota)))
+
+    for topic, entry, case in to_fetch:
         try:
-            getter = getattr(garant_client, "get_document_html", None) or getattr(
-                garant_client, "get_document_text"
-            )
-            text = await getter(topic=topic, entry=entry, max_chars=char_limit)
-        except Exception as fulltext_error:  # noqa: BLE001
-            logger.debug("Failed to fetch full text for topic %s: %s", topic, fulltext_error)
-            text = None
-        if text:
-            results[topic] = text
-    return results
+            html = await garant.get_document_html(topic=topic, entry=entry, max_chars=max_chars)
+            if html:
+                case["fulltext_html"] = html
+                full_texts[topic] = html
+                logger.debug("Fetched full text for topic=%s (%s chars)", topic, len(html))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to fetch full text topic=%s: %s", topic, exc)
+
+    return full_texts
 
 
 def _normalize_case_links(
@@ -1407,21 +1426,33 @@ async def process_question(
                     full_texts = {}
                     garant_client_current = getattr(simple_context, "garant_client", None)
                     if getattr(garant_client_current, "enabled", False):
-                        cases_for_doc = structured_payload.get("cases") if isinstance(structured_payload, Mapping) else None
-                        if isinstance(cases_for_doc, Sequence) and cases_for_doc:
+                        cases_raw = (
+                            structured_payload.get("cases")
+                            if isinstance(structured_payload, Mapping)
+                            else None
+                        )
+                        cases_for_doc: list[dict[str, Any]] | None = None
+                        if isinstance(cases_raw, Sequence) and not isinstance(
+                            cases_raw, (str, bytes)
+                        ):
+                            cases_for_doc = list(cases_raw)
+                        if cases_for_doc:
                             try:
                                 _normalize_case_links(
                                     cases_for_doc,
-                                    base=getattr(garant_client_current, "document_base_url", "https://d.garant.ru")
+                                    base=getattr(
+                                        garant_client_current,
+                                        "document_base_url",
+                                        "https://d.garant.ru",
+                                    )
                                     or "https://d.garant.ru",
                                 )
                             except Exception:
                                 pass
-                            full_texts = await _fetch_full_texts_for_cases(
+                            full_texts = await inject_fulltexts_for_cases(
                                 garant_client_current,
                                 cases_for_doc,
-                                max_items=10,
-                                char_limit=200_000,
+                                max_chars=200_000,
                             )
                         else:
                             full_texts = await _fetch_full_texts_for_fragments(

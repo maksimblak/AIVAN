@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
@@ -112,6 +112,7 @@ class GarantAPIClient:
         self._sutyazhnik_count = max(1, sutyazhnik_count)
         self._timeout = httpx.Timeout(timeout, connect=timeout, read=timeout)
         self._log_debug = bool(log_debug)
+        self._html_cache: Dict[int, str] = {}
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
@@ -279,20 +280,36 @@ class GarantAPIClient:
         return snippets
 
     async def export_document_html(self, *, topic: int) -> list[str]:
-        """Load full document HTML split by items/pages."""
+        """Load full document HTML split by items/pages with tolerant schema handling."""
         if not self.enabled:
             return []
         response = await self._client.get(f"/v2/topic/{int(topic)}/html")
         response.raise_for_status()
         data = response.json()
-        items = data.get("items") if isinstance(data, dict) else None
+
+        def _append(bucket: list[str], value: Any) -> None:
+            if isinstance(value, str) and value.strip():
+                bucket.append(value)
+
         pages: list[str] = []
-        if isinstance(items, Iterable):
-            for item in items:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        pages.append(text)
+        if isinstance(data, dict):
+            if isinstance(data.get("html"), str):
+                return [str(data["html"])]
+            candidates = data.get("pages") or data.get("items")
+            if isinstance(candidates, list):
+                for item in candidates:
+                    if isinstance(item, str):
+                        _append(pages, item)
+                    elif isinstance(item, dict):
+                        html_value = item.get("html") or item.get("text")
+                        _append(pages, html_value)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, str):
+                    _append(pages, item)
+                elif isinstance(item, dict):
+                    html_value = item.get("html") or item.get("text")
+                    _append(pages, html_value)
         return pages
 
     async def export_block_html(self, *, topic: int, entry: int) -> str | None:
@@ -302,9 +319,15 @@ class GarantAPIClient:
         response = await self._client.get(f"/v2/topic/{int(topic)}/entry/{int(entry)}/html")
         response.raise_for_status()
         data = response.json()
-        text = data.get("text") if isinstance(data, dict) else None
-        if isinstance(text, str) and text.strip():
-            return text
+        if isinstance(data, dict):
+            text = data.get("html") or data.get("text")
+            if isinstance(text, str):
+                text = text.strip()
+                if text:
+                    return text
+        if isinstance(data, str):
+            stripped = data.strip()
+            return stripped or None
         return None
 
     async def download_rtf(self, *, topic: int) -> bytes:
@@ -406,16 +429,46 @@ class GarantAPIClient:
                     results.append(GarantAPIClient.LimitInfo(title=title, value=value, names=names))
         return results
 
+
+
     async def get_export_quota(self) -> int | None:
-        """Return remaining quota for export family (HTML/PDF/ODT/RTF)."""
+        """
+        Return remaining quota for export operations (HTML/PDF/ODT/RTF).
+
+        Garant may respond either with {"export": ...} or a list of limit entries.
+        """
         try:
-            limits = await self.get_limits()
+            response = await self._client.get("/v2/limits")
+            response.raise_for_status()
+            data = response.json()
         except Exception:
             return None
-        for item in limits:
-            label = (item.title or "").strip().lower()
-            if label == "экспорт":
-                return int(item.value)
+
+        def _to_int(value: Any) -> Optional[int]:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(key, str) and "export" in key.lower():
+                    parsed = _to_int(value)
+                    if parsed is not None:
+                        return parsed
+            raw_value = data.get("export")
+            parsed = _to_int(raw_value)
+            if parsed is not None:
+                return parsed
+        elif isinstance(data, Iterable):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("title") or item.get("name") or "").lower()
+                if "export" in label:
+                    parsed = _to_int(item.get("value") or item.get("remaining"))
+                    if parsed is not None:
+                        return parsed
         return None
 
     async def has_export_quota(self, *, required: int = 1) -> bool:
@@ -424,30 +477,36 @@ class GarantAPIClient:
             return True
         return quota >= max(1, required)
 
-    async def get_document_text(
+    async def get_document_html(
         self,
         *,
         topic: int,
         entry: int | None = None,
         max_chars: int | None = None,
     ) -> str | None:
-        """Return concatenated HTML body for a topic/entry respecting export quota."""
+        """Return concatenated HTML body for a topic/entry with caching to save quota."""
         if not self.enabled:
             return None
+        topic_key = int(topic)
+        cached = self._html_cache.get(topic_key)
+        if cached:
+            if max_chars and len(cached) > max_chars:
+                return cached[: max_chars].rstrip() + "..."
+            return cached
         if not await self.has_export_quota():
             if self._log_debug:
                 logger.debug("Export quota exhausted; skip full text for topic=%s", topic)
             return None
         try:
-            text: str | None
             if entry is not None:
-                text = await self.export_block_html(topic=int(topic), entry=int(entry))
+                html = await self.export_block_html(topic=topic_key, entry=int(entry))
+                text = (html or "").strip()
             else:
-                pages = await self.export_document_html(topic=int(topic))
-                text = "\n".join(pages)
-            text = (text or "").strip()
+                pages = await self.export_document_html(topic=topic_key)
+                text = "\n".join(pages).strip()
             if not text:
                 return None
+            self._html_cache[topic_key] = text
             if max_chars and len(text) > max_chars:
                 return text[: max_chars].rstrip() + "..."
             return text
@@ -455,6 +514,16 @@ class GarantAPIClient:
             if self._log_debug:
                 logger.debug("Full text unavailable for topic=%s entry=%s", topic, entry, exc_info=True)
             return None
+
+    async def get_document_text(
+        self,
+        *,
+        topic: int,
+        entry: int | None = None,
+        max_chars: int | None = None,
+    ) -> str | None:
+        """Backward-compatible alias for get_document_html."""
+        return await self.get_document_html(topic=topic, entry=entry, max_chars=max_chars)
 
     def format_limits(
         self,
